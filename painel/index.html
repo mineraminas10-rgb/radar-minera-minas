@@ -196,10 +196,10 @@ const CHECKLIST_PERGUNTAS = [
   [12,'O que dizem empresa, órgão e terceiros?'],
 ];
 
-let supabase, filaData = { comCarteira: {}, semCarteira: [] };
+let sb, filaData = { comCarteira: {}, semCarteira: [] };
 
 function boot(){
-  supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
   document.querySelectorAll('nav.tabs button').forEach(btn=>{
     btn.addEventListener('click', ()=>{
@@ -236,11 +236,11 @@ async function carregarFila(){
   document.getElementById('filaWrap').innerHTML = '<div class="empty">Carregando…</div>';
   setConn(null, 'carregando…');
   try{
-    const { data: carteiras, error: eCart } = await supabase
+    const { data: carteiras, error: eCart } = await sb
       .from('carteiras').select('id, nome').eq('ativa', true).order('nome');
     if (eCart) throw eCart;
 
-    const { data: carteiraScores, error: eCS } = await supabase
+    const { data: carteiraScores, error: eCS } = await sb
       .from('carteira_scores')
       .select(`score_ponderado, prioridade, componentes_aplicados, carteira_id, event_id,
         events ( id, id_evento, titulo_fato, resumo_factual, empresa, municipio, modulo,
@@ -251,7 +251,7 @@ async function carregarFila(){
       .eq('vigente', true);
     if (eCS) throw eCS;
 
-    const { data: allEvents, error: eEv } = await supabase
+    const { data: allEvents, error: eEv } = await sb
       .from('events')
       .select(`id, id_evento, titulo_fato, resumo_factual, empresa, municipio, modulo,
         status_editorial, pre_release, url_oficial, data_evento,
@@ -406,7 +406,7 @@ function cardHTML(item){
 
 async function atualizarStatus(eventId, novoStatus){
   if(novoStatus==='descartado' && !confirm('Descartar este assunto? Ele some da fila padrão (continua no banco, com o histórico).')) return;
-  const { error } = await supabase.from('events').update({ status_editorial: novoStatus }).eq('id', eventId);
+  const { error } = await sb.from('events').update({ status_editorial: novoStatus }).eq('id', eventId);
   if(error){ alert('Não consegui atualizar: ' + error.message); return; }
   await carregarFila();
 }
@@ -417,11 +417,11 @@ async function atualizarStatus(eventId, novoStatus){
 let carteirasCache = [], sourcesCache = [], carteiraSelecionada = null;
 
 async function carregarCarteirasTab(){
-  const { data, error } = await supabase.from('carteiras').select('*').order('nome');
+  const { data, error } = await sb.from('carteiras').select('*').order('nome');
   if(error){ document.getElementById('carteirasList').innerHTML = '<div class="empty">Erro: '+esc(error.message)+'</div>'; return; }
   carteirasCache = data || [];
   if(!sourcesCache.length){
-    const { data: srcs } = await supabase.from('sources').select('id, nome').order('nome');
+    const { data: srcs } = await sb.from('sources').select('id, nome').order('nome');
     sourcesCache = srcs || [];
   }
   renderCarteirasList();
@@ -442,7 +442,7 @@ function renderCarteirasList(){
 }
 
 async function criarCarteira(){
-  const { data, error } = await supabase.from('carteiras').insert({ nome: 'Nova carteira' }).select().single();
+  const { data, error } = await sb.from('carteiras').insert({ nome: 'Nova carteira' }).select().single();
   if(error){ alert('Erro ao criar: '+error.message); return; }
   carteirasCache.push(data);
   carteiraSelecionada = data.id;
@@ -456,9 +456,9 @@ async function abrirDetalheCarteira(id){
   panel.innerHTML = '<div class="empty">Carregando…</div>';
 
   const [{ data: pesos }, { data: fontesLigadas }, { data: scores }] = await Promise.all([
-    supabase.from('carteira_pesos').select('*').eq('carteira_id', id),
-    supabase.from('carteira_fontes').select('*').eq('carteira_id', id),
-    supabase.from('carteira_scores').select('score_ponderado, prioridade, events(titulo_fato)').eq('carteira_id', id).eq('vigente', true).order('score_ponderado', { ascending: false }),
+    sb.from('carteira_pesos').select('*').eq('carteira_id', id),
+    sb.from('carteira_fontes').select('*').eq('carteira_id', id),
+    sb.from('carteira_scores').select('score_ponderado, prioridade, events(titulo_fato)').eq('carteira_id', id).eq('vigente', true).order('score_ponderado', { ascending: false }),
   ]);
 
   const criterio = carteira.criterio_regra || {};
@@ -567,7 +567,7 @@ async function salvarCarteira(id){
     if(campo && valor) criterio_regra[campo] = valor;
   });
 
-  const { error: e1 } = await supabase.from('carteiras').update({
+  const { error: e1 } = await sb.from('carteiras').update({
     nome, descricao: descricao||null, ativa, banda_a_min, banda_b_min, banda_c_min,
     criterio_regra: Object.keys(criterio_regra).length ? criterio_regra : null,
   }).eq('id', id);
@@ -580,8 +580,8 @@ async function salvarCarteira(id){
     const peso = parseFloat(row.querySelector('.pesoValor').value);
     if(modulo && componente && !isNaN(peso)) pesos.push({ carteira_id: id, modulo, componente, peso });
   });
-  await supabase.from('carteira_pesos').delete().eq('carteira_id', id);
-  if(pesos.length) await supabase.from('carteira_pesos').insert(pesos);
+  await sb.from('carteira_pesos').delete().eq('carteira_id', id);
+  if(pesos.length) await sb.from('carteira_pesos').insert(pesos);
 
   const fontes = [];
   document.querySelectorAll('.fonteChk').forEach(chk=>{
@@ -591,8 +591,8 @@ async function salvarCarteira(id){
       fontes.push({ carteira_id: id, source_id: sourceId, finalidade: fin });
     }
   });
-  await supabase.from('carteira_fontes').delete().eq('carteira_id', id);
-  if(fontes.length) await supabase.from('carteira_fontes').insert(fontes);
+  await sb.from('carteira_fontes').delete().eq('carteira_id', id);
+  if(fontes.length) await sb.from('carteira_fontes').insert(fontes);
 
   const idx = carteirasCache.findIndex(c=>c.id===id);
   if(idx>=0) carteirasCache[idx] = { ...carteirasCache[idx], nome, descricao, ativa };
