@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Radar Minera Minas — Fila do Editor</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<style>
+  :root{
+    --bg:#0f1420; --surface:#161d2e; --surface2:#1c2438; --border:#2a3350;
+    --text:#e7ebf3; --muted:#9aa5c0; --accent:#4f8cff; --accent-weak:#22304f;
+    --A:#ef4444; --B:#f59e0b; --C:#eab308; --D:#64748b;
+    --ok:#22c55e; --warn:#f59e0b; --danger:#ef4444;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:14px;}
+  header{position:sticky;top:0;z-index:20;background:var(--surface);border-bottom:1px solid var(--border);padding:12px 20px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;}
+  header h1{font-size:16px;margin:0;font-weight:600;flex:1;}
+  nav.tabs{display:flex;gap:4px;}
+  nav.tabs button{background:transparent;border:1px solid var(--border);color:var(--muted);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px;}
+  nav.tabs button.active{background:var(--accent-weak);color:var(--text);border-color:var(--accent);}
+  #connStatus{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;}
+  #connStatus .dot{width:8px;height:8px;border-radius:50%;background:var(--muted);}
+  #connStatus.ok .dot{background:var(--ok);}
+  #connStatus.err .dot{background:var(--danger);}
+  main{max-width:980px;margin:0 auto;padding:20px;}
+  .view{display:none;}
+  .view.active{display:block;}
+
+  #setupBanner{max-width:640px;margin:60px auto;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:24px;line-height:1.6;}
+  #setupBanner code{background:var(--surface2);padding:2px 6px;border-radius:4px;}
+
+  .toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:16px;}
+  .toolbar input[type=text]{flex:1;min-width:180px;background:var(--surface);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;}
+  .toolbar select, .toolbar button, .toolbar label{background:var(--surface);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;}
+  .toolbar label{display:flex;align-items:center;gap:6px;cursor:pointer;}
+  .toolbar button{cursor:pointer;}
+  .toolbar button:hover{border-color:var(--accent);}
+
+  .groupHeader{display:flex;align-items:center;gap:10px;margin:22px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--border);}
+  .groupHeader h2{font-size:15px;margin:0;font-weight:600;}
+  .groupHeader .count{color:var(--muted);font-size:12px;}
+
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:12px;}
+  .cardTop{display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;}
+  .badge{font-size:11px;padding:2px 8px;border-radius:20px;border:1px solid var(--border);color:var(--muted);white-space:nowrap;}
+  .prio{font-weight:700;color:#0f1420;padding:2px 9px;border-radius:20px;font-size:12px;}
+  .prio-A{background:var(--A);} .prio-B{background:var(--B);} .prio-C{background:var(--C);} .prio-D{background:var(--D);color:#fff;}
+  .score{font-size:18px;font-weight:700;}
+  .grow{flex:1;min-width:200px;}
+  .titulo{font-weight:600;font-size:15px;margin:6px 0 2px;}
+  .sub{color:var(--muted);font-size:12.5px;}
+  .resumo{margin:8px 0;line-height:1.5;}
+  .prerelease{background:var(--surface2);border-left:3px solid var(--accent);padding:10px 12px;border-radius:6px;margin:10px 0;line-height:1.55;white-space:pre-wrap;}
+  .prerelease.empty{color:var(--muted);font-style:italic;border-left-color:var(--border);}
+  .prerelease .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--accent);display:block;margin-bottom:4px;}
+  details{margin-top:8px;}
+  summary{cursor:pointer;color:var(--muted);font-size:12.5px;padding:4px 0;}
+  summary:hover{color:var(--text);}
+  .compTable{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px;}
+  .compTable td{padding:4px 6px;border-bottom:1px solid var(--border);}
+  .compTable .no{opacity:.45;}
+  .srcList{list-style:none;padding:0;margin:6px 0 0;font-size:12.5px;}
+  .srcList li{padding:4px 0;border-bottom:1px solid var(--border);}
+  .srcList a{color:var(--accent);}
+  .chkList{list-style:none;padding:0;margin:6px 0 0;font-size:12.5px;}
+  .chkList li{padding:3px 0;display:flex;gap:8px;}
+  .chkList .yes{color:var(--ok);} .chkList .no{color:var(--muted);}
+  .actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;}
+  .actions button{font-size:12.5px;padding:6px 12px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);cursor:pointer;}
+  .actions button:hover{border-color:var(--accent);}
+  .actions button.ok{border-color:var(--ok);color:var(--ok);}
+  .actions button.danger{border-color:var(--danger);color:var(--danger);}
+  .statusTag{font-size:11px;padding:2px 8px;border-radius:20px;}
+  .st-novo{background:#1e3a8a55;color:#93c5fd;}
+  .st-em_apuracao{background:#4c1d9555;color:#c4b5fd;}
+  .st-pronto_para_publicar{background:#14532d55;color:#86efac;}
+  .st-publicado{background:#134e4a55;color:#5eead4;}
+  .st-arquivado{background:#37415155;color:#9ca3af;}
+  .st-descartado{background:#4c000055;color:#fca5a5;text-decoration:line-through;}
+  .empty{color:var(--muted);padding:30px;text-align:center;font-size:13px;}
+
+  /* Carteiras admin */
+  .carteirasLayout{display:flex;gap:18px;align-items:flex-start;}
+  .carteirasList{width:230px;flex-shrink:0;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;}
+  .carteirasList .item{padding:10px 12px;border-bottom:1px solid var(--border);cursor:pointer;font-size:13px;display:flex;justify-content:space-between;align-items:center;}
+  .carteirasList .item:hover{background:var(--surface2);}
+  .carteirasList .item.sel{background:var(--accent-weak);}
+  .carteirasList .item .muted{color:var(--muted);font-size:11px;}
+  .carteirasList .new{padding:10px 12px;color:var(--accent);cursor:pointer;font-size:13px;}
+  .detailPanel{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px;min-width:0;}
+  .field{margin-bottom:12px;}
+  .field label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px;}
+  .field input[type=text], .field input[type=number], .field textarea, .field select{
+    width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);
+    padding:7px 9px;border-radius:6px;font-family:inherit;font-size:13px;}
+  .field textarea{min-height:60px;resize:vertical;}
+  .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;}
+  .rowInline{display:flex;gap:8px;align-items:center;margin-bottom:6px;}
+  .rowInline > *{flex:1;}
+  .rowInline button{flex:0 0 auto;}
+  fieldset{border:1px solid var(--border);border-radius:8px;margin:16px 0;padding:12px;}
+  legend{padding:0 6px;color:var(--muted);font-size:12px;}
+  .smallBtn{background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:5px 10px;border-radius:6px;cursor:pointer;font-size:12px;}
+  .smallBtn:hover{border-color:var(--accent);}
+  .saveBar{display:flex;gap:10px;margin-top:16px;justify-content:flex-end;}
+  .saveBar button{padding:8px 18px;border-radius:6px;border:1px solid var(--accent);background:var(--accent-weak);color:var(--text);cursor:pointer;}
+  .miniTable{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px;}
+  .miniTable td, .miniTable th{padding:5px 6px;border-bottom:1px solid var(--border);text-align:left;}
+</style>
+</head>
+<body>
+
+<div id="setupBanner" style="display:none;">
+  <h2 style="margin-top:0;">Painel ainda não conectado</h2>
+  <p>Este arquivo precisa da URL e da chave pública (anon key) do seu projeto Supabase pra funcionar.
+  Abra este arquivo num editor de texto (Bloco de Notas, por exemplo), procure perto do topo por
+  <code>SUPABASE_URL</code> e <code>SUPABASE_ANON_KEY</code>, e troque pelos valores de
+  <strong>Project Settings → API</strong> no seu projeto Supabase. Depois salve e abra de novo.</p>
+</div>
+
+<div id="app" style="display:none;">
+<header>
+  <h1>Radar Minera Minas</h1>
+  <nav class="tabs">
+    <button data-view="fila" class="active">Fila do Editor</button>
+    <button data-view="carteiras">Carteiras</button>
+  </nav>
+  <div id="connStatus"><span class="dot"></span><span id="connLabel">conectando…</span></div>
+</header>
+
+<main>
+
+  <!-- ===================== FILA DO EDITOR ===================== -->
+  <section id="view-fila" class="view active">
+    <div class="toolbar">
+      <input type="text" id="busca" placeholder="Buscar por título, empresa, município…">
+      <label><input type="checkbox" id="mostrarTodos"> mostrar publicados/arquivados/descartados</label>
+      <button id="btnRecarregar">↻ Atualizar</button>
+    </div>
+    <div id="filaWrap"><div class="empty">Carregando…</div></div>
+  </section>
+
+  <!-- ===================== CARTEIRAS ===================== -->
+  <section id="view-carteiras" class="view">
+    <div class="carteirasLayout">
+      <div class="carteirasList" id="carteirasList"></div>
+      <div class="detailPanel" id="carteiraDetail">
+        <div class="empty">Selecione uma carteira à esquerda, ou crie uma nova.</div>
+      </div>
+    </div>
+  </section>
+
+</main>
+</div>
+
+<script>
+// ============================================================================
+// CONFIGURAÇÃO — cole aqui os valores do SEU projeto Supabase
+// (Project Settings > API no painel do Supabase). A anon key é pública por
+// natureza (protegida pelas regras de RLS no banco, não é segredo).
+// ============================================================================
+const SUPABASE_URL = "https://bfhuhvilnppbeshoavrf.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_4UgYfvziLDAxf3g3ewHs7Q_y-0fOMCz";
+
+if (!SUPABASE_URL || SUPABASE_URL.indexOf("COLE_AQUI") !== -1 ||
+    !SUPABASE_ANON_KEY || SUPABASE_ANON_KEY.indexOf("COLE_AQUI") !== -1) {
+  document.getElementById('setupBanner').style.display = 'block';
+} else {
+  document.getElementById('app').style.display = 'block';
+  boot();
+}
+
+const MODULOS = {
+  M1_licenciamento: 'M1 · Licenciamento',
+  M2_intervencao: 'M2 · Intervenção',
+  M3_autos_infracao: 'M3 · Autos de infração',
+  M4_tacs: 'M4 · TACs',
+  M5_audiencias_eia_rima: 'M5 · Audiências EIA/RIMA',
+  M6_outorgas: 'M6 · Outorgas',
+  M7_copam_cmi: 'M7 · COPAM/CMI',
+  M8_varredura_final: 'M8 · Varredura final',
+};
+
+const STATUS_LABEL = {
+  novo: 'Novo', em_apuracao: 'Em apuração', pronto_para_publicar: 'Pronto p/ publicar',
+  publicado: 'Publicado', arquivado: 'Arquivado', descartado: 'Descartado',
+};
+
+const CHECKLIST_PERGUNTAS = [
+  [1,'O que aconteceu agora?'],[2,'Quem está envolvido?'],[3,'Onde aconteceu?'],
+  [4,'Quando aconteceu?'],[5,'Qual é a dimensão do fato?'],[6,'Qual foi a conduta, causa ou objeto?'],
+  [7,'Qual foi a consequência ambiental, social, operacional ou econômica?'],
+  [8,'O que foi determinado ou autorizado?'],[9,'Qual é a situação processual?'],
+  [10,'O que acontece agora?'],[11,'Qual é o histórico relevante?'],
+  [12,'O que dizem empresa, órgão e terceiros?'],
+];
+
+let sb, filaData = { comCarteira: {}, semCarteira: [] };
+
+function boot(){
+  sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  document.querySelectorAll('nav.tabs button').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      document.querySelectorAll('nav.tabs button').forEach(b=>b.classList.remove('active'));
+      document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById('view-'+btn.dataset.view).classList.add('active');
+      if(btn.dataset.view==='carteiras') carregarCarteirasTab();
+    });
+  });
+
+  document.getElementById('btnRecarregar').addEventListener('click', carregarFila);
+  document.getElementById('busca').addEventListener('input', renderFila);
+  document.getElementById('mostrarTodos').addEventListener('change', renderFila);
+
+  carregarFila();
+}
+
+function setConn(ok, label){
+  const el = document.getElementById('connStatus');
+  el.className = ok===null ? '' : (ok ? 'ok' : 'err');
+  document.getElementById('connLabel').textContent = label;
+}
+
+function esc(s){
+  if(s===null||s===undefined) return '';
+  return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ---------------------------------------------------------------------------
+// FILA DO EDITOR
+// ---------------------------------------------------------------------------
+async function carregarFila(){
+  document.getElementById('filaWrap').innerHTML = '<div class="empty">Carregando…</div>';
+  setConn(null, 'carregando…');
+  try{
+    const { data: carteiras, error: eCart } = await sb
+      .from('carteiras').select('id, nome').eq('ativa', true).order('nome');
+    if (eCart) throw eCart;
+
+    const { data: carteiraScores, error: eCS } = await sb
+      .from('carteira_scores')
+      .select(`score_ponderado, prioridade, componentes_aplicados, carteira_id, event_id,
+        events ( id, id_evento, titulo_fato, resumo_factual, empresa, municipio, modulo,
+          status_editorial, pre_release, url_oficial, data_evento,
+          documentos ( id, url, tipo, orgao ),
+          evidencias ( id, resumo_extraido, trecho_literal ),
+          checklist_editorial ( pergunta_numero, resposta ) )`)
+      .eq('vigente', true);
+    if (eCS) throw eCS;
+
+    const { data: allEvents, error: eEv } = await sb
+      .from('events')
+      .select(`id, id_evento, titulo_fato, resumo_factual, empresa, municipio, modulo,
+        status_editorial, pre_release, url_oficial, data_evento,
+        event_scores ( score_bruto, score_normalizado, componentes, prioridade, vigente ),
+        documentos ( id, url, tipo, orgao ),
+        evidencias ( id, resumo_extraido, trecho_literal ),
+        checklist_editorial ( pergunta_numero, resposta )`);
+    if (eEv) throw eEv;
+
+    const idsComCarteira = new Set((carteiraScores||[]).map(r=>r.event_id));
+    const nomesCarteira = {}; (carteiras||[]).forEach(c=>nomesCarteira[c.id]=c.nome);
+
+    const comCarteira = {};
+    (carteiraScores||[]).forEach(r=>{
+      if(!r.events) return;
+      const nome = nomesCarteira[r.carteira_id] || '(carteira removida)';
+      if(!comCarteira[nome]) comCarteira[nome] = [];
+      comCarteira[nome].push({
+        event: r.events, score: r.score_ponderado, prioridade: r.prioridade,
+        componentes: r.componentes_aplicados, tipo: 'carteira',
+      });
+    });
+    Object.values(comCarteira).forEach(arr=>arr.sort((a,b)=>(b.score??-1)-(a.score??-1)));
+
+    const semCarteira = (allEvents||[])
+      .filter(e=>!idsComCarteira.has(e.id))
+      .map(e=>{
+        const vig = (e.event_scores||[]).find(s=>s.vigente) || (e.event_scores||[])[0];
+        return {
+          event: e, score: vig?.score_normalizado ?? vig?.score_bruto ?? null,
+          prioridade: vig?.prioridade ?? null, componentes: vig?.componentes ?? null, tipo: 'modulo',
+        };
+      })
+      .sort((a,b)=>(b.score??-1)-(a.score??-1));
+
+    filaData = { comCarteira, semCarteira };
+    setConn(true, 'conectado');
+    renderFila();
+  }catch(err){
+    console.error(err);
+    setConn(false, 'erro de conexão');
+    document.getElementById('filaWrap').innerHTML =
+      '<div class="empty">Não consegui carregar a fila. Confira a URL/chave do Supabase e a conexão. Detalhe técnico: '+esc(err.message||err)+'</div>';
+  }
+}
+
+function passaFiltro(item){
+  const mostrarTodos = document.getElementById('mostrarTodos').checked;
+  const st = item.event.status_editorial;
+  if(!mostrarTodos && ['publicado','arquivado','descartado'].includes(st)) return false;
+  const q = document.getElementById('busca').value.trim().toLowerCase();
+  if(!q) return true;
+  const alvo = [item.event.titulo_fato, item.event.resumo_factual, item.event.empresa, item.event.municipio]
+    .filter(Boolean).join(' ').toLowerCase();
+  return alvo.includes(q);
+}
+
+function renderFila(){
+  const wrap = document.getElementById('filaWrap');
+  const grupos = Object.entries(filaData.comCarteira)
+    .map(([nome, items])=>[nome, items.filter(passaFiltro)])
+    .filter(([,items])=>items.length>0);
+  const semCarteira = filaData.semCarteira.filter(passaFiltro);
+
+  if(grupos.length===0 && semCarteira.length===0){
+    wrap.innerHTML = '<div class="empty">Nenhum assunto encontrado (ou a fila ainda está vazia — cadastre eventos no banco pra eles aparecerem aqui).</div>';
+    return;
+  }
+
+  let html = '';
+  grupos.forEach(([nome, items])=>{
+    html += `<div class="groupHeader"><h2>${esc(nome)}</h2><span class="count">${items.length} assunto(s)</span></div>`;
+    items.forEach(it=> html += cardHTML(it));
+  });
+  if(semCarteira.length){
+    html += `<div class="groupHeader"><h2>Sem carteira</h2><span class="count">${semCarteira.length} assunto(s) — ordenado por score do módulo</span></div>`;
+    semCarteira.forEach(it=> html += cardHTML(it));
+  }
+  wrap.innerHTML = html;
+
+  wrap.querySelectorAll('[data-action]').forEach(btn=>{
+    btn.addEventListener('click', ()=> atualizarStatus(btn.dataset.id, btn.dataset.action));
+  });
+}
+
+function cardHTML(item){
+  const e = item.event;
+  const prio = item.prioridade || '—';
+  const prioClass = ['A','B','C','D'].includes(prio) ? 'prio-'+prio : '';
+  const modulo = MODULOS[e.modulo] || e.modulo || '';
+  const docs = e.documentos || [];
+  const evid = e.evidencias || [];
+  const chk = e.checklist_editorial || [];
+  const chkCount = chk.filter(c=>c.resposta).length;
+
+  const compRows = Object.entries(item.componentes||{}).map(([k,v])=>{
+    if (typeof v === 'object' && v !== null){
+      const used = v.usado !== false;
+      return `<tr class="${used?'':'no'}"><td>${esc(k)}</td><td>${esc(v.valor)}</td><td>${v.peso??'—'}</td><td>${used?'usado':'sem peso'}</td></tr>`;
+    }
+    return `<tr><td>${esc(k)}</td><td>${esc(v)}</td><td>—</td><td>—</td></tr>`;
+  }).join('');
+
+  const srcItems = [
+    ...docs.map(d=>`<li>📄 <a href="${esc(d.url)}" target="_blank" rel="noopener">${esc(d.tipo||'documento')}</a>${d.orgao?' — '+esc(d.orgao):''}</li>`),
+    ...evid.map(v=>`<li>🔎 ${esc(v.resumo_extraido || v.trecho_literal || '')}</li>`),
+  ].join('') || '<li style="color:var(--muted)">Nenhuma fonte/evidência linkada ainda.</li>';
+
+  const chkItems = CHECKLIST_PERGUNTAS.map(([num,texto])=>{
+    const resp = chk.find(c=>c.pergunta_numero===num);
+    const ok = !!(resp && resp.resposta);
+    return `<li><span class="${ok?'yes':'no'}">${ok?'✓':'○'}</span> ${esc(texto)}${resp&&resp.resposta?' — '+esc(resp.resposta):''}</li>`;
+  }).join('');
+
+  return `
+  <div class="card">
+    <div class="cardTop">
+      <span class="badge">${esc(modulo)}</span>
+      ${prio!=='—'?`<span class="prio ${prioClass}">${prio}</span>`:''}
+      <span class="score">${item.score ?? '—'}</span>
+      <span class="statusTag st-${e.status_editorial}">${STATUS_LABEL[e.status_editorial]||e.status_editorial}</span>
+      <div class="grow"></div>
+      <span class="sub">${esc(e.empresa||'')}${e.municipio?' · '+esc(e.municipio):''}</span>
+    </div>
+    <div class="titulo">${esc(e.titulo_fato || e.id_evento)}</div>
+    ${e.resumo_factual?`<div class="resumo">${esc(e.resumo_factual)}</div>`:''}
+
+    ${e.pre_release
+      ? `<div class="prerelease"><span class="lbl">Pré-release — pronto para revisão</span>${esc(e.pre_release)}</div>`
+      : `<div class="prerelease empty"><span class="lbl">Pré-release</span>Ainda sem pré-release gerado para este assunto.</div>`}
+
+    <details>
+      <summary>Por que esse score</summary>
+      <table class="compTable"><tbody>${compRows || '<tr><td colspan="4" style="color:var(--muted)">Sem detalhamento de componentes.</td></tr>'}</tbody></table>
+    </details>
+    <details>
+      <summary>Fontes e evidências (${docs.length + evid.length})</summary>
+      <ul class="srcList">${srcItems}</ul>
+    </details>
+    <details>
+      <summary>Checklist editorial (${chkCount}/12)</summary>
+      <ul class="chkList">${chkItems}</ul>
+    </details>
+
+    <div class="actions">
+      <button class="ok" data-action="pronto_para_publicar" data-id="${e.id}">Pronto p/ publicar</button>
+      <button data-action="publicado" data-id="${e.id}">Marcar publicado</button>
+      <button class="danger" data-action="descartado" data-id="${e.id}">Descartar</button>
+    </div>
+  </div>`;
+}
+
+async function atualizarStatus(eventId, novoStatus){
+  if(novoStatus==='descartado' && !confirm('Descartar este assunto? Ele some da fila padrão (continua no banco, com o histórico).')) return;
+  const { error } = await sb.from('events').update({ status_editorial: novoStatus }).eq('id', eventId);
+  if(error){ alert('Não consegui atualizar: ' + error.message); return; }
+  await carregarFila();
+}
+
+// ---------------------------------------------------------------------------
+// CARTEIRAS (admin)
+// ---------------------------------------------------------------------------
+let carteirasCache = [], sourcesCache = [], carteiraSelecionada = null;
+
+async function carregarCarteirasTab(){
+  const { data, error } = await sb.from('carteiras').select('*').order('nome');
+  if(error){ document.getElementById('carteirasList').innerHTML = '<div class="empty">Erro: '+esc(error.message)+'</div>'; return; }
+  carteirasCache = data || [];
+  if(!sourcesCache.length){
+    const { data: srcs } = await sb.from('sources').select('id, nome').order('nome');
+    sourcesCache = srcs || [];
+  }
+  renderCarteirasList();
+}
+
+function renderCarteirasList(){
+  const wrap = document.getElementById('carteirasList');
+  let html = carteirasCache.map(c=>`
+    <div class="item ${carteiraSelecionada===c.id?'sel':''}" data-id="${c.id}">
+      <span>${esc(c.nome)}${c.ativa?'':' <span class="muted">(inativa)</span>'}</span>
+    </div>`).join('');
+  html += `<div class="new" id="btnNovaCarteira">+ Nova carteira</div>`;
+  wrap.innerHTML = html;
+  wrap.querySelectorAll('.item').forEach(it=>{
+    it.addEventListener('click', ()=>{ carteiraSelecionada = it.dataset.id; renderCarteirasList(); abrirDetalheCarteira(it.dataset.id); });
+  });
+  document.getElementById('btnNovaCarteira').addEventListener('click', criarCarteira);
+}
+
+async function criarCarteira(){
+  const { data, error } = await sb.from('carteiras').insert({ nome: 'Nova carteira' }).select().single();
+  if(error){ alert('Erro ao criar: '+error.message); return; }
+  carteirasCache.push(data);
+  carteiraSelecionada = data.id;
+  renderCarteirasList();
+  abrirDetalheCarteira(data.id);
+}
+
+async function abrirDetalheCarteira(id){
+  const carteira = carteirasCache.find(c=>c.id===id);
+  const panel = document.getElementById('carteiraDetail');
+  panel.innerHTML = '<div class="empty">Carregando…</div>';
+
+  const [{ data: pesos }, { data: fontesLigadas }, { data: scores }] = await Promise.all([
+    sb.from('carteira_pesos').select('*').eq('carteira_id', id),
+    sb.from('carteira_fontes').select('*').eq('carteira_id', id),
+    sb.from('carteira_scores').select('score_ponderado, prioridade, events(titulo_fato)').eq('carteira_id', id).eq('vigente', true).order('score_ponderado', { ascending: false }),
+  ]);
+
+  const criterio = carteira.criterio_regra || {};
+  const criterioRows = Object.entries(criterio).map(([k,v])=>rowCriterio(k,v)).join('') || rowCriterio('','');
+  const pesosRows = (pesos||[]).map(p=>rowPeso(p)).join('') || rowPeso();
+  const fontesSet = new Set((fontesLigadas||[]).map(f=>f.source_id));
+  const fontesFinalidade = {}; (fontesLigadas||[]).forEach(f=>fontesFinalidade[f.source_id]=f.finalidade);
+
+  panel.innerHTML = `
+    <div class="field"><label>Nome</label><input type="text" id="f_nome" value="${esc(carteira.nome)}"></div>
+    <div class="field"><label>Descrição</label><textarea id="f_desc">${esc(carteira.descricao||'')}</textarea></div>
+    <div class="field"><label><input type="checkbox" id="f_ativa" ${carteira.ativa?'checked':''}> Ativa</label></div>
+
+    <fieldset>
+      <legend>Bandas de prioridade (score 0–100)</legend>
+      <div class="row3">
+        <div class="field"><label>A a partir de</label><input type="number" id="f_bandaA" value="${carteira.banda_a_min}"></div>
+        <div class="field"><label>B a partir de</label><input type="number" id="f_bandaB" value="${carteira.banda_b_min}"></div>
+        <div class="field"><label>C a partir de</label><input type="number" id="f_bandaC" value="${carteira.banda_c_min}"></div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Critério de regra (inclusão automática — opcional)</legend>
+      <div id="criterioRows">${criterioRows}</div>
+      <button class="smallBtn" id="addCriterio">+ campo</button>
+    </fieldset>
+
+    <fieldset>
+      <legend>Pesos por módulo/componente</legend>
+      <div id="pesosRows">${pesosRows}</div>
+      <button class="smallBtn" id="addPeso">+ peso</button>
+    </fieldset>
+
+    <fieldset>
+      <legend>Fontes de consulta</legend>
+      <div id="fontesRows">${sourcesCache.map(s=>`
+        <div class="rowInline">
+          <label style="flex:2;display:flex;gap:6px;align-items:center;">
+            <input type="checkbox" class="fonteChk" data-id="${s.id}" ${fontesSet.has(s.id)?'checked':''}> ${esc(s.nome)}
+          </label>
+          <select class="fonteFin" data-id="${s.id}">
+            <option value="coleta" ${fontesFinalidade[s.id]==='coleta'?'selected':''}>coleta</option>
+            <option value="validacao" ${fontesFinalidade[s.id]==='validacao'?'selected':''}>validação</option>
+            <option value="ambos" ${(!fontesFinalidade[s.id]||fontesFinalidade[s.id]==='ambos')?'selected':''}>ambos</option>
+          </select>
+        </div>`).join('') || '<div class="empty">Nenhuma fonte cadastrada em "sources" ainda.</div>'}
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Scores calculados (somente leitura — vem do script de recálculo)</legend>
+      <table class="miniTable"><tbody>
+        ${(scores||[]).map(s=>`<tr><td>${esc(s.events?.titulo_fato||'')}</td><td>${s.score_ponderado}</td><td>${s.prioridade}</td></tr>`).join('') || '<tr><td class="empty">Sem scores calculados ainda — rode scripts/carteiras/recalcular_carteiras.py</td></tr>'}
+      </tbody></table>
+    </fieldset>
+
+    <div class="saveBar">
+      <button id="btnSalvarCarteira">Salvar carteira</button>
+    </div>
+  `;
+
+  document.getElementById('addCriterio').addEventListener('click', ()=>{
+    document.getElementById('criterioRows').insertAdjacentHTML('beforeend', rowCriterio('',''));
+  });
+  document.getElementById('addPeso').addEventListener('click', ()=>{
+    document.getElementById('pesosRows').insertAdjacentHTML('beforeend', rowPeso());
+  });
+  panel.querySelectorAll('.rmRow').forEach(b=>b.addEventListener('click', e=>e.target.closest('.rowInline').remove()));
+  document.getElementById('btnSalvarCarteira').addEventListener('click', ()=>salvarCarteira(id));
+}
+
+function rowCriterio(campo, valor){
+  return `<div class="rowInline">
+    <select class="critCampo">
+      ${['empresa','municipio','modulo','processo','cnpj'].map(o=>`<option value="${o}" ${o===campo?'selected':''}>${o}</option>`).join('')}
+    </select>
+    <input type="text" class="critValor" placeholder="valor" value="${esc(valor)}">
+    <button class="smallBtn rmRow">✕</button>
+  </div>`;
+}
+
+function rowPeso(p){
+  p = p || {};
+  const modOpts = Object.keys(MODULOS).map(m=>`<option value="${m}" ${p.modulo===m?'selected':''}>${MODULOS[m]}</option>`).join('');
+  return `<div class="rowInline">
+    <select class="pesoModulo">${modOpts}</select>
+    <input type="text" class="pesoComponente" placeholder="componente (ex: dano_risco)" value="${esc(p.componente||'')}">
+    <input type="number" class="pesoValor" placeholder="peso" value="${p.peso??''}" step="0.1">
+    <button class="smallBtn rmRow">✕</button>
+  </div>`;
+}
+
+async function salvarCarteira(id){
+  const nome = document.getElementById('f_nome').value.trim();
+  const descricao = document.getElementById('f_desc').value.trim();
+  const ativa = document.getElementById('f_ativa').checked;
+  const banda_a_min = parseFloat(document.getElementById('f_bandaA').value);
+  const banda_b_min = parseFloat(document.getElementById('f_bandaB').value);
+  const banda_c_min = parseFloat(document.getElementById('f_bandaC').value);
+
+  const criterio_regra = {};
+  document.querySelectorAll('#criterioRows .rowInline').forEach(row=>{
+    const campo = row.querySelector('.critCampo').value;
+    const valor = row.querySelector('.critValor').value.trim();
+    if(campo && valor) criterio_regra[campo] = valor;
+  });
+
+  const { error: e1 } = await sb.from('carteiras').update({
+    nome, descricao: descricao||null, ativa, banda_a_min, banda_b_min, banda_c_min,
+    criterio_regra: Object.keys(criterio_regra).length ? criterio_regra : null,
+  }).eq('id', id);
+  if(e1){ alert('Erro ao salvar carteira: '+e1.message); return; }
+
+  const pesos = [];
+  document.querySelectorAll('#pesosRows .rowInline').forEach(row=>{
+    const modulo = row.querySelector('.pesoModulo').value;
+    const componente = row.querySelector('.pesoComponente').value.trim();
+    const peso = parseFloat(row.querySelector('.pesoValor').value);
+    if(modulo && componente && !isNaN(peso)) pesos.push({ carteira_id: id, modulo, componente, peso });
+  });
+  await sb.from('carteira_pesos').delete().eq('carteira_id', id);
+  if(pesos.length) await sb.from('carteira_pesos').insert(pesos);
+
+  const fontes = [];
+  document.querySelectorAll('.fonteChk').forEach(chk=>{
+    if(chk.checked){
+      const sourceId = chk.dataset.id;
+      const fin = document.querySelector(`.fonteFin[data-id="${sourceId}"]`).value;
+      fontes.push({ carteira_id: id, source_id: sourceId, finalidade: fin });
+    }
+  });
+  await sb.from('carteira_fontes').delete().eq('carteira_id', id);
+  if(fontes.length) await sb.from('carteira_fontes').insert(fontes);
+
+  const idx = carteirasCache.findIndex(c=>c.id===id);
+  if(idx>=0) carteirasCache[idx] = { ...carteirasCache[idx], nome, descricao, ativa };
+  renderCarteirasList();
+  abrirDetalheCarteira(id);
+  alert('Carteira salva.');
+}
+</script>
+</body>
+</html>
