@@ -492,7 +492,7 @@ async function atualizarStatus(eventId, novoStatus){
 // ---------------------------------------------------------------------------
 // CARTEIRAS (admin)
 // ---------------------------------------------------------------------------
-let carteirasCache = [], sourcesCache = [], carteiraSelecionada = null;
+let carteirasCache = [], sourcesCache = [], camposCriterioCache = [], carteiraSelecionada = null;
 
 async function carregarCarteirasTab(){
   const { data, error } = await sb.from('carteiras').select('*').order('nome');
@@ -501,6 +501,14 @@ async function carregarCarteirasTab(){
   if(!sourcesCache.length){
     const { data: srcs } = await sb.from('sources').select('id, nome').order('nome');
     sourcesCache = srcs || [];
+  }
+  if(!camposCriterioCache.length){
+    // Lista dinamica das colunas reais de events -- adicionar coluna nova em
+    // events passa a aparecer aqui sozinho, sem mexer nesta tela (ver view
+    // events_campos_criterio). Se a view ainda nao existir na base, cai para
+    // a lista fixa de antes, so para nao quebrar a tela.
+    const { data: campos, error: eCampos } = await sb.from('events_campos_criterio').select('column_name');
+    camposCriterioCache = eCampos ? ['empresa','municipio','modulo','processo','cnpj'] : campos.map(c=>c.column_name);
   }
   renderCarteirasList();
 }
@@ -561,12 +569,16 @@ async function abrirDetalheCarteira(id){
 
     <fieldset>
       <legend>Critério de regra (inclusão automática — opcional)</legend>
+      <datalist id="camposCriterioList">
+        ${camposCriterioCache.map(c=>`<option value="${esc(c)}">`).join('')}
+      </datalist>
       <div id="criterioRows">${criterioRows}</div>
       <button class="smallBtn" id="addCriterio">+ campo</button>
+      <p class="muted" style="font-size:12px;margin-top:6px;">Digite qualquer coluna de <code>events</code> como critério (as sugestões vêm direto do banco) — não precisa mais escolher de uma lista fixa.</p>
     </fieldset>
 
     <fieldset>
-      <legend>Pesos por módulo/componente</legend>
+      <legend>Pesos por componente</legend>
       <div id="pesosRows">${pesosRows}</div>
       <button class="smallBtn" id="addPeso">+ peso</button>
     </fieldset>
@@ -611,9 +623,7 @@ async function abrirDetalheCarteira(id){
 
 function rowCriterio(campo, valor){
   return `<div class="rowInline">
-    <select class="critCampo">
-      ${['empresa','municipio','modulo','processo','cnpj'].map(o=>`<option value="${o}" ${o===campo?'selected':''}>${o}</option>`).join('')}
-    </select>
+    <input type="text" class="critCampo" list="camposCriterioList" placeholder="campo (ex: empresa)" value="${esc(campo||'')}">
     <input type="text" class="critValor" placeholder="valor" value="${esc(valor)}">
     <button class="smallBtn rmRow">✕</button>
   </div>`;
@@ -621,9 +631,7 @@ function rowCriterio(campo, valor){
 
 function rowPeso(p){
   p = p || {};
-  const modOpts = Object.keys(MODULOS).map(m=>`<option value="${m}" ${p.modulo===m?'selected':''}>${MODULOS[m]}</option>`).join('');
   return `<div class="rowInline">
-    <select class="pesoModulo">${modOpts}</select>
     <input type="text" class="pesoComponente" placeholder="componente (ex: dano_risco)" value="${esc(p.componente||'')}">
     <input type="number" class="pesoValor" placeholder="peso" value="${p.peso??''}" step="0.1">
     <button class="smallBtn rmRow">✕</button>
@@ -640,7 +648,7 @@ async function salvarCarteira(id){
 
   const criterio_regra = {};
   document.querySelectorAll('#criterioRows .rowInline').forEach(row=>{
-    const campo = row.querySelector('.critCampo').value;
+    const campo = row.querySelector('.critCampo').value.trim();
     const valor = row.querySelector('.critValor').value.trim();
     if(campo && valor) criterio_regra[campo] = valor;
   });
@@ -653,10 +661,9 @@ async function salvarCarteira(id){
 
   const pesos = [];
   document.querySelectorAll('#pesosRows .rowInline').forEach(row=>{
-    const modulo = row.querySelector('.pesoModulo').value;
     const componente = row.querySelector('.pesoComponente').value.trim();
     const peso = parseFloat(row.querySelector('.pesoValor').value);
-    if(modulo && componente && !isNaN(peso)) pesos.push({ carteira_id: id, modulo, componente, peso });
+    if(componente && !isNaN(peso)) pesos.push({ carteira_id: id, componente, peso });
   });
   await sb.from('carteira_pesos').delete().eq('carteira_id', id);
   if(pesos.length) await sb.from('carteira_pesos').insert(pesos);
