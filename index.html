@@ -776,13 +776,39 @@ async function atualizarStatus(eventId, novoStatus){
 let carteirasCache = [], sourcesCache = [], camposCriterioCache = [], carteiraSelecionada = null;
 
 async function carregarCarteirasTab(){
-  const { data, error } = await sb.from('carteiras').select('*').eq('empresa_id', clienteSelecionado).order('nome');
-  if(error){ document.getElementById('carteirasList').innerHTML = '<div class="empty">Erro: '+esc(error.message)+'</div>'; return; }
-  carteirasCache = data || [];
-  if(!sourcesCache.length){
-    const { data: srcs } = await sb.from('sources').select('id, nome').eq('empresa_id', clienteSelecionado).order('nome');
-    sourcesCache = srcs || [];
+  const { data, error } = await sb
+    .from('carteiras')
+    .select('*')
+    .eq('empresa_id', clienteSelecionado)
+    .order('nome');
+
+  if(error){
+    document.getElementById('carteirasList').innerHTML =
+      '<div class="empty">Erro ao carregar carteiras: '+esc(error.message)+'</div>';
+    return;
   }
+
+  carteirasCache = data || [];
+
+  // Sempre recarrega as fontes do cliente ativo.
+  // Antes, erros na consulta eram ignorados e a tela dizia apenas
+  // "Nenhuma fonte cadastrada", mesmo quando havia fontes no banco.
+  const { data: srcs, error: eSources } = await sb
+    .from('sources')
+    .select('id, nome, url_base, finalidade, ativa, empresa_id')
+    .eq('empresa_id', clienteSelecionado)
+    .eq('ativa', true)
+    .order('nome');
+
+  if(eSources){
+    console.error('Erro ao carregar sources:', eSources);
+    sourcesCache = [];
+    window.__erroFontes = eSources.message || String(eSources);
+  }else{
+    sourcesCache = srcs || [];
+    window.__erroFontes = '';
+  }
+
   if(!camposCriterioCache.length){
     // Lista dinamica das colunas reais de events -- adicionar coluna nova em
     // events passa a aparecer aqui sozinho, sem mexer nesta tela (ver view
@@ -869,17 +895,24 @@ async function abrirDetalheCarteira(id){
 
     <fieldset>
       <legend>Fontes de consulta</legend>
-      <div id="fontesRows">${sourcesCache.map(s=>`
+      <div id="fontesRows">${
+        window.__erroFontes
+          ? `<div class="empty" style="color:#b42318">
+               Erro ao carregar fontes do banco: ${esc(window.__erroFontes)}
+             </div>`
+          : sourcesCache.map(s=>`
         <div class="rowInline">
           <label style="flex:2;display:flex;gap:6px;align-items:center;">
-            <input type="checkbox" class="fonteChk" data-id="${s.id}" ${fontesSet.has(s.id)?'checked':''}> ${esc(s.nome)}
+            <input type="checkbox" class="fonteChk" data-id="${s.id}" ${fontesSet.has(s.id)?'checked':''}>
+            <span>${esc(s.nome)}</span>
           </label>
           <select class="fonteFin" data-id="${s.id}">
             <option value="coleta" ${fontesFinalidade[s.id]==='coleta'?'selected':''}>coleta</option>
             <option value="validacao" ${fontesFinalidade[s.id]==='validacao'?'selected':''}>validação</option>
             <option value="ambos" ${(!fontesFinalidade[s.id]||fontesFinalidade[s.id]==='ambos')?'selected':''}>ambos</option>
           </select>
-        </div>`).join('') || '<div class="empty">Nenhuma fonte cadastrada em "sources" ainda.</div>'}
+        </div>`).join('') || '<div class="empty">Nenhuma fonte ativa encontrada para este cliente.</div>'
+      }
       </div>
     </fieldset>
 
