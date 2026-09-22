@@ -131,10 +131,7 @@
 <div id="app" style="display:none;">
 <header>
   <h1>Radar Minera Minas</h1>
-  <nav class="tabs">
-    <button data-view="fila" class="active">Fila do Editor</button>
-    <button data-view="carteiras">Carteiras</button>
-  </nav>
+  <div style="font-size:13px;color:var(--muted);">Fila editorial única</div>
   <div id="connStatus"><span class="dot"></span><span id="connLabel">conectando…</span></div>
 </header>
 
@@ -186,16 +183,6 @@
     </div>
 
     <div id="filaWrap"><div class="empty">Carregando…</div></div>
-  </section>
-
-  <!-- ===================== CARTEIRAS ===================== -->
-  <section id="view-carteiras" class="view">
-    <div class="carteirasLayout">
-      <div class="carteirasList" id="carteirasList"></div>
-      <div class="detailPanel" id="carteiraDetail">
-        <div class="empty">Selecione uma carteira à esquerda, ou crie uma nova.</div>
-      </div>
-    </div>
   </section>
 
 </main>
@@ -265,7 +252,7 @@ function comLimiteDeTempo(promessa, ms, rotulo){
   return Promise.race([promessa, limite]).finally(()=>clearTimeout(idTimeout));
 }
 
-let sb, filaData = { comCarteira: {}, semCarteira: [] };
+let sb, filaData = [];
 
 // ----------------------------------------------------------------------------
 // Todo o boot roda dentro deste try/catch: se QUALQUER coisa falhar aqui
@@ -287,16 +274,6 @@ try {
   mostrarErro(errBoot && errBoot.message ? errBoot.message : String(errBoot));
 }
 
-const MODULOS = {
-  M1_licenciamento: 'M1 · Licenciamento',
-  M2_intervencao: 'M2 · Intervenção',
-  M3_autos_infracao: 'M3 · Autos de infração',
-  M4_tacs: 'M4 · TACs',
-  M5_audiencias_eia_rima: 'M5 · Audiências EIA/RIMA',
-  M6_outorgas: 'M6 · Outorgas',
-  M7_copam_cmi: 'M7 · COPAM/CMI',
-  M8_varredura_final: 'M8 · Varredura final',
-};
 
 const STATUS_LABEL = {
   novo: 'Novo', em_apuracao: 'Em apuração', pronto_para_publicar: 'Pronto p/ publicar',
@@ -364,32 +341,15 @@ async function carregarFila(){
   try{
     if (!sb) throw new Error('Cliente Supabase ainda não foi inicializado (falha no boot).');
 
-    const { data: carteiras, error: eCart } = await comLimiteDeTempo(
-      sb.from('carteiras').select('id, nome').eq('ativa', true).order('nome'),
-      TIMEOUT_MS, 'carteiras'
-    );
-    if (eCart) throw eCart;
-
-    const { data: carteiraScores, error: eCS } = await comLimiteDeTempo(
-      sb.from('carteira_scores')
-        .select(`score_ponderado, prioridade, componentes_aplicados, carteira_id, event_id,
-          events ( id, id_evento, titulo_fato, resumo_factual, empresa, municipio, modulo,
-            status_editorial, pre_release, url_oficial, data_evento, data_publicacao, processo, tipo_evento,
-            decisao, situacao_processual, proximo_marco, palavras_chave,
-            documentos ( id, url, tipo, orgao ),
-            evidencias ( id, resumo_extraido, trecho_literal ),
-            checklist_editorial ( pergunta_numero, resposta ) )`)
-        .eq('vigente', true),
-      TIMEOUT_MS, 'carteira_scores'
-    );
-    if (eCS) throw eCS;
-
+    // Fila única: todos os eventos são carregados diretamente de events.
+    // O campo tecnico "modulo" pode continuar existindo no banco por compatibilidade,
+    // mas não é consultado, exibido, filtrado nem usado para separar a interface.
     const { data: allEvents, error: eEv } = await comLimiteDeTempo(
       sb.from('events')
-        .select(`id, id_evento, titulo_fato, resumo_factual, empresa, municipio, modulo,
+        .select(`id, id_evento, titulo_fato, resumo_factual, empresa, municipio,
           status_editorial, pre_release, url_oficial, data_evento, data_publicacao, processo, tipo_evento,
           decisao, situacao_processual, proximo_marco, palavras_chave,
-          event_scores ( score_bruto, score_normalizado, componentes, prioridade, vigente ),
+          event_scores ( score_bruto, score_normalizado, score_relevancia, componentes, prioridade, vigente ),
           documentos ( id, url, tipo, orgao ),
           evidencias ( id, resumo_extraido, trecho_literal ),
           checklist_editorial ( pergunta_numero, resposta )`),
@@ -397,33 +357,16 @@ async function carregarFila(){
     );
     if (eEv) throw eEv;
 
-    const idsComCarteira = new Set((carteiraScores||[]).map(r=>r.event_id));
-    const nomesCarteira = {}; (carteiras||[]).forEach(c=>nomesCarteira[c.id]=c.nome);
-
-    const comCarteira = {};
-    (carteiraScores||[]).forEach(r=>{
-      if(!r.events) return;
-      const nome = nomesCarteira[r.carteira_id] || '(carteira removida)';
-      if(!comCarteira[nome]) comCarteira[nome] = [];
-      comCarteira[nome].push({
-        event: r.events, score: r.score_ponderado, prioridade: r.prioridade,
-        componentes: r.componentes_aplicados, tipo: 'carteira',
-      });
+    filaData = (allEvents || []).map(e=>{
+      const vig = (e.event_scores||[]).find(s=>s.vigente) || (e.event_scores||[])[0];
+      return {
+        event: e,
+        score: vig?.score_normalizado ?? vig?.score_relevancia ?? vig?.score_bruto ?? null,
+        prioridade: vig?.prioridade ?? null,
+        componentes: vig?.componentes ?? null,
+      };
     });
-    Object.values(comCarteira).forEach(arr=>arr.sort((a,b)=>(b.score??-1)-(a.score??-1)));
 
-    const semCarteira = (allEvents||[])
-      .filter(e=>!idsComCarteira.has(e.id))
-      .map(e=>{
-        const vig = (e.event_scores||[]).find(s=>s.vigente) || (e.event_scores||[])[0];
-        return {
-          event: e, score: vig?.score_normalizado ?? vig?.score_bruto ?? null,
-          prioridade: vig?.prioridade ?? null, componentes: vig?.componentes ?? null, tipo: 'modulo',
-        };
-      })
-      .sort((a,b)=>(b.score??-1)-(a.score??-1));
-
-    filaData = { comCarteira, semCarteira };
     preencherOpcoesFiltros();
     setEstado('carregado');
     renderFila();
@@ -434,10 +377,7 @@ async function carregarFila(){
 }
 
 function todosItensFila(){
-  return [
-    ...Object.values(filaData.comCarteira).flat(),
-    ...filaData.semCarteira,
-  ];
+  return filaData;
 }
 
 function preencherSelect(id, valores, rotulo){
@@ -544,32 +484,16 @@ function compararItens(a,b){
 
 function renderFila(){
   const wrap = document.getElementById('filaWrap');
-  let totalVisivel = 0;
-  const grupos = Object.entries(filaData.comCarteira)
-    .map(([nome, items])=>[nome, items.filter(passaFiltro).sort(compararItens)])
-    .filter(([,items])=>items.length>0);
-  const semCarteira = filaData.semCarteira.filter(passaFiltro).sort(compararItens);
-  grupos.forEach(([,items])=>totalVisivel += items.length);
-  totalVisivel += semCarteira.length;
+  const itens = filaData.filter(passaFiltro).sort(compararItens);
+  const total = filaData.length;
+  document.getElementById('filterSummary').textContent = `${itens.length} de ${total} assunto(s)`;
 
-  const total = todosItensFila().length;
-  document.getElementById('filterSummary').textContent = `${totalVisivel} de ${total} assunto(s)`;
-
-  if(grupos.length===0 && semCarteira.length===0){
+  if(itens.length===0){
     wrap.innerHTML = '<div class="empty">Nenhum assunto corresponde aos filtros selecionados.</div>';
     return;
   }
 
-  let html = '';
-  grupos.forEach(([nome, items])=>{
-    html += `<div class="groupHeader"><h2>${esc(nome)}</h2><span class="count">${items.length} assunto(s)</span></div>`;
-    items.forEach(it=> html += cardHTML(it));
-  });
-  if(semCarteira.length){
-    html += `<div class="groupHeader"><h2>Sem carteira</h2><span class="count">${semCarteira.length} assunto(s)</span></div>`;
-    semCarteira.forEach(it=> html += cardHTML(it));
-  }
-  wrap.innerHTML = html;
+  wrap.innerHTML = itens.map(cardHTML).join('');
 
   wrap.querySelectorAll('[data-action]').forEach(btn=>{
     btn.addEventListener('click', ()=> atualizarStatus(btn.dataset.id, btn.dataset.action));
@@ -580,7 +504,6 @@ function cardHTML(item){
   const e = item.event;
   const prio = item.prioridade || '—';
   const prioClass = ['A','B','C','D'].includes(prio) ? 'prio-'+prio : '';
-  const modulo = MODULOS[e.modulo] || e.modulo || '';
   const docs = e.documentos || [];
   const evid = e.evidencias || [];
   const chk = e.checklist_editorial || [];
@@ -608,7 +531,6 @@ function cardHTML(item){
   return `
   <div class="card">
     <div class="cardTop">
-      <span class="badge">${esc(modulo)}</span>
       ${prio!=='—'?`<span class="prio ${prioClass}">${prio}</span>`:''}
       <span class="score">${item.score ?? '—'}</span>
       <span class="statusTag st-${e.status_editorial}">${STATUS_LABEL[e.status_editorial]||e.status_editorial}</span>
@@ -670,7 +592,7 @@ async function carregarCarteirasTab(){
     // events_campos_criterio). Se a view ainda nao existir na base, cai para
     // a lista fixa de antes, so para nao quebrar a tela.
     const { data: campos, error: eCampos } = await sb.from('events_campos_criterio').select('column_name');
-    camposCriterioCache = eCampos ? ['empresa','municipio','modulo','processo','cnpj'] : campos.map(c=>c.column_name);
+    camposCriterioCache = eCampos ? ['empresa','municipio','processo','cnpj'] : campos.map(c=>c.column_name);
   }
   renderCarteirasList();
 }
