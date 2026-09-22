@@ -579,7 +579,6 @@ async function atualizarChecklist(chk){
 
   try{
     if(marcado){
-      // Remove eventual resposta anterior desta pergunta
       const { error: eDel } = await sb
         .from('checklist_editorial')
         .delete()
@@ -588,7 +587,6 @@ async function atualizarChecklist(chk){
 
       if(eDel) throw eDel;
 
-      // Grava a resposta correta do ENUM resposta_fechamento
       const payload = {
         event_id: eventId,
         pergunta_numero: pergunta,
@@ -600,10 +598,7 @@ async function atualizarChecklist(chk){
         .insert(payload);
 
       if(eIns) throw eIns;
-
     } else {
-
-      // Ao desmarcar, remove a resposta
       const { error: eDel } = await sb
         .from('checklist_editorial')
         .delete()
@@ -614,18 +609,12 @@ async function atualizarChecklist(chk){
     }
 
     await carregarFila();
-
   } catch(err){
     chk.checked = !marcado;
     chk.disabled = false;
-
-    alert(
-      'Não consegui salvar o checklist: ' +
-      (err?.message || String(err))
-    );
+    alert('Não consegui salvar o checklist: ' + (err?.message || String(err)));
   }
 }
-  }
 
 async function atualizarStatus(eventId, novoStatus){
   if(novoStatus==='descartado' && !confirm('Descartar este assunto? Ele some da fila padrão (continua no banco, com o histórico).')) return;
