@@ -486,12 +486,24 @@ async function carregarFila(){
   try{
     if (!sb) throw new Error('Cliente Supabase ainda não foi inicializado (falha no boot).');
 
+    // Catálogo de fontes do cliente, para exibir a fonte oficial de cada evento.
+    const { data: fontesEvento, error: eFontesEvento } = await comLimiteDeTempo(
+      sb.from('sources')
+        .select('id, nome, url_base, ativa')
+        .eq('empresa_id', clienteSelecionado),
+      TIMEOUT_MS, 'sources'
+    );
+    if (eFontesEvento) throw eFontesEvento;
+
+    const fontesEventoPorId = {};
+    (fontesEvento || []).forEach(s => { fontesEventoPorId[s.id] = s; });
+
     // Fila única: todos os eventos são carregados diretamente de events.
     // O campo tecnico "modulo" pode continuar existindo no banco por compatibilidade,
     // mas não é consultado, exibido, filtrado nem usado para separar a interface.
     const { data: allEvents, error: eEv } = await comLimiteDeTempo(
       sb.from('events')
-        .select(`id, id_evento, titulo_fato, resumo_factual, empresa, municipio,
+        .select(`id, id_evento, titulo_fato, resumo_factual, empresa, municipio, fonte_id,
           status_editorial, pre_release, url_oficial, data_evento, data_publicacao, processo, tipo_evento,
           decisao, situacao_processual, proximo_marco, palavras_chave,
           event_scores ( score_bruto, score_normalizado, score_relevancia, componentes, prioridade, vigente ),
@@ -507,6 +519,7 @@ async function carregarFila(){
       const vig = (e.event_scores||[]).find(s=>s.vigente) || (e.event_scores||[])[0];
       return {
         event: e,
+        fonteOficial: e.fonte_id ? (fontesEventoPorId[e.fonte_id] || null) : null,
         score: vig?.score_normalizado ?? vig?.score_relevancia ?? vig?.score_bruto ?? null,
         prioridade: vig?.prioridade ?? null,
         componentes: vig?.componentes ?? null,
@@ -666,10 +679,40 @@ function cardHTML(item){
     return `<tr><td>${esc(k)}</td><td>${esc(v)}</td><td>—</td><td>—</td></tr>`;
   }).join('');
 
+  const fonteOficial = item.fonteOficial || null;
   const srcItems = [
-    ...docs.map(d=>`<li>📄 <a href="${esc(d.url)}" target="_blank" rel="noopener">${esc(d.tipo||'documento')}</a>${d.orgao?' — '+esc(d.orgao):''}</li>`),
-    ...evid.map(v=>`<li>🔎 ${esc(v.resumo_extraido || v.trecho_literal || '')}</li>`),
-  ].join('') || '<li style="color:var(--muted)">Nenhuma fonte/evidência linkada ainda.</li>';
+    ...(fonteOficial ? [`
+      <li>
+        🏛️ <strong>Fonte oficial:</strong>
+        ${fonteOficial.url_base
+          ? `<a href="${esc(fonteOficial.url_base)}" target="_blank" rel="noopener">${esc(fonteOficial.nome || fonteOficial.url_base)}</a>`
+          : esc(fonteOficial.nome || 'Fonte cadastrada')}
+      </li>`] : []),
+
+    ...(e.url_oficial ? [`
+      <li>
+        🔗 <strong>URL do evento:</strong>
+        <a href="${esc(e.url_oficial)}" target="_blank" rel="noopener">${esc(e.url_oficial)}</a>
+      </li>`] : []),
+
+    ...docs.map(d=>`
+      <li>
+        📄 <strong>Documento:</strong>
+        ${d.url
+          ? `<a href="${esc(d.url)}" target="_blank" rel="noopener">${esc(d.tipo || d.url)}</a>`
+          : esc(d.tipo || 'documento')}
+        ${d.orgao ? ' — ' + esc(d.orgao) : ''}
+      </li>`),
+
+    ...evid.map(v=>`
+      <li>
+        🔎 <strong>Evidência:</strong>
+        ${esc(v.resumo_extraido || v.trecho_literal || 'Evidência cadastrada sem resumo')}
+        ${v.trecho_literal && v.resumo_extraido
+          ? `<div class="sub" style="margin-top:4px;">Trecho: ${esc(v.trecho_literal)}</div>`
+          : ''}
+      </li>`)
+  ].join('') || '<li style="color:var(--muted)">Nenhuma fonte/evidência vinculada a este evento ainda.</li>';
 
   const chkItems = CHECKLIST_PERGUNTAS.map(([num,texto])=>{
     const resp = chk.find(c=>c.pergunta_numero===num);
