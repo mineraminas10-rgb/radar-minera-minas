@@ -36,6 +36,15 @@
   .toolbar label{display:flex;align-items:center;gap:6px;cursor:pointer;}
   .toolbar button{cursor:pointer;}
   .toolbar button:hover{border-color:var(--accent);}
+  .filtersPanel{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:16px;}
+  .filtersGrid{display:grid;grid-template-columns:repeat(4,minmax(150px,1fr));gap:10px;}
+  .filterField label{display:block;font-size:11px;color:var(--muted);margin-bottom:4px;}
+  .filterField input,.filterField select{width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:7px 8px;border-radius:6px;font-size:12.5px;}
+  .filterActions{display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:10px;flex-wrap:wrap;}
+  .filterActions button{background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:6px;cursor:pointer;font-size:12.5px;}
+  .filterSummary{margin-right:auto;color:var(--muted);font-size:12px;}
+  @media(max-width:820px){.filtersGrid{grid-template-columns:repeat(2,minmax(140px,1fr));}}
+  @media(max-width:520px){.filtersGrid{grid-template-columns:1fr;}}
 
   .groupHeader{display:flex;align-items:center;gap:10px;margin:22px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--border);}
   .groupHeader h2{font-size:15px;margin:0;font-weight:600;}
@@ -134,10 +143,48 @@
   <!-- ===================== FILA DO EDITOR ===================== -->
   <section id="view-fila" class="view active">
     <div class="toolbar">
-      <input type="text" id="busca" placeholder="Buscar por título, empresa, município…">
+      <input type="text" id="busca" placeholder="Busca livre: título, empresa, processo, decisão, palavras-chave…">
       <label><input type="checkbox" id="mostrarTodos"> mostrar publicados/arquivados/descartados</label>
       <button id="btnRecarregar">↻ Atualizar</button>
     </div>
+
+    <div class="filtersPanel">
+      <div class="filtersGrid">
+        <div class="filterField"><label>Empresa</label><select id="fEmpresa"><option value="">Todas</option></select></div>
+        <div class="filterField"><label>Município</label><select id="fMunicipio"><option value="">Todos</option></select></div>
+        <div class="filterField"><label>Status editorial</label><select id="fStatus">
+          <option value="">Todos</option><option value="novo">Novo</option><option value="em_apuracao">Em apuração</option>
+          <option value="pronto_para_publicar">Pronto p/ publicar</option><option value="publicado">Publicado</option>
+          <option value="arquivado">Arquivado</option><option value="descartado">Descartado</option>
+          <option value="rascunho">Rascunho</option><option value="pendente">Pendente</option>
+          <option value="liberado_para_pre_release">Liberado p/ pré-release</option>
+        </select></div>
+        <div class="filterField"><label>Prioridade</label><select id="fPrioridade"><option value="">Todas</option><option>A</option><option>B</option><option>C</option><option>D</option></select></div>
+
+        <div class="filterField"><label>Score mínimo</label><input type="number" id="fScoreMin" min="0" max="100" step="1" placeholder="0"></div>
+        <div class="filterField"><label>Score máximo</label><input type="number" id="fScoreMax" min="0" max="100" step="1" placeholder="100"></div>
+        <div class="filterField"><label>Tipo de evento</label><input type="text" id="fTipoEvento" placeholder="Ex.: decisão, audiência…"></div>
+        <div class="filterField"><label>Processo</label><input type="text" id="fProcesso" placeholder="Número do processo"></div>
+
+        <div class="filterField"><label>Decisão</label><input type="text" id="fDecisao" placeholder="Ex.: deferido, arquivado…"></div>
+        <div class="filterField"><label>Situação processual</label><input type="text" id="fSituacao" placeholder="Situação / próximo marco"></div>
+        <div class="filterField"><label>Palavra-chave</label><input type="text" id="fPalavra" placeholder="Termo específico"></div>
+        <div class="filterField"><label>Origem / fonte</label><input type="text" id="fFonte" placeholder="Órgão, URL ou fonte"></div>
+
+        <div class="filterField"><label>Data inicial</label><input type="date" id="fDataIni"></div>
+        <div class="filterField"><label>Data final</label><input type="date" id="fDataFim"></div>
+        <div class="filterField"><label>Ordenar por</label><select id="fOrdenar">
+          <option value="score_desc">Maior score</option><option value="score_asc">Menor score</option>
+          <option value="data_desc">Mais recente</option><option value="data_asc">Mais antigo</option>
+          <option value="prioridade">Prioridade A → D</option><option value="empresa">Empresa A → Z</option>
+        </select></div>
+      </div>
+      <div class="filterActions">
+        <span class="filterSummary" id="filterSummary"></span>
+        <button id="btnLimparFiltros">Limpar filtros</button>
+      </div>
+    </div>
+
     <div id="filaWrap"><div class="empty">Carregando…</div></div>
   </section>
 
@@ -297,6 +344,13 @@ function boot(){
   document.getElementById('busca').addEventListener('input', renderFila);
   document.getElementById('mostrarTodos').addEventListener('change', renderFila);
 
+  ['fEmpresa','fMunicipio','fStatus','fPrioridade','fScoreMin','fScoreMax','fTipoEvento','fProcesso',
+   'fDecisao','fSituacao','fPalavra','fFonte','fDataIni','fDataFim','fOrdenar'].forEach(id=>{
+    const el = document.getElementById(id);
+    el.addEventListener(el.tagName === 'SELECT' || el.type === 'date' ? 'change' : 'input', renderFila);
+  });
+  document.getElementById('btnLimparFiltros').addEventListener('click', limparFiltros);
+
   carregarFila();
 }
 
@@ -320,7 +374,8 @@ async function carregarFila(){
       sb.from('carteira_scores')
         .select(`score_ponderado, prioridade, componentes_aplicados, carteira_id, event_id,
           events ( id, id_evento, titulo_fato, resumo_factual, empresa, municipio, modulo,
-            status_editorial, pre_release, url_oficial, data_evento,
+            status_editorial, pre_release, url_oficial, data_evento, data_publicacao, processo, tipo_evento,
+            decisao, situacao_processual, proximo_marco, palavras_chave,
             documentos ( id, url, tipo, orgao ),
             evidencias ( id, resumo_extraido, trecho_literal ),
             checklist_editorial ( pergunta_numero, resposta ) )`)
@@ -332,7 +387,8 @@ async function carregarFila(){
     const { data: allEvents, error: eEv } = await comLimiteDeTempo(
       sb.from('events')
         .select(`id, id_evento, titulo_fato, resumo_factual, empresa, municipio, modulo,
-          status_editorial, pre_release, url_oficial, data_evento,
+          status_editorial, pre_release, url_oficial, data_evento, data_publicacao, processo, tipo_evento,
+          decisao, situacao_processual, proximo_marco, palavras_chave,
           event_scores ( score_bruto, score_normalizado, componentes, prioridade, vigente ),
           documentos ( id, url, tipo, orgao ),
           evidencias ( id, resumo_extraido, trecho_literal ),
@@ -368,6 +424,7 @@ async function carregarFila(){
       .sort((a,b)=>(b.score??-1)-(a.score??-1));
 
     filaData = { comCarteira, semCarteira };
+    preencherOpcoesFiltros();
     setEstado('carregado');
     renderFila();
   }catch(err){
@@ -376,26 +433,130 @@ async function carregarFila(){
   }
 }
 
+function todosItensFila(){
+  return [
+    ...Object.values(filaData.comCarteira).flat(),
+    ...filaData.semCarteira,
+  ];
+}
+
+function preencherSelect(id, valores, rotulo){
+  const sel = document.getElementById(id);
+  const atual = sel.value;
+  const opts = [...new Set(valores.filter(Boolean).map(v=>String(v).trim()).filter(Boolean))]
+    .sort((a,b)=>a.localeCompare(b,'pt-BR'));
+  sel.innerHTML = `<option value="">${rotulo}</option>` + opts.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join('');
+  if(opts.includes(atual)) sel.value = atual;
+}
+
+function preencherOpcoesFiltros(){
+  const itens = todosItensFila();
+  preencherSelect('fEmpresa', itens.map(i=>i.event.empresa), 'Todas');
+  preencherSelect('fMunicipio', itens.map(i=>i.event.municipio), 'Todos');
+}
+
+function limparFiltros(){
+  document.getElementById('busca').value = '';
+  document.getElementById('mostrarTodos').checked = false;
+  ['fEmpresa','fMunicipio','fStatus','fPrioridade','fScoreMin','fScoreMax','fTipoEvento','fProcesso',
+   'fDecisao','fSituacao','fPalavra','fFonte','fDataIni','fDataFim'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('fOrdenar').value = 'score_desc';
+  renderFila();
+}
+
+function contem(valor, termo){
+  if(!termo) return true;
+  return String(valor ?? '').toLowerCase().includes(String(termo).trim().toLowerCase());
+}
+
+function fonteTexto(e){
+  const docs = e.documentos || [];
+  return [e.url_oficial, ...docs.flatMap(d=>[d.orgao,d.tipo,d.url])].filter(Boolean).join(' ');
+}
+
 function passaFiltro(item){
+  const e = item.event;
   const mostrarTodos = document.getElementById('mostrarTodos').checked;
-  const st = item.event.status_editorial;
-  if(!mostrarTodos && ['publicado','arquivado','descartado'].includes(st)) return false;
+  if(!mostrarTodos && ['publicado','arquivado','descartado'].includes(e.status_editorial)) return false;
+
+  const empresa = document.getElementById('fEmpresa').value;
+  const municipio = document.getElementById('fMunicipio').value;
+  const status = document.getElementById('fStatus').value;
+  const prioridade = document.getElementById('fPrioridade').value;
+  const scoreMin = document.getElementById('fScoreMin').value;
+  const scoreMax = document.getElementById('fScoreMax').value;
+  const tipoEvento = document.getElementById('fTipoEvento').value;
+  const processo = document.getElementById('fProcesso').value;
+  const decisao = document.getElementById('fDecisao').value;
+  const situacao = document.getElementById('fSituacao').value;
+  const palavra = document.getElementById('fPalavra').value;
+  const fonte = document.getElementById('fFonte').value;
+  const dataIni = document.getElementById('fDataIni').value;
+  const dataFim = document.getElementById('fDataFim').value;
+
+  if(empresa && e.empresa !== empresa) return false;
+  if(municipio && e.municipio !== municipio) return false;
+  if(status && e.status_editorial !== status) return false;
+  if(prioridade && item.prioridade !== prioridade) return false;
+
+  const score = item.score == null ? null : Number(item.score);
+  if(scoreMin !== '' && (score === null || score < Number(scoreMin))) return false;
+  if(scoreMax !== '' && (score === null || score > Number(scoreMax))) return false;
+
+  if(!contem(e.tipo_evento, tipoEvento)) return false;
+  if(!contem(e.processo, processo)) return false;
+  if(!contem(e.decisao, decisao)) return false;
+  if(!contem([e.situacao_processual,e.proximo_marco].filter(Boolean).join(' '), situacao)) return false;
+  if(!contem(e.palavras_chave, palavra)) return false;
+  if(!contem(fonteTexto(e), fonte)) return false;
+
+  const data = e.data_evento || e.data_publicacao || null;
+  if(dataIni && (!data || String(data).slice(0,10) < dataIni)) return false;
+  if(dataFim && (!data || String(data).slice(0,10) > dataFim)) return false;
+
   const q = document.getElementById('busca').value.trim().toLowerCase();
-  if(!q) return true;
-  const alvo = [item.event.titulo_fato, item.event.resumo_factual, item.event.empresa, item.event.municipio]
-    .filter(Boolean).join(' ').toLowerCase();
-  return alvo.includes(q);
+  if(q){
+    const alvo = [
+      e.id_evento, e.titulo_fato, e.resumo_factual, e.empresa, e.municipio, e.processo,
+      e.tipo_evento, e.decisao, e.situacao_processual, e.proximo_marco, e.palavras_chave,
+      e.pre_release, fonteTexto(e)
+    ].filter(Boolean).join(' ').toLowerCase();
+    if(!alvo.includes(q)) return false;
+  }
+  return true;
+}
+
+function compararItens(a,b){
+  const modo = document.getElementById('fOrdenar').value;
+  const sa = a.score == null ? -Infinity : Number(a.score);
+  const sbv = b.score == null ? -Infinity : Number(b.score);
+  const da = String(a.event.data_evento || a.event.data_publicacao || '');
+  const db = String(b.event.data_evento || b.event.data_publicacao || '');
+  const pa = ({A:1,B:2,C:3,D:4})[a.prioridade] ?? 99;
+  const pb = ({A:1,B:2,C:3,D:4})[b.prioridade] ?? 99;
+  if(modo==='score_asc') return sa-sbv;
+  if(modo==='data_desc') return db.localeCompare(da);
+  if(modo==='data_asc') return da.localeCompare(db);
+  if(modo==='prioridade') return pa-pb || sbv-sa;
+  if(modo==='empresa') return String(a.event.empresa||'').localeCompare(String(b.event.empresa||''),'pt-BR') || sbv-sa;
+  return sbv-sa;
 }
 
 function renderFila(){
   const wrap = document.getElementById('filaWrap');
+  let totalVisivel = 0;
   const grupos = Object.entries(filaData.comCarteira)
-    .map(([nome, items])=>[nome, items.filter(passaFiltro)])
+    .map(([nome, items])=>[nome, items.filter(passaFiltro).sort(compararItens)])
     .filter(([,items])=>items.length>0);
-  const semCarteira = filaData.semCarteira.filter(passaFiltro);
+  const semCarteira = filaData.semCarteira.filter(passaFiltro).sort(compararItens);
+  grupos.forEach(([,items])=>totalVisivel += items.length);
+  totalVisivel += semCarteira.length;
+
+  const total = todosItensFila().length;
+  document.getElementById('filterSummary').textContent = `${totalVisivel} de ${total} assunto(s)`;
 
   if(grupos.length===0 && semCarteira.length===0){
-    wrap.innerHTML = '<div class="empty">Nenhum assunto encontrado (ou a fila ainda está vazia — cadastre eventos no banco pra eles aparecerem aqui).</div>';
+    wrap.innerHTML = '<div class="empty">Nenhum assunto corresponde aos filtros selecionados.</div>';
     return;
   }
 
@@ -405,7 +566,7 @@ function renderFila(){
     items.forEach(it=> html += cardHTML(it));
   });
   if(semCarteira.length){
-    html += `<div class="groupHeader"><h2>Sem carteira</h2><span class="count">${semCarteira.length} assunto(s) — ordenado por score do módulo</span></div>`;
+    html += `<div class="groupHeader"><h2>Sem carteira</h2><span class="count">${semCarteira.length} assunto(s)</span></div>`;
     semCarteira.forEach(it=> html += cardHTML(it));
   }
   wrap.innerHTML = html;
@@ -455,6 +616,7 @@ function cardHTML(item){
       <span class="sub">${esc(e.empresa||'')}${e.municipio?' · '+esc(e.municipio):''}</span>
     </div>
     <div class="titulo">${esc(e.titulo_fato || e.id_evento)}</div>
+    ${(e.processo||e.tipo_evento||e.decisao||e.situacao_processual)?`<div class="sub">${[e.processo?('Processo: '+e.processo):'',e.tipo_evento?('Tipo: '+e.tipo_evento):'',e.decisao?('Decisão: '+e.decisao):'',e.situacao_processual?('Situação: '+e.situacao_processual):''].filter(Boolean).map(esc).join(' · ')}</div>`:''}
     ${e.resumo_factual?`<div class="resumo">${esc(e.resumo_factual)}</div>`:''}
 
     ${e.pre_release
