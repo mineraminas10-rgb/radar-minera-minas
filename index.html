@@ -585,10 +585,11 @@ async function atualizarChecklist(chk){
         .delete().eq('event_id', eventId).eq('pergunta_numero', pergunta);
       if(eDel) throw eDel;
 
-      const { error: eIns } = await sb.from('checklist_editorial').insert({
-        event_id: eventId,
-        pergunta_numero: pergunta,
-        resposta: 'OK'
+      const payload = {
+  event_id: eventId,
+  pergunta_numero: perguntaNumero,
+  resposta: 'confirmado'
+};
       });
       if(eIns) throw eIns;
     } else {
