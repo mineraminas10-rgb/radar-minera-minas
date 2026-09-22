@@ -505,8 +505,8 @@ async function carregarFila(){
       sb.from('events')
         .select(`id, id_evento, titulo_fato, resumo_factual, empresa, municipio, fonte_id,
           status_editorial, pre_release, url_oficial, data_evento, data_publicacao, processo, tipo_evento,
-          decisao, situacao_processual, proximo_marco, palavras_chave,
-          event_scores ( score_bruto, score_normalizado, score_relevancia, componentes, prioridade, vigente ),
+          decisao, situacao_processual, proximo_marco, palavras_chave, justificativa_editorial,
+          event_scores ( score_bruto, score_normalizado, score_relevancia, componentes, prioridade, justificativa_score, versao_score, vigente ),
           documentos ( id, url, tipo, orgao ),
           evidencias ( id, resumo_extraido, trecho_literal ),
           checklist_editorial ( pergunta_numero, resposta )`)
@@ -520,9 +520,11 @@ async function carregarFila(){
       return {
         event: e,
         fonteOficial: e.fonte_id ? (fontesEventoPorId[e.fonte_id] || null) : null,
-        score: vig?.score_normalizado ?? vig?.score_relevancia ?? vig?.score_bruto ?? null,
+        score: vig?.score_relevancia ?? vig?.score_normalizado ?? vig?.score_bruto ?? null,
         prioridade: vig?.prioridade ?? null,
         componentes: vig?.componentes ?? null,
+        justificativaScore: vig?.justificativa_score ?? null,
+        versaoScore: vig?.versao_score ?? null,
       };
     });
 
@@ -671,13 +673,35 @@ function cardHTML(item){
   const chk = e.checklist_editorial || [];
   const chkCount = chk.filter(c=>c.resposta).length;
 
-  const compRows = Object.entries(item.componentes||{}).map(([k,v])=>{
-    if (typeof v === 'object' && v !== null){
-      const used = v.usado !== false;
-      return `<tr class="${used?'':'no'}"><td>${esc(k)}</td><td>${esc(v.valor)}</td><td>${v.peso??'—'}</td><td>${used?'usado':'sem peso'}</td></tr>`;
-    }
-    return `<tr><td>${esc(k)}</td><td>${esc(v)}</td><td>—</td><td>—</td></tr>`;
-  }).join('');
+  const ROTULO_COMP = {
+    score_dano_risco: 'Dano / risco',
+    dano_risco: 'Dano / risco',
+    score_consequencia_operacional: 'Consequência operacional',
+    consequencia_operacional: 'Consequência operacional',
+    score_valor_financeiro: 'Valor financeiro',
+    score_abrangencia_interesse_publico: 'Abrangência / interesse público',
+    interesse_publico: 'Interesse público',
+    score_novidade_antecedencia: 'Novidade / antecedência',
+    ineditismo: 'Ineditismo',
+    score_cruzamentos_reincidencia: 'Cruzamentos / reincidência',
+    score_classificacao_legal: 'Classificação legal',
+    score_relevancia_empresa_projeto: 'Relevância empresa / projeto'
+  };
+  const compRows = Object.entries(item.componentes||{})
+    .filter(([k,v])=>{
+      if (typeof v === 'number') return k.startsWith('score_') || ['dano_risco','consequencia_operacional','ineditismo','interesse_publico'].includes(k);
+      if (typeof v === 'object' && v !== null && typeof v.valor === 'number') return true;
+      return false;
+    })
+    .map(([k,v])=>{
+      const valor = (typeof v === 'object' && v !== null) ? v.valor : v;
+      const peso = (typeof v === 'object' && v !== null) ? (v.peso ?? '—') : '—';
+      return `<tr><td>${esc(ROTULO_COMP[k] || k)}</td><td>${esc(valor)}</td><td>${esc(peso)}</td><td>componente</td></tr>`;
+    }).join('');
+
+  const explicacaoScore = [
+    e.justificativa_editorial ? `<div class="resumo" style="margin-top:8px;"><strong>Justificativa editorial:</strong> ${esc(e.justificativa_editorial)}</div>` : ''
+  ].join('');
 
   const fonteOficial = item.fonteOficial || null;
   const srcItems = [
@@ -739,7 +763,9 @@ function cardHTML(item){
 
     <details>
       <summary>Por que esse score</summary>
-      <table class="compTable"><tbody>${compRows || '<tr><td colspan="4" style="color:var(--muted)">Sem detalhamento de componentes.</td></tr>'}</tbody></table>
+      <div class="sub" style="margin:8px 0;"><strong>Score editorial:</strong> ${item.score ?? '—'} ${prio!=='—'?'· Prioridade '+esc(prio):''}</div>
+      ${explicacaoScore}
+      <table class="compTable" style="margin-top:8px;"><tbody>${compRows || '<tr><td colspan="4" style="color:var(--muted)">Esta versão de score não possui decomposição numérica reproduzível registrada. Use a justificativa editorial acima como explicação oficial.</td></tr>'}</tbody></table>
     </details>
     <details>
       <summary>Fontes e evidências (${docs.length + evid.length})</summary>
@@ -891,20 +917,52 @@ async function abrirDetalheCarteira(id){
   const panel = document.getElementById('carteiraDetail');
   panel.innerHTML = '<div class="empty">Carregando…</div>';
 
-  const [{ data: pesos }, { data: fontesLigadas }, { data: scores }, { count: totalVinculos, error: eVinculos }] = await Promise.all([
+  const [rPesos, rFontes, rScores] = await Promise.all([
     sb.from('carteira_pesos').select('*').eq('carteira_id', id).eq('empresa_id', clienteSelecionado),
-    sb.from('carteira_fontes').select('*').eq('carteira_id', id).eq('empresa_id', clienteSelecionado),
-    sb.from('carteira_scores').select('score_ponderado, prioridade, events(titulo_fato)').eq('carteira_id', id).eq('empresa_id', clienteSelecionado).eq('vigente', true).order('score_ponderado', { ascending: false }),
-    sb.from('carteira_scores').select('id', { count: 'exact', head: true }).eq('carteira_id', id).eq('empresa_id', clienteSelecionado),
+    sb.from('carteira_fontes')
+      .select('source_id, finalidade, observacao, sources(id, nome, url_base, ativa, situacao)')
+      .eq('carteira_id', id)
+      .eq('empresa_id', clienteSelecionado),
+    sb.from('events')
+      .select(`id, titulo_fato, empresa,
+        event_scores(score_relevancia, score_normalizado, score_bruto, prioridade, justificativa_score, versao_score, vigente)`)
+      .eq('empresa_id', clienteSelecionado)
   ]);
-  if(eVinculos){ panel.innerHTML = '<div class="empty">Erro ao verificar vínculos: '+esc(eVinculos.message)+'</div>'; return; }
-  const carteiraVazia = (totalVinculos || 0) === 0;
+
+  const pesos = rPesos.data || [];
+  const fontesLigadas = rFontes.data || [];
+  if(rFontes.error){
+    console.error('Erro ao carregar fontes ligadas:', rFontes.error);
+  }
+
+  const scores = (rScores.data || []).map(e=>{
+    const vig = (e.event_scores||[]).find(s=>s.vigente) || (e.event_scores||[])[0];
+    return vig ? {
+      titulo_fato: e.titulo_fato,
+      score: vig.score_relevancia ?? vig.score_normalizado ?? vig.score_bruto ?? null,
+      prioridade: vig.prioridade,
+      versao_score: vig.versao_score,
+      justificativa_score: vig.justificativa_score
+    } : null;
+  }).filter(Boolean).sort((a,b)=>(b.score??-1)-(a.score??-1));
+
+  // Uma carteira configurada com fontes não é considerada vazia só porque carteira_scores ainda não foi recalculada.
+  const carteiraVazia = pesos.length===0 && fontesLigadas.length===0 && scores.length===0;
 
   const criterio = carteira.criterio_regra || {};
   const criterioRows = Object.entries(criterio).map(([k,v])=>rowCriterio(k,v)).join('') || rowCriterio('','');
   const pesosRows = (pesos||[]).map(p=>rowPeso(p)).join('') || rowPeso();
   const fontesSet = new Set((fontesLigadas||[]).map(f=>f.source_id));
   const fontesFinalidade = {}; (fontesLigadas||[]).forEach(f=>fontesFinalidade[f.source_id]=f.finalidade);
+  const fontesLigadasDetalhe = (fontesLigadas||[])
+    .map(f=>f.sources ? ({...f.sources, finalidade_vinculo:f.finalidade, observacao_vinculo:f.observacao}) : null)
+    .filter(Boolean);
+
+  // Se o SELECT direto de sources vier vazio por RLS/Data API, ainda exibimos as fontes já ligadas à carteira.
+  const fontesExibirMap = new Map();
+  (sourcesCache||[]).forEach(s=>fontesExibirMap.set(s.id,s));
+  fontesLigadasDetalhe.forEach(s=>fontesExibirMap.set(s.id,s));
+  const fontesExibir = [...fontesExibirMap.values()].sort((a,b)=>String(a.nome||'').localeCompare(String(b.nome||''),'pt-BR'));
 
   panel.innerHTML = `
     <div class="field"><label>Nome</label><input type="text" id="f_nome" value="${esc(carteira.nome)}"></div>
@@ -943,26 +1001,36 @@ async function abrirDetalheCarteira(id){
           ? `<div class="empty" style="color:#b42318">
                Erro ao carregar fontes do banco: ${esc(window.__erroFontes)}
              </div>`
-          : sourcesCache.map(s=>`
-        <div class="rowInline">
-          <label style="flex:2;display:flex;gap:6px;align-items:center;">
+          : fontesExibir.map(s=>`
+        <div class="rowInline" style="align-items:flex-start;">
+          <label style="flex:2;display:flex;gap:6px;align-items:flex-start;">
             <input type="checkbox" class="fonteChk" data-id="${s.id}" ${fontesSet.has(s.id)?'checked':''}>
-            <span>${esc(s.nome)}</span>
+            <span>
+              <strong>${esc(s.nome)}</strong>
+              ${s.url_base?`<div class="sub"><a href="${esc(s.url_base)}" target="_blank" rel="noopener">${esc(s.url_base)}</a></div>`:''}
+              ${s.situacao?`<div class="sub">${esc(s.situacao)}</div>`:''}
+            </span>
           </label>
           <select class="fonteFin" data-id="${s.id}">
             <option value="coleta" ${fontesFinalidade[s.id]==='coleta'?'selected':''}>coleta</option>
             <option value="validacao" ${fontesFinalidade[s.id]==='validacao'?'selected':''}>validação</option>
             <option value="ambos" ${(!fontesFinalidade[s.id]||fontesFinalidade[s.id]==='ambos')?'selected':''}>ambos</option>
           </select>
-        </div>`).join('') || '<div class="empty">Nenhuma fonte ativa encontrada para este cliente.</div>'
+        </div>`).join('') || `<div class="empty">Nenhuma fonte foi retornada pelo Data API. ${rFontes.error?esc(rFontes.error.message):''}</div>`
       }
       </div>
     </fieldset>
 
     <fieldset>
-      <legend>Scores calculados (somente leitura — vem do script de recálculo)</legend>
+      <legend>Scores editoriais atuais — fonte de verdade: aba Editorial</legend>
+      <p class="muted" style="font-size:12px;margin-top:0;">Exibe o score vigente de <code>event_scores</code>, priorizando <code>score_relevancia</code>, que corresponde ao score editorial consolidado do Minera Minas. Não depende de <code>carteira_scores</code>.</p>
       <table class="miniTable"><tbody>
-        ${(scores||[]).map(s=>`<tr><td>${esc(s.events?.titulo_fato||'')}</td><td>${s.score_ponderado}</td><td>${s.prioridade}</td></tr>`).join('') || '<tr><td class="empty">Sem scores calculados ainda — rode scripts/carteiras/recalcular_carteiras.py</td></tr>'}
+        ${(scores||[]).slice(0,100).map(s=>`<tr>
+          <td>${esc(s.titulo_fato||'')}</td>
+          <td>${s.score ?? '—'}</td>
+          <td>${esc(s.prioridade||'—')}</td>
+          <td>${esc(s.versao_score||'')}</td>
+        </tr>`).join('') || '<tr><td class="empty">Nenhum score editorial vigente encontrado para este cliente.</td></tr>'}
       </tbody></table>
     </fieldset>
 
