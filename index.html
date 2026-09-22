@@ -116,6 +116,8 @@
   .smallBtn:hover{border-color:var(--accent);}
   .saveBar{display:flex;gap:10px;margin-top:16px;justify-content:flex-end;}
   .saveBar button{padding:8px 18px;border-radius:6px;border:1px solid var(--accent);background:var(--accent-weak);color:var(--text);cursor:pointer;}
+  .saveBar button.danger{border-color:var(--danger);background:#fff5f4;color:var(--danger);}
+  .saveBar button:disabled{opacity:.45;cursor:not-allowed;}
   .miniTable{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px;}
   .miniTable td, .miniTable th{padding:5px 6px;border-bottom:1px solid var(--border);text-align:left;}
 </style>
@@ -133,7 +135,10 @@
 <div id="app" style="display:none;">
 <header>
   <h1>Radar Minera Minas</h1>
-  <div style="font-size:13px;color:var(--muted);">Fila editorial única</div>
+  <nav class="tabs" aria-label="Navegação principal">
+    <button class="active" data-view="fila">Fila do Editor</button>
+    <button data-view="carteiras">Carteiras</button>
+  </nav>
   <div id="connStatus"><span class="dot"></span><span id="connLabel">conectando…</span></div>
 </header>
 
@@ -185,6 +190,22 @@
     </div>
 
     <div id="filaWrap"><div class="empty">Carregando…</div></div>
+  </section>
+
+  <!-- ===================== CARTEIRAS ===================== -->
+  <section id="view-carteiras" class="view">
+    <div class="groupHeader">
+      <h2>Carteiras</h2>
+      <span class="count">Administração das carteiras editoriais</span>
+    </div>
+    <div class="carteirasLayout">
+      <div class="carteirasList" id="carteirasList">
+        <div class="empty">Clique em Carteiras para carregar.</div>
+      </div>
+      <div class="detailPanel" id="carteiraDetail">
+        <div class="empty">Selecione uma carteira à esquerda ou crie uma nova.</div>
+      </div>
+    </div>
   </section>
 
 </main>
@@ -675,11 +696,14 @@ async function abrirDetalheCarteira(id){
   const panel = document.getElementById('carteiraDetail');
   panel.innerHTML = '<div class="empty">Carregando…</div>';
 
-  const [{ data: pesos }, { data: fontesLigadas }, { data: scores }] = await Promise.all([
+  const [{ data: pesos }, { data: fontesLigadas }, { data: scores }, { count: totalVinculos, error: eVinculos }] = await Promise.all([
     sb.from('carteira_pesos').select('*').eq('carteira_id', id),
     sb.from('carteira_fontes').select('*').eq('carteira_id', id),
     sb.from('carteira_scores').select('score_ponderado, prioridade, events(titulo_fato)').eq('carteira_id', id).eq('vigente', true).order('score_ponderado', { ascending: false }),
+    sb.from('carteira_scores').select('id', { count: 'exact', head: true }).eq('carteira_id', id),
   ]);
+  if(eVinculos){ panel.innerHTML = '<div class="empty">Erro ao verificar vínculos: '+esc(eVinculos.message)+'</div>'; return; }
+  const carteiraVazia = (totalVinculos || 0) === 0;
 
   const criterio = carteira.criterio_regra || {};
   const criterioRows = Object.entries(criterio).map(([k,v])=>rowCriterio(k,v)).join('') || rowCriterio('','');
@@ -741,8 +765,10 @@ async function abrirDetalheCarteira(id){
     </fieldset>
 
     <div class="saveBar">
+      <button id="btnExcluirCarteira" class="danger" ${carteiraVazia?'':'disabled'} title="${carteiraVazia?'Excluir carteira vazia':'Esta carteira possui registros e não pode ser excluída'}">Excluir</button>
       <button id="btnSalvarCarteira">Salvar carteira</button>
     </div>
+    ${carteiraVazia ? '<div class="sub" style="text-align:right;margin-top:6px;">Esta carteira está vazia e pode ser excluída.</div>' : '<div class="sub" style="text-align:right;margin-top:6px;">Esta carteira possui registros vinculados e não pode ser excluída.</div>'}
   `;
 
   document.getElementById('addCriterio').addEventListener('click', ()=>{
@@ -753,6 +779,44 @@ async function abrirDetalheCarteira(id){
   });
   panel.querySelectorAll('.rmRow').forEach(b=>b.addEventListener('click', e=>e.target.closest('.rowInline').remove()));
   document.getElementById('btnSalvarCarteira').addEventListener('click', ()=>salvarCarteira(id));
+  document.getElementById('btnExcluirCarteira').addEventListener('click', ()=>excluirCarteira(id));
+}
+
+async function excluirCarteira(id){
+  const carteira = carteirasCache.find(c=>c.id===id);
+  if(!carteira) return;
+
+  const { count, error: eCount } = await sb
+    .from('carteira_scores')
+    .select('id', { count: 'exact', head: true })
+    .eq('carteira_id', id);
+
+  if(eCount){
+    alert('Não consegui verificar se a carteira está vazia: ' + eCount.message);
+    return;
+  }
+
+  if((count || 0) > 0){
+    alert('Esta carteira possui registros e não pode ser excluída.');
+    await abrirDetalheCarteira(id);
+    return;
+  }
+
+  if(!confirm('Excluir a carteira "' + (carteira.nome || 'sem nome') + '"? Esta ação remove também pesos e fontes configurados nela.')) return;
+
+  const { error: ePesos } = await sb.from('carteira_pesos').delete().eq('carteira_id', id);
+  if(ePesos){ alert('Não consegui excluir os pesos da carteira: ' + ePesos.message); return; }
+
+  const { error: eFontes } = await sb.from('carteira_fontes').delete().eq('carteira_id', id);
+  if(eFontes){ alert('Não consegui excluir as fontes da carteira: ' + eFontes.message); return; }
+
+  const { error: eCart } = await sb.from('carteiras').delete().eq('id', id);
+  if(eCart){ alert('Não consegui excluir a carteira: ' + eCart.message); return; }
+
+  carteirasCache = carteirasCache.filter(c=>c.id!==id);
+  carteiraSelecionada = null;
+  renderCarteirasList();
+  document.getElementById('carteiraDetail').innerHTML = '<div class="empty">Carteira excluída. Selecione outra à esquerda ou crie uma nova.</div>';
 }
 
 function rowCriterio(campo, valor){
