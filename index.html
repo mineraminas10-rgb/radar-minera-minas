@@ -143,6 +143,7 @@
   <div class="clientSwitch">
     <label for="clienteSelect">Cliente</label>
     <select id="clienteSelect"><option value="">Carregando clientes…</option></select>
+    <button id="btnRecarregarClientes" type="button" title="Recarregar clientes do banco">↻</button>
     <button id="btnNovoCliente" type="button">+ Novo cliente</button>
   </div>
   <nav class="tabs" aria-label="Navegação principal">
@@ -363,29 +364,70 @@ function boot(){
   document.getElementById('btnLimparFiltros').addEventListener('click', limparFiltros);
   document.getElementById('clienteSelect').addEventListener('change', trocarCliente);
   document.getElementById('btnNovoCliente').addEventListener('click', criarCliente);
+  document.getElementById('btnRecarregarClientes').addEventListener('click', carregarClientes);
 
   carregarClientes();
 }
 
 async function carregarClientes(){
+  const sel = document.getElementById('clienteSelect');
+  const btn = document.getElementById('btnRecarregarClientes');
+  sel.disabled = true;
+  if(btn) btn.disabled = true;
+  sel.innerHTML = '<option value="">Carregando clientes do banco…</option>';
+
   try{
-    const { data, error } = await sb.from('empresas').select('id, nome, slug, ativa').eq('ativa', true).order('nome');
+    // Busca diretamente a tabela-mãe de clientes. Não usa cache local para
+    // descobrir clientes novos: toda recarga consulta o Supabase novamente.
+    const { data, error } = await comLimiteDeTempo(
+      sb.from('empresas')
+        .select('id,nome,slug,ativa')
+        .order('nome', { ascending: true }),
+      15000,
+      'empresas'
+    );
+
     if(error) throw error;
-    clientesCache = data || [];
-    const sel = document.getElementById('clienteSelect');
-    sel.innerHTML = clientesCache.map(c=>`<option value="${esc(c.id)}">${esc(c.nome)}</option>`).join('');
+
+    clientesCache = (data || []).filter(c => c.ativa !== false);
+
     if(!clientesCache.length){
-      sel.innerHTML = '<option value="">Nenhum cliente ativo</option>';
-      filaData = []; renderFila(); return;
+      clienteSelecionado = null;
+      sel.innerHTML = '<option value="">Nenhum cliente ativo encontrado</option>';
+      filaData = [];
+      renderFila();
+      return;
     }
+
+    sel.innerHTML = clientesCache
+      .map(c => `<option value="${esc(c.id)}">${esc(c.nome)}</option>`)
+      .join('');
+
     const salvo = localStorage.getItem('radar_cliente_id');
-    const preferido = clientesCache.find(c=>c.id===salvo) || clientesCache.find(c=>c.slug==='minera-minas') || clientesCache[0];
+    const preferido = clientesCache.find(c => c.id === salvo)
+      || clientesCache.find(c => c.slug === 'minera-minas')
+      || clientesCache[0];
+
     clienteSelecionado = preferido.id;
     sel.value = clienteSelecionado;
+    localStorage.setItem('radar_cliente_id', clienteSelecionado);
     atualizarTituloCliente();
     await carregarFila();
+
   }catch(err){
-    mostrarErro('Não consegui carregar os clientes: ' + (err?.message || String(err)));
+    console.error('Erro ao carregar clientes:', err);
+    clienteSelecionado = null;
+    sel.innerHTML = '<option value="">Erro ao carregar clientes</option>';
+    sel.title = err?.message || String(err);
+    setEstado('erro', 'Clientes: ' + (err?.message || String(err)));
+    const wrap = document.getElementById('filaWrap');
+    if(wrap){
+      wrap.innerHTML = '<div class="empty">Não consegui buscar os clientes da tabela <code>empresas</code>. ' +
+        'Detalhe: ' + esc(err?.message || String(err)) + '</div>';
+    }
+  }finally{
+    sel.disabled = false;
+    if(btn) btn.disabled = false;
   }
 }
 
