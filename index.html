@@ -75,6 +75,8 @@
   .chkList{list-style:none;padding:0;margin:6px 0 0;font-size:12.5px;}
   .chkList li{padding:3px 0;display:flex;gap:8px;}
   .chkList .yes{color:var(--ok);} .chkList .no{color:var(--muted);}
+  .chkList input[type=checkbox]{width:16px;height:16px;cursor:pointer;flex:0 0 auto;margin-top:1px;}
+  .chkList label{cursor:pointer;display:flex;gap:8px;align-items:flex-start;width:100%;}
   .actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;}
   .actions button{font-size:12.5px;padding:6px 12px;border-radius:6px;border:1px solid var(--border);background:var(--surface2);color:var(--text);cursor:pointer;}
   .actions button:hover{border-color:var(--accent);}
@@ -498,6 +500,9 @@ function renderFila(){
   wrap.querySelectorAll('[data-action]').forEach(btn=>{
     btn.addEventListener('click', ()=> atualizarStatus(btn.dataset.id, btn.dataset.action));
   });
+  wrap.querySelectorAll('.checkEditorial').forEach(chk=>{
+    chk.addEventListener('change', ()=> atualizarChecklist(chk));
+  });
 }
 
 function cardHTML(item){
@@ -525,7 +530,7 @@ function cardHTML(item){
   const chkItems = CHECKLIST_PERGUNTAS.map(([num,texto])=>{
     const resp = chk.find(c=>c.pergunta_numero===num);
     const ok = !!(resp && resp.resposta);
-    return `<li><span class="${ok?'yes':'no'}">${ok?'✓':'○'}</span> ${esc(texto)}${resp&&resp.resposta?' — '+esc(resp.resposta):''}</li>`;
+    return `<li><label><input type="checkbox" class="checkEditorial" data-event-id="${e.id}" data-pergunta="${num}" ${ok?'checked':''}> <span>${esc(texto)}${resp&&resp.resposta?' — '+esc(resp.resposta):''}</span></label></li>`;
   }).join('');
 
   return `
@@ -564,6 +569,39 @@ function cardHTML(item){
       <button class="danger" data-action="descartado" data-id="${e.id}">Descartar</button>
     </div>
   </div>`;
+}
+
+async function atualizarChecklist(chk){
+  const eventId = chk.dataset.eventId;
+  const pergunta = Number(chk.dataset.pergunta);
+  const marcado = chk.checked;
+  chk.disabled = true;
+
+  try{
+    if(marcado){
+      // Remove eventual linha anterior e grava a resposta marcada.
+      // Isso evita depender de uma constraint UNIQUE para usar upsert.
+      const { error: eDel } = await sb.from('checklist_editorial')
+        .delete().eq('event_id', eventId).eq('pergunta_numero', pergunta);
+      if(eDel) throw eDel;
+
+      const { error: eIns } = await sb.from('checklist_editorial').insert({
+        event_id: eventId,
+        pergunta_numero: pergunta,
+        resposta: 'OK'
+      });
+      if(eIns) throw eIns;
+    } else {
+      const { error: eDel } = await sb.from('checklist_editorial')
+        .delete().eq('event_id', eventId).eq('pergunta_numero', pergunta);
+      if(eDel) throw eDel;
+    }
+    await carregarFila();
+  } catch(err){
+    chk.checked = !marcado;
+    chk.disabled = false;
+    alert('Não consegui salvar o checklist: ' + (err?.message || String(err)));
+  }
 }
 
 async function atualizarStatus(eventId, novoStatus){
