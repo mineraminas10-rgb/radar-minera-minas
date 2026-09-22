@@ -125,6 +125,62 @@
   .saveBar button:disabled{opacity:.45;cursor:not-allowed;}
   .miniTable{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px;}
   .miniTable td, .miniTable th{padding:5px 6px;border-bottom:1px solid var(--border);text-align:left;}
+
+  /* Carteiras: responsivo */
+  #view-carteiras{min-width:0;}
+  #view-carteiras .groupHeader{min-width:0;}
+  .detailPanel fieldset{min-width:0;}
+  .detailPanel input,.detailPanel select,.detailPanel textarea{max-width:100%;box-sizing:border-box;}
+  .miniTable{min-width:620px;}
+  .detailPanel fieldset:last-of-type{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+
+  @media(max-width:900px){
+    .carteirasLayout{flex-direction:column;gap:12px;width:100%;}
+    .carteirasList{
+      width:100%;max-width:100%;display:flex;align-items:stretch;overflow-x:auto;overflow-y:hidden;
+      border-radius:9px;-webkit-overflow-scrolling:touch;scrollbar-width:thin;
+    }
+    .carteirasList .item,.carteirasList .new{
+      flex:0 0 auto;min-width:150px;max-width:220px;border-bottom:0;border-right:1px solid var(--border);
+      white-space:normal;line-height:1.3;
+    }
+    .carteirasList .item.sel{box-shadow:inset 0 -3px 0 var(--accent);}
+    .detailPanel{width:100%;padding:14px;box-sizing:border-box;}
+    .row3{grid-template-columns:1fr 1fr;}
+    .rowInline{align-items:stretch;}
+    .rowInline > label{min-width:0;}
+    .rowInline a{overflow-wrap:anywhere;word-break:break-word;}
+  }
+
+  @media(max-width:620px){
+    #view-carteiras .groupHeader{display:flex;flex-direction:column;align-items:flex-start;gap:4px;}
+    .carteirasLayout{gap:10px;}
+    .carteirasList .item,.carteirasList .new{min-width:138px;padding:10px;font-size:12.5px;}
+    .detailPanel{padding:10px;border-radius:8px;}
+    fieldset{margin:12px 0;padding:10px;border-radius:8px;}
+    legend{max-width:92%;line-height:1.25;}
+    .row3{grid-template-columns:1fr;gap:0;}
+    .rowInline{flex-direction:column;gap:8px;padding:10px 0;border-bottom:1px solid var(--border);}
+    .rowInline > *{width:100%;min-width:0!important;box-sizing:border-box;}
+    .rowInline > div{min-width:0!important;}
+    .rowInline select{width:100%;}
+    .field{margin-bottom:10px;}
+    .field input[type=text],.field input[type=number],.field input[type=url],.field input[type=date],.field textarea,.field select{
+      font-size:16px; /* evita zoom automático no iPhone */
+      padding:9px 10px;
+    }
+    .saveBar{position:sticky;bottom:0;z-index:5;background:var(--surface);padding:10px 0 2px;display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+    .saveBar button{width:100%;padding:10px 8px;}
+    #novaFonteDetalhada{padding:10px!important;}
+    #novaFonteDetalhada > div[style*="justify-content:flex-end"]{display:grid!important;grid-template-columns:1fr 1fr;gap:8px!important;}
+    #novaFonteDetalhada > div[style*="justify-content:flex-end"] button{width:100%;}
+    #fontesRows .rowInline > label{display:flex!important;align-items:flex-start!important;}
+    #fontesRows .rowInline > div{width:100%;}
+    #fontesRows .sub{overflow-wrap:anywhere;word-break:break-word;}
+    .miniTable{min-width:560px;font-size:12px;}
+    .empty{padding:18px 10px;}
+    .smallBtn{min-height:36px;}
+  }
 </style>
 </head>
 <body>
@@ -188,10 +244,8 @@
 
         <div class="filterField"><label>Data inicial</label><input type="date" id="fDataIni"></div>
         <div class="filterField"><label>Data final</label><input type="date" id="fDataFim"></div>
-        <div class="filterField"><label>Ordenar por</label><select id="fOrdenar">
-          <option value="score_desc">Maior score</option><option value="score_asc">Menor score</option>
-          <option value="data_desc">Mais recente</option><option value="data_asc">Mais antigo</option>
-          <option value="prioridade">Prioridade A → D</option><option value="empresa">Empresa A → Z</option>
+        <div class="filterField"><label>Ordem</label><select id="fOrdenar" disabled>
+          <option value="entrada_desc">Entrada no sistema — mais recente primeiro</option>
         </select></div>
       </div>
       <div class="filterActions">
@@ -504,7 +558,7 @@ async function carregarFila(){
     const { data: allEvents, error: eEv } = await comLimiteDeTempo(
       sb.from('events')
         .select(`id, id_evento, titulo_fato, resumo_factual, empresa, municipio, fonte_id,
-          status_editorial, pre_release, url_oficial, data_evento, data_publicacao, processo, tipo_evento,
+          status_editorial, pre_release, url_oficial, data_evento, data_publicacao, created_at, processo, tipo_evento,
           decisao, situacao_processual, proximo_marco, palavras_chave, justificativa_editorial,
           event_scores ( score_bruto, score_normalizado, score_relevancia, componentes, prioridade, justificativa_score, versao_score, vigente ),
           documentos ( id, url, tipo, orgao ),
@@ -561,13 +615,27 @@ function limparFiltros(){
   document.getElementById('mostrarTodos').checked = false;
   ['fEmpresa','fMunicipio','fStatus','fPrioridade','fScoreMin','fScoreMax','fTipoEvento','fProcesso',
    'fDecisao','fSituacao','fPalavra','fFonte','fDataIni','fDataFim'].forEach(id=>document.getElementById(id).value='');
-  document.getElementById('fOrdenar').value = 'score_desc';
+  document.getElementById('fOrdenar').value = 'entrada_desc';
   renderFila();
 }
 
 function contem(valor, termo){
   if(!termo) return true;
   return String(valor ?? '').toLowerCase().includes(String(termo).trim().toLowerCase());
+}
+
+function formatarEntradaSistema(valor){
+  if(!valor) return '—';
+  const d = new Date(valor);
+  if(Number.isNaN(d.getTime())) return String(valor);
+  return new Intl.DateTimeFormat('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).format(d);
 }
 
 function fonteTexto(e){
@@ -628,19 +696,12 @@ function passaFiltro(item){
 }
 
 function compararItens(a,b){
-  const modo = document.getElementById('fOrdenar').value;
-  const sa = a.score == null ? -Infinity : Number(a.score);
-  const sbv = b.score == null ? -Infinity : Number(b.score);
-  const da = String(a.event.data_evento || a.event.data_publicacao || '');
-  const db = String(b.event.data_evento || b.event.data_publicacao || '');
-  const pa = ({A:1,B:2,C:3,D:4})[a.prioridade] ?? 99;
-  const pb = ({A:1,B:2,C:3,D:4})[b.prioridade] ?? 99;
-  if(modo==='score_asc') return sa-sbv;
-  if(modo==='data_desc') return db.localeCompare(da);
-  if(modo==='data_asc') return da.localeCompare(db);
-  if(modo==='prioridade') return pa-pb || sbv-sa;
-  if(modo==='empresa') return String(a.event.empresa||'').localeCompare(String(b.event.empresa||''),'pt-BR') || sbv-sa;
-  return sbv-sa;
+  // Regra global da fila: sempre ordenar pela data de entrada no sistema (events.created_at),
+  // do registro mais recente para o mais antigo. O id garante ordem deterministica em empates.
+  const da = new Date(a.event.created_at || 0).getTime();
+  const db = new Date(b.event.created_at || 0).getTime();
+  if (db !== da) return db - da;
+  return String(b.event.id || '').localeCompare(String(a.event.id || ''));
 }
 
 function renderFila(){
@@ -751,6 +812,7 @@ function cardHTML(item){
     <div class="cardTop">
       ${prio!=='—'?`<span class="prio ${prioClass}">${prio}</span>`:''}
       <span class="score">${item.score ?? '—'}</span>
+      <span class="sub entradaTopo"><strong>Entrada:</strong> ${esc(formatarEntradaSistema(e.created_at))}</span>
       <span class="statusTag st-${e.status_editorial}">${STATUS_LABEL[e.status_editorial]||e.status_editorial}</span>
       <div class="grow"></div>
       <span class="sub">${esc(e.empresa||'')}${e.municipio?' · '+esc(e.municipio):''}</span>
@@ -866,7 +928,7 @@ async function carregarCarteirasTab(){
   // "Nenhuma fonte cadastrada", mesmo quando havia fontes no banco.
   const { data: srcs, error: eSources } = await sb
     .from('sources')
-    .select('id, codigo_fonte, nome, categoria, escopo, url_base, url_secundaria, metodo_captura, situacao, data_verificacao, ativa, observacoes, empresa_id')
+    .select('id, id_fonte, nome, categoria, escopo, url_base, url_secundaria, metodo_captura, situacao, data_verificacao, ativa, observacoes, empresa_id')
     .eq('empresa_id', clienteSelecionado)
     .eq('ativa', true)
     .order('nome');
@@ -922,7 +984,7 @@ async function abrirDetalheCarteira(id){
   const [rPesos, rFontes, rScores] = await Promise.all([
     sb.from('carteira_pesos').select('*').eq('carteira_id', id).eq('empresa_id', clienteSelecionado),
     sb.from('carteira_fontes')
-      .select('source_id, finalidade, observacao, usar_varredura_inicial, sources(id, codigo_fonte, nome, categoria, escopo, url_base, url_secundaria, metodo_captura, situacao, data_verificacao, ativa, observacoes)')
+      .select('source_id, finalidade, observacao, usar_varredura_inicial, sources(id, id_fonte, nome, categoria, escopo, url_base, url_secundaria, metodo_captura, situacao, data_verificacao, ativa, observacoes)')
       .eq('carteira_id', id)
       .eq('empresa_id', clienteSelecionado),
     sb.from('events')
@@ -1044,7 +1106,7 @@ async function abrirDetalheCarteira(id){
           <label style="flex:2;display:flex;gap:6px;align-items:flex-start;">
             <input type="checkbox" class="fonteChk" data-id="${s.id}" ${fontesSet.has(s.id)?'checked':''}>
             <span>
-              <strong>${s.codigo_fonte?esc(s.codigo_fonte)+' · ':''}${esc(s.nome)}</strong>
+              <strong>${s.id_fonte?esc(s.id_fonte)+' · ':''}${esc(s.nome)}</strong>
               ${(s.categoria||s.escopo)?`<div class="sub">${[s.categoria,s.escopo].filter(Boolean).map(esc).join(' · ')}</div>`:''}
               ${s.url_base?`<div class="sub"><a href="${esc(s.url_base)}" target="_blank" rel="noopener">${esc(s.url_base)}</a></div>`:''}
               ${s.url_secundaria?`<div class="sub"><a href="${esc(s.url_secundaria)}" target="_blank" rel="noopener">URL secundária</a></div>`:''}
@@ -1169,7 +1231,7 @@ async function salvarNovaFonteDetalhada(carteiraId){
   if(!nome || !url_base){ alert('Informe pelo menos Nome da fonte e URL principal.'); return; }
 
   const payload = {
-    codigo_fonte: document.getElementById('src_codigo').value.trim() || null,
+    id_fonte: document.getElementById('src_codigo').value.trim() || null,
     nome,
     categoria: document.getElementById('src_categoria').value.trim() || null,
     escopo: document.getElementById('src_escopo').value.trim() || null,
