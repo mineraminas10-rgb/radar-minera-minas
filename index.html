@@ -19,6 +19,11 @@
   nav.tabs{display:flex;gap:4px;}
   nav.tabs button{background:transparent;border:1px solid var(--border);color:var(--muted);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px;}
   nav.tabs button.active{background:var(--accent-weak);color:var(--text);border-color:var(--accent);}
+  .clientSwitch{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+  .clientSwitch label{font-size:11px;color:var(--muted);}
+  .clientSwitch select,.clientSwitch button{background:var(--surface);border:1px solid var(--border);color:var(--text);padding:6px 9px;border-radius:6px;font-size:12.5px;}
+  .clientSwitch button{cursor:pointer;}
+  .clientSwitch button:hover{border-color:var(--accent);}
   #connStatus{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;}
   #connStatus .dot{width:8px;height:8px;border-radius:50%;background:var(--muted);}
   #connStatus.ok .dot{background:var(--ok);}
@@ -134,7 +139,12 @@
 
 <div id="app" style="display:none;">
 <header>
-  <h1>Radar Minera Minas</h1>
+  <h1>Radar</h1>
+  <div class="clientSwitch">
+    <label for="clienteSelect">Cliente</label>
+    <select id="clienteSelect"><option value="">Carregando clientes…</option></select>
+    <button id="btnNovoCliente" type="button">+ Novo cliente</button>
+  </div>
   <nav class="tabs" aria-label="Navegação principal">
     <button class="active" data-view="fila">Fila do Editor</button>
     <button data-view="carteiras">Carteiras</button>
@@ -276,6 +286,7 @@ function comLimiteDeTempo(promessa, ms, rotulo){
 }
 
 let sb, filaData = [];
+let clientesCache = [], clienteSelecionado = null;
 
 // ----------------------------------------------------------------------------
 // Todo o boot roda dentro deste try/catch: se QUALQUER coisa falhar aqui
@@ -350,8 +361,77 @@ function boot(){
     el.addEventListener(el.tagName === 'SELECT' || el.type === 'date' ? 'change' : 'input', renderFila);
   });
   document.getElementById('btnLimparFiltros').addEventListener('click', limparFiltros);
+  document.getElementById('clienteSelect').addEventListener('change', trocarCliente);
+  document.getElementById('btnNovoCliente').addEventListener('click', criarCliente);
 
-  carregarFila();
+  carregarClientes();
+}
+
+async function carregarClientes(){
+  try{
+    const { data, error } = await sb.from('empresas').select('id, nome, slug, ativa').eq('ativa', true).order('nome');
+    if(error) throw error;
+    clientesCache = data || [];
+    const sel = document.getElementById('clienteSelect');
+    sel.innerHTML = clientesCache.map(c=>`<option value="${esc(c.id)}">${esc(c.nome)}</option>`).join('');
+    if(!clientesCache.length){
+      sel.innerHTML = '<option value="">Nenhum cliente ativo</option>';
+      filaData = []; renderFila(); return;
+    }
+    const salvo = localStorage.getItem('radar_cliente_id');
+    const preferido = clientesCache.find(c=>c.id===salvo) || clientesCache.find(c=>c.slug==='minera-minas') || clientesCache[0];
+    clienteSelecionado = preferido.id;
+    sel.value = clienteSelecionado;
+    atualizarTituloCliente();
+    await carregarFila();
+  }catch(err){
+    mostrarErro('Não consegui carregar os clientes: ' + (err?.message || String(err)));
+  }
+}
+
+function atualizarTituloCliente(){
+  const c = clientesCache.find(x=>x.id===clienteSelecionado);
+  document.title = c ? `Radar — ${c.nome}` : 'Radar';
+}
+
+async function trocarCliente(){
+  const novo = document.getElementById('clienteSelect').value;
+  if(!novo || novo===clienteSelecionado) return;
+  clienteSelecionado = novo;
+  localStorage.setItem('radar_cliente_id', novo);
+  carteiraSelecionada = null;
+  carteirasCache = [];
+  sourcesCache = [];
+  atualizarTituloCliente();
+  document.getElementById('carteiraDetail').innerHTML = '<div class="empty">Selecione uma carteira à esquerda ou crie uma nova.</div>';
+  await carregarFila();
+  const abaCarteiras = document.getElementById('view-carteiras').classList.contains('active');
+  if(abaCarteiras) await carregarCarteirasTab();
+}
+
+function slugCliente(nome){
+  return String(nome||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase()
+    .replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,80);
+}
+
+async function criarCliente(){
+  const nome = prompt('Nome do novo cliente:');
+  if(!nome || !nome.trim()) return;
+  const slugBase = slugCliente(nome.trim()) || 'cliente';
+  const slug = slugBase + '-' + Date.now().toString().slice(-6);
+  const { data, error } = await sb.from('empresas').insert({ nome: nome.trim(), slug, ativa: true }).select('id, nome, slug, ativa').single();
+  if(error){ alert('Não consegui criar o cliente: ' + error.message); return; }
+  clientesCache.push(data);
+  clientesCache.sort((a,b)=>a.nome.localeCompare(b.nome,'pt-BR'));
+  const sel = document.getElementById('clienteSelect');
+  sel.innerHTML = clientesCache.map(c=>`<option value="${esc(c.id)}">${esc(c.nome)}</option>`).join('');
+  sel.value = data.id;
+  clienteSelecionado = data.id;
+  localStorage.setItem('radar_cliente_id', data.id);
+  carteiraSelecionada = null; carteirasCache = []; sourcesCache = [];
+  atualizarTituloCliente();
+  await carregarFila();
+  if(document.getElementById('view-carteiras').classList.contains('active')) await carregarCarteirasTab();
 }
 
 // ---------------------------------------------------------------------------
@@ -375,7 +455,8 @@ async function carregarFila(){
           event_scores ( score_bruto, score_normalizado, score_relevancia, componentes, prioridade, vigente ),
           documentos ( id, url, tipo, orgao ),
           evidencias ( id, resumo_extraido, trecho_literal ),
-          checklist_editorial ( pergunta_numero, resposta )`),
+          checklist_editorial ( pergunta_numero, resposta )`)
+        .eq('empresa_id', clienteSelecionado),
       TIMEOUT_MS, 'events'
     );
     if (eEv) throw eEv;
@@ -604,14 +685,16 @@ async function atualizarChecklist(chk){
         .from('checklist_editorial')
         .delete()
         .eq('event_id', eventId)
-        .eq('pergunta_numero', pergunta);
+        .eq('pergunta_numero', pergunta)
+        .eq('empresa_id', clienteSelecionado);
 
       if(eDel) throw eDel;
 
       const payload = {
         event_id: eventId,
         pergunta_numero: pergunta,
-        resposta: 'confirmado'
+        resposta: 'confirmado',
+        empresa_id: clienteSelecionado
       };
 
       const { error: eIns } = await sb
@@ -624,7 +707,8 @@ async function atualizarChecklist(chk){
         .from('checklist_editorial')
         .delete()
         .eq('event_id', eventId)
-        .eq('pergunta_numero', pergunta);
+        .eq('pergunta_numero', pergunta)
+        .eq('empresa_id', clienteSelecionado);
 
       if(eDel) throw eDel;
     }
@@ -639,7 +723,7 @@ async function atualizarChecklist(chk){
 
 async function atualizarStatus(eventId, novoStatus){
   if(novoStatus==='descartado' && !confirm('Descartar este assunto? Ele some da fila padrão (continua no banco, com o histórico).')) return;
-  const { error } = await sb.from('events').update({ status_editorial: novoStatus }).eq('id', eventId);
+  const { error } = await sb.from('events').update({ status_editorial: novoStatus }).eq('id', eventId).eq('empresa_id', clienteSelecionado);
   if(error){ alert('Não consegui atualizar: ' + error.message); return; }
   await carregarFila();
 }
@@ -650,11 +734,11 @@ async function atualizarStatus(eventId, novoStatus){
 let carteirasCache = [], sourcesCache = [], camposCriterioCache = [], carteiraSelecionada = null;
 
 async function carregarCarteirasTab(){
-  const { data, error } = await sb.from('carteiras').select('*').order('nome');
+  const { data, error } = await sb.from('carteiras').select('*').eq('empresa_id', clienteSelecionado).order('nome');
   if(error){ document.getElementById('carteirasList').innerHTML = '<div class="empty">Erro: '+esc(error.message)+'</div>'; return; }
   carteirasCache = data || [];
   if(!sourcesCache.length){
-    const { data: srcs } = await sb.from('sources').select('id, nome').order('nome');
+    const { data: srcs } = await sb.from('sources').select('id, nome').eq('empresa_id', clienteSelecionado).order('nome');
     sourcesCache = srcs || [];
   }
   if(!camposCriterioCache.length){
@@ -683,7 +767,7 @@ function renderCarteirasList(){
 }
 
 async function criarCarteira(){
-  const { data, error } = await sb.from('carteiras').insert({ nome: 'Nova carteira' }).select().single();
+  const { data, error } = await sb.from('carteiras').insert({ nome: 'Nova carteira', empresa_id: clienteSelecionado }).select().single();
   if(error){ alert('Erro ao criar: '+error.message); return; }
   carteirasCache.push(data);
   carteiraSelecionada = data.id;
@@ -697,10 +781,10 @@ async function abrirDetalheCarteira(id){
   panel.innerHTML = '<div class="empty">Carregando…</div>';
 
   const [{ data: pesos }, { data: fontesLigadas }, { data: scores }, { count: totalVinculos, error: eVinculos }] = await Promise.all([
-    sb.from('carteira_pesos').select('*').eq('carteira_id', id),
-    sb.from('carteira_fontes').select('*').eq('carteira_id', id),
-    sb.from('carteira_scores').select('score_ponderado, prioridade, events(titulo_fato)').eq('carteira_id', id).eq('vigente', true).order('score_ponderado', { ascending: false }),
-    sb.from('carteira_scores').select('id', { count: 'exact', head: true }).eq('carteira_id', id),
+    sb.from('carteira_pesos').select('*').eq('carteira_id', id).eq('empresa_id', clienteSelecionado),
+    sb.from('carteira_fontes').select('*').eq('carteira_id', id).eq('empresa_id', clienteSelecionado),
+    sb.from('carteira_scores').select('score_ponderado, prioridade, events(titulo_fato)').eq('carteira_id', id).eq('empresa_id', clienteSelecionado).eq('vigente', true).order('score_ponderado', { ascending: false }),
+    sb.from('carteira_scores').select('id', { count: 'exact', head: true }).eq('carteira_id', id).eq('empresa_id', clienteSelecionado),
   ]);
   if(eVinculos){ panel.innerHTML = '<div class="empty">Erro ao verificar vínculos: '+esc(eVinculos.message)+'</div>'; return; }
   const carteiraVazia = (totalVinculos || 0) === 0;
@@ -789,7 +873,8 @@ async function excluirCarteira(id){
   const { count, error: eCount } = await sb
     .from('carteira_scores')
     .select('id', { count: 'exact', head: true })
-    .eq('carteira_id', id);
+    .eq('carteira_id', id)
+    .eq('empresa_id', clienteSelecionado);
 
   if(eCount){
     alert('Não consegui verificar se a carteira está vazia: ' + eCount.message);
@@ -804,13 +889,13 @@ async function excluirCarteira(id){
 
   if(!confirm('Excluir a carteira "' + (carteira.nome || 'sem nome') + '"? Esta ação remove também pesos e fontes configurados nela.')) return;
 
-  const { error: ePesos } = await sb.from('carteira_pesos').delete().eq('carteira_id', id);
+  const { error: ePesos } = await sb.from('carteira_pesos').delete().eq('carteira_id', id).eq('empresa_id', clienteSelecionado);
   if(ePesos){ alert('Não consegui excluir os pesos da carteira: ' + ePesos.message); return; }
 
-  const { error: eFontes } = await sb.from('carteira_fontes').delete().eq('carteira_id', id);
+  const { error: eFontes } = await sb.from('carteira_fontes').delete().eq('carteira_id', id).eq('empresa_id', clienteSelecionado);
   if(eFontes){ alert('Não consegui excluir as fontes da carteira: ' + eFontes.message); return; }
 
-  const { error: eCart } = await sb.from('carteiras').delete().eq('id', id);
+  const { error: eCart } = await sb.from('carteiras').delete().eq('id', id).eq('empresa_id', clienteSelecionado);
   if(eCart){ alert('Não consegui excluir a carteira: ' + eCart.message); return; }
 
   carteirasCache = carteirasCache.filter(c=>c.id!==id);
@@ -854,16 +939,16 @@ async function salvarCarteira(id){
   const { error: e1 } = await sb.from('carteiras').update({
     nome, descricao: descricao||null, ativa, banda_a_min, banda_b_min, banda_c_min,
     criterio_regra: Object.keys(criterio_regra).length ? criterio_regra : null,
-  }).eq('id', id);
+  }).eq('id', id).eq('empresa_id', clienteSelecionado);
   if(e1){ alert('Erro ao salvar carteira: '+e1.message); return; }
 
   const pesos = [];
   document.querySelectorAll('#pesosRows .rowInline').forEach(row=>{
     const componente = row.querySelector('.pesoComponente').value.trim();
     const peso = parseFloat(row.querySelector('.pesoValor').value);
-    if(componente && !isNaN(peso)) pesos.push({ carteira_id: id, componente, peso });
+    if(componente && !isNaN(peso)) pesos.push({ carteira_id: id, componente, peso, empresa_id: clienteSelecionado });
   });
-  await sb.from('carteira_pesos').delete().eq('carteira_id', id);
+  await sb.from('carteira_pesos').delete().eq('carteira_id', id).eq('empresa_id', clienteSelecionado);
   if(pesos.length) await sb.from('carteira_pesos').insert(pesos);
 
   const fontes = [];
@@ -871,10 +956,10 @@ async function salvarCarteira(id){
     if(chk.checked){
       const sourceId = chk.dataset.id;
       const fin = document.querySelector(`.fonteFin[data-id="${sourceId}"]`).value;
-      fontes.push({ carteira_id: id, source_id: sourceId, finalidade: fin });
+      fontes.push({ carteira_id: id, source_id: sourceId, finalidade: fin, empresa_id: clienteSelecionado });
     }
   });
-  await sb.from('carteira_fontes').delete().eq('carteira_id', id);
+  await sb.from('carteira_fontes').delete().eq('carteira_id', id).eq('empresa_id', clienteSelecionado);
   if(fontes.length) await sb.from('carteira_fontes').insert(fontes);
 
   const idx = carteirasCache.findIndex(c=>c.id===id);
