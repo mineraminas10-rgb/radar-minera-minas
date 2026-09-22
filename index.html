@@ -700,6 +700,8 @@ function cardHTML(item){
     }).join('');
 
   const explicacaoScore = [
+    item.versaoScore ? `<div class="sub"><strong>Versão:</strong> ${esc(item.versaoScore)}</div>` : '',
+    item.justificativaScore ? `<div class="resumo" style="margin-top:8px;"><strong>Justificativa do score:</strong> ${esc(item.justificativaScore)}</div>` : '',
     e.justificativa_editorial ? `<div class="resumo" style="margin-top:8px;"><strong>Justificativa editorial:</strong> ${esc(e.justificativa_editorial)}</div>` : ''
   ].join('');
 
@@ -864,7 +866,7 @@ async function carregarCarteirasTab(){
   // "Nenhuma fonte cadastrada", mesmo quando havia fontes no banco.
   const { data: srcs, error: eSources } = await sb
     .from('sources')
-    .select('id, nome, url_base, finalidade, ativa, empresa_id')
+    .select('id, codigo_fonte, nome, categoria, escopo, url_base, url_secundaria, metodo_captura, situacao, data_verificacao, ativa, observacoes, empresa_id')
     .eq('empresa_id', clienteSelecionado)
     .eq('ativa', true)
     .order('nome');
@@ -920,7 +922,7 @@ async function abrirDetalheCarteira(id){
   const [rPesos, rFontes, rScores] = await Promise.all([
     sb.from('carteira_pesos').select('*').eq('carteira_id', id).eq('empresa_id', clienteSelecionado),
     sb.from('carteira_fontes')
-      .select('source_id, finalidade, observacao, sources(id, nome, url_base, ativa, situacao)')
+      .select('source_id, finalidade, observacao, usar_varredura_inicial, sources(id, codigo_fonte, nome, categoria, escopo, url_base, url_secundaria, metodo_captura, situacao, data_verificacao, ativa, observacoes)')
       .eq('carteira_id', id)
       .eq('empresa_id', clienteSelecionado),
     sb.from('events')
@@ -953,9 +955,14 @@ async function abrirDetalheCarteira(id){
   const criterioRows = Object.entries(criterio).map(([k,v])=>rowCriterio(k,v)).join('') || rowCriterio('','');
   const pesosRows = (pesos||[]).map(p=>rowPeso(p)).join('') || rowPeso();
   const fontesSet = new Set((fontesLigadas||[]).map(f=>f.source_id));
-  const fontesFinalidade = {}; (fontesLigadas||[]).forEach(f=>fontesFinalidade[f.source_id]=f.finalidade);
+  const fontesFinalidade = {};
+  const fontesVarredura = {};
+  (fontesLigadas||[]).forEach(f=>{
+    fontesFinalidade[f.source_id]=f.finalidade;
+    fontesVarredura[f.source_id]=!!f.usar_varredura_inicial;
+  });
   const fontesLigadasDetalhe = (fontesLigadas||[])
-    .map(f=>f.sources ? ({...f.sources, finalidade_vinculo:f.finalidade, observacao_vinculo:f.observacao}) : null)
+    .map(f=>f.sources ? ({...f.sources, finalidade_vinculo:f.finalidade, observacao_vinculo:f.observacao, usar_varredura_inicial_vinculo:!!f.usar_varredura_inicial}) : null)
     .filter(Boolean);
 
   // Se o SELECT direto de sources vier vazio por RLS/Data API, ainda exibimos as fontes já ligadas à carteira.
@@ -996,6 +1003,37 @@ async function abrirDetalheCarteira(id){
 
     <fieldset>
       <legend>Fontes de consulta</legend>
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:10px;">
+        <p class="muted" style="font-size:12px;margin:0;">O cadastro da fonte replica os 10 campos da aba <strong>Fontes</strong>. Finalidade e varredura inicial pertencem ao vínculo com esta carteira.</p>
+        <button class="smallBtn" type="button" id="btnNovaFonteDetalhada">+ Nova fonte</button>
+      </div>
+      <div id="novaFonteDetalhada" style="display:none;border:1px solid #d0d5dd;border-radius:10px;padding:12px;margin-bottom:14px;background:#fafafa;">
+        <div class="row3">
+          <div class="field"><label>ID da fonte</label><input id="src_codigo" type="text" placeholder="ex: F16"></div>
+          <div class="field"><label>Nome da fonte *</label><input id="src_nome" type="text" placeholder="Nome oficial da fonte"></div>
+          <div class="field"><label>Categoria</label><input id="src_categoria" type="text" placeholder="ex: autos_infracao"></div>
+        </div>
+        <div class="row3">
+          <div class="field"><label>Escopo</label><input id="src_escopo" type="text" placeholder="ex: estadual (MG)"></div>
+          <div class="field"><label>Data de verificação</label><input id="src_data_verificacao" type="date"></div>
+          <div class="field"><label>Status de acesso</label><input id="src_situacao" type="text" placeholder="ex: acessível publicamente"></div>
+        </div>
+        <div class="field"><label>URL principal *</label><input id="src_url_base" type="url" placeholder="https://..."></div>
+        <div class="field"><label>URL secundária</label><input id="src_url_secundaria" type="url" placeholder="https://..."></div>
+        <div class="field"><label>Método de acesso</label><textarea id="src_metodo" placeholder="Como a rotina deve acessar/coletar esta fonte"></textarea></div>
+        <div class="field"><label>Observações</label><textarea id="src_observacoes" placeholder="Limitações, filtros, regras e notas operacionais"></textarea></div>
+        <div class="row3">
+          <div class="field"><label>Finalidade na carteira</label>
+            <select id="src_vinculo_finalidade"><option value="coleta">coleta</option><option value="validacao">validação</option><option value="ambos" selected>ambos</option></select>
+          </div>
+          <div class="field"><label><input type="checkbox" id="src_varredura_inicial" checked> Usar na varredura inicial desta carteira</label></div>
+          <div class="field"><label><input type="checkbox" id="src_ativa" checked> Fonte ativa no cadastro</label></div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;">
+          <button class="smallBtn" type="button" id="btnCancelarNovaFonte">Cancelar</button>
+          <button type="button" id="btnSalvarNovaFonte">Salvar e vincular</button>
+        </div>
+      </div>
       <div id="fontesRows">${
         window.__erroFontes
           ? `<div class="empty" style="color:#b42318">
@@ -1006,16 +1044,27 @@ async function abrirDetalheCarteira(id){
           <label style="flex:2;display:flex;gap:6px;align-items:flex-start;">
             <input type="checkbox" class="fonteChk" data-id="${s.id}" ${fontesSet.has(s.id)?'checked':''}>
             <span>
-              <strong>${esc(s.nome)}</strong>
+              <strong>${s.codigo_fonte?esc(s.codigo_fonte)+' · ':''}${esc(s.nome)}</strong>
+              ${(s.categoria||s.escopo)?`<div class="sub">${[s.categoria,s.escopo].filter(Boolean).map(esc).join(' · ')}</div>`:''}
               ${s.url_base?`<div class="sub"><a href="${esc(s.url_base)}" target="_blank" rel="noopener">${esc(s.url_base)}</a></div>`:''}
-              ${s.situacao?`<div class="sub">${esc(s.situacao)}</div>`:''}
+              ${s.url_secundaria?`<div class="sub"><a href="${esc(s.url_secundaria)}" target="_blank" rel="noopener">URL secundária</a></div>`:''}
+              ${s.metodo_captura?`<div class="sub"><strong>Método:</strong> ${esc(s.metodo_captura)}</div>`:''}
+              ${s.situacao?`<div class="sub"><strong>Status:</strong> ${esc(s.situacao)}</div>`:''}
+              ${s.data_verificacao?`<div class="sub"><strong>Verificada:</strong> ${esc(String(s.data_verificacao).slice(0,10))}</div>`:''}
+              ${s.observacoes?`<div class="sub">${esc(s.observacoes)}</div>`:''}
             </span>
           </label>
-          <select class="fonteFin" data-id="${s.id}">
-            <option value="coleta" ${fontesFinalidade[s.id]==='coleta'?'selected':''}>coleta</option>
-            <option value="validacao" ${fontesFinalidade[s.id]==='validacao'?'selected':''}>validação</option>
-            <option value="ambos" ${(!fontesFinalidade[s.id]||fontesFinalidade[s.id]==='ambos')?'selected':''}>ambos</option>
-          </select>
+          <div style="min-width:190px;display:flex;flex-direction:column;gap:8px;">
+            <select class="fonteFin" data-id="${s.id}">
+              <option value="coleta" ${fontesFinalidade[s.id]==='coleta'?'selected':''}>coleta</option>
+              <option value="validacao" ${fontesFinalidade[s.id]==='validacao'?'selected':''}>validação</option>
+              <option value="ambos" ${(!fontesFinalidade[s.id]||fontesFinalidade[s.id]==='ambos')?'selected':''}>ambos</option>
+            </select>
+            <label class="sub" style="display:flex;gap:6px;align-items:flex-start;">
+              <input type="checkbox" class="fonteVarredura" data-id="${s.id}" ${fontesVarredura[s.id]?'checked':''}>
+              usar na varredura inicial
+            </label>
+          </div>
         </div>`).join('') || `<div class="empty">Nenhuma fonte foi retornada pelo Data API. ${rFontes.error?esc(rFontes.error.message):''}</div>`
       }
       </div>
@@ -1047,6 +1096,13 @@ async function abrirDetalheCarteira(id){
   document.getElementById('addPeso').addEventListener('click', ()=>{
     document.getElementById('pesosRows').insertAdjacentHTML('beforeend', rowPeso());
   });
+  document.getElementById('btnNovaFonteDetalhada').addEventListener('click', ()=>{
+    document.getElementById('novaFonteDetalhada').style.display = 'block';
+  });
+  document.getElementById('btnCancelarNovaFonte').addEventListener('click', ()=>{
+    document.getElementById('novaFonteDetalhada').style.display = 'none';
+  });
+  document.getElementById('btnSalvarNovaFonte').addEventListener('click', ()=>salvarNovaFonteDetalhada(id));
   panel.querySelectorAll('.rmRow').forEach(b=>b.addEventListener('click', e=>e.target.closest('.rowInline').remove()));
   document.getElementById('btnSalvarCarteira').addEventListener('click', ()=>salvarCarteira(id));
   document.getElementById('btnExcluirCarteira').addEventListener('click', ()=>excluirCarteira(id));
@@ -1107,6 +1163,60 @@ function rowPeso(p){
   </div>`;
 }
 
+async function salvarNovaFonteDetalhada(carteiraId){
+  const nome = document.getElementById('src_nome').value.trim();
+  const url_base = document.getElementById('src_url_base').value.trim();
+  if(!nome || !url_base){ alert('Informe pelo menos Nome da fonte e URL principal.'); return; }
+
+  const payload = {
+    codigo_fonte: document.getElementById('src_codigo').value.trim() || null,
+    nome,
+    categoria: document.getElementById('src_categoria').value.trim() || null,
+    escopo: document.getElementById('src_escopo').value.trim() || null,
+    url_base,
+    url_secundaria: document.getElementById('src_url_secundaria').value.trim() || null,
+    metodo_captura: document.getElementById('src_metodo').value.trim() || null,
+    situacao: document.getElementById('src_situacao').value.trim() || null,
+    observacoes: document.getElementById('src_observacoes').value.trim() || null,
+    data_verificacao: document.getElementById('src_data_verificacao').value || null,
+    ativa: document.getElementById('src_ativa').checked,
+    empresa_id: clienteSelecionado
+  };
+
+  // Evita duplicar a mesma URL dentro do cliente. Se já existir, apenas vincula.
+  let { data: existente, error: eBusca } = await sb
+    .from('sources')
+    .select('id')
+    .eq('empresa_id', clienteSelecionado)
+    .eq('url_base', url_base)
+    .maybeSingle();
+  if(eBusca){ alert('Erro ao verificar fonte existente: '+eBusca.message); return; }
+
+  let sourceId = existente?.id;
+  if(!sourceId){
+    const { data: criada, error: eCriar } = await sb.from('sources').insert(payload).select('id').single();
+    if(eCriar){ alert('Erro ao cadastrar fonte: '+eCriar.message); return; }
+    sourceId = criada.id;
+  }
+
+  const finalidade = document.getElementById('src_vinculo_finalidade').value;
+  const { error: eVinculo } = await sb.from('carteira_fontes').upsert({
+    carteira_id: carteiraId,
+    source_id: sourceId,
+    finalidade,
+    empresa_id: clienteSelecionado,
+    observacao: 'Fonte cadastrada pela tela da carteira',
+    usar_varredura_inicial: document.getElementById('src_varredura_inicial').checked
+  }, { onConflict: 'carteira_id,source_id' });
+  if(eVinculo){ alert('Fonte cadastrada, mas não foi possível vinculá-la à carteira: '+eVinculo.message); return; }
+
+  await carregarCarteirasTab();
+  carteiraSelecionada = carteiraId;
+  renderCarteirasList();
+  await abrirDetalheCarteira(carteiraId);
+  alert('Fonte cadastrada e vinculada à carteira.');
+}
+
 async function salvarCarteira(id){
   const nome = document.getElementById('f_nome').value.trim();
   const descricao = document.getElementById('f_desc').value.trim();
@@ -1142,7 +1252,8 @@ async function salvarCarteira(id){
     if(chk.checked){
       const sourceId = chk.dataset.id;
       const fin = document.querySelector(`.fonteFin[data-id="${sourceId}"]`).value;
-      fontes.push({ carteira_id: id, source_id: sourceId, finalidade: fin, empresa_id: clienteSelecionado });
+      const usarVarredura = !!document.querySelector(`.fonteVarredura[data-id="${sourceId}"]`)?.checked;
+      fontes.push({ carteira_id: id, source_id: sourceId, finalidade: fin, usar_varredura_inicial: usarVarredura, empresa_id: clienteSelecionado });
     }
   });
   await sb.from('carteira_fontes').delete().eq('carteira_id', id).eq('empresa_id', clienteSelecionado);
