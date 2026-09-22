@@ -985,8 +985,7 @@ async function abrirDetalheCarteira(id){
     sb.from('carteira_pesos').select('*').eq('carteira_id', id).eq('empresa_id', clienteSelecionado),
     sb.from('carteira_fontes')
       .select('source_id, finalidade, observacao, usar_varredura_inicial, sources(id, id_fonte, nome, categoria, escopo, url_base, url_secundaria, metodo_captura, situacao, data_verificacao, ativa, observacoes)')
-      .eq('carteira_id', id)
-      .eq('empresa_id', clienteSelecionado),
+      .eq('carteira_id', id),
     sb.from('events')
       .select(`id, titulo_fato, empresa,
         event_scores(score_relevancia, score_normalizado, score_bruto, prioridade, justificativa_score, versao_score, vigente)`)
@@ -1196,7 +1195,7 @@ async function excluirCarteira(id){
   const { error: ePesos } = await sb.from('carteira_pesos').delete().eq('carteira_id', id).eq('empresa_id', clienteSelecionado);
   if(ePesos){ alert('Não consegui excluir os pesos da carteira: ' + ePesos.message); return; }
 
-  const { error: eFontes } = await sb.from('carteira_fontes').delete().eq('carteira_id', id).eq('empresa_id', clienteSelecionado);
+  const { error: eFontes } = await sb.from('carteira_fontes').delete().eq('carteira_id', id);
   if(eFontes){ alert('Não consegui excluir as fontes da carteira: ' + eFontes.message); return; }
 
   const { error: eCart } = await sb.from('carteiras').delete().eq('id', id).eq('empresa_id', clienteSelecionado);
@@ -1318,7 +1317,7 @@ async function salvarCarteira(id){
       fontes.push({ carteira_id: id, source_id: sourceId, finalidade: fin, usar_varredura_inicial: usarVarredura, empresa_id: clienteSelecionado });
     }
   });
-  await sb.from('carteira_fontes').delete().eq('carteira_id', id).eq('empresa_id', clienteSelecionado);
+  await sb.from('carteira_fontes').delete().eq('carteira_id', id);
   if(fontes.length) await sb.from('carteira_fontes').insert(fontes);
 
   const idx = carteirasCache.findIndex(c=>c.id===id);
