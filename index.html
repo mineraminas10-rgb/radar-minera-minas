@@ -529,7 +529,7 @@ function cardHTML(item){
 
   const chkItems = CHECKLIST_PERGUNTAS.map(([num,texto])=>{
     const resp = chk.find(c=>c.pergunta_numero===num);
-    const ok = !!(resp && resp.resposta);
+    const ok = resp?.resposta === 'confirmado';
     return `<li><label><input type="checkbox" class="checkEditorial" data-event-id="${e.id}" data-pergunta="${num}" ${ok?'checked':''}> <span>${esc(texto)}${resp&&resp.resposta?' — '+esc(resp.resposta):''}</span></label></li>`;
   }).join('');
 
@@ -579,31 +579,53 @@ async function atualizarChecklist(chk){
 
   try{
     if(marcado){
-      // Remove eventual linha anterior e grava a resposta marcada.
-      // Isso evita depender de uma constraint UNIQUE para usar upsert.
-      const { error: eDel } = await sb.from('checklist_editorial')
-        .delete().eq('event_id', eventId).eq('pergunta_numero', pergunta);
+      // Remove eventual resposta anterior desta pergunta
+      const { error: eDel } = await sb
+        .from('checklist_editorial')
+        .delete()
+        .eq('event_id', eventId)
+        .eq('pergunta_numero', pergunta);
+
       if(eDel) throw eDel;
 
+      // Grava a resposta correta do ENUM resposta_fechamento
       const payload = {
-  event_id: eventId,
-  pergunta_numero: perguntaNumero,
-  resposta: 'confirmado'
-};
-      });
+        event_id: eventId,
+        pergunta_numero: pergunta,
+        resposta: 'confirmado'
+      };
+
+      const { error: eIns } = await sb
+        .from('checklist_editorial')
+        .insert(payload);
+
       if(eIns) throw eIns;
+
     } else {
-      const { error: eDel } = await sb.from('checklist_editorial')
-        .delete().eq('event_id', eventId).eq('pergunta_numero', pergunta);
+
+      // Ao desmarcar, remove a resposta
+      const { error: eDel } = await sb
+        .from('checklist_editorial')
+        .delete()
+        .eq('event_id', eventId)
+        .eq('pergunta_numero', pergunta);
+
       if(eDel) throw eDel;
     }
+
     await carregarFila();
+
   } catch(err){
     chk.checked = !marcado;
     chk.disabled = false;
-    alert('Não consegui salvar o checklist: ' + (err?.message || String(err)));
+
+    alert(
+      'Não consegui salvar o checklist: ' +
+      (err?.message || String(err))
+    );
   }
 }
+  }
 
 async function atualizarStatus(eventId, novoStatus){
   if(novoStatus==='descartado' && !confirm('Descartar este assunto? Ele some da fila padrão (continua no banco, com o histórico).')) return;
