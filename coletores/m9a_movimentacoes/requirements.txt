@@ -1,0 +1,5 @@
+# Módulo 9A — coletor de Movimentações dos Processos Minerários da ANM
+requests==2.32.3
+pandas==2.2.3
+supabase==2.9.1     # client oficial — grava via service_role key (nunca a anon key)
+python-dateutil==2.9.0.post0
