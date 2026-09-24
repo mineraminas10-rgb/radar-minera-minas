@@ -1,0 +1,56 @@
+name: Coletor M8 - Acidentes SEMAD
+
+# Carta Operacional M8 §4: "duas verificações diárias da página anual em
+# dias úteis". Horários abaixo são 09h e 15h no horário de Brasília
+# (UTC-3) -> 12:00 e 18:00 UTC, segunda a sexta. Ajustar se a Rapha
+# preferir outro horário.
+on:
+  schedule:
+    - cron: '0 12 * * 1-5'
+    - cron: '0 18 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      ambiente:
+        description: 'Ambiente (piloto | homologacao | producao)'
+        required: false
+        default: 'piloto'
+      limite:
+        description: 'Processar só os N primeiros itens novos/alterados (deixar vazio para todos)'
+        required: false
+        default: ''
+
+jobs:
+  coletar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # OCR (carta §5 passo 5) — precisa do binário, não só da lib Python
+      - name: Instalar tesseract-ocr
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr tesseract-ocr-por poppler-utils
+
+      - name: Instalar dependências
+        run: pip install -r coletores/m8_acidentes/requirements.txt
+
+      - name: Rodar testes da regra de score (não pode divergir da carta)
+        run: python -m unittest test_scoring.py -v
+        working-directory: coletores/m8_acidentes
+
+      - name: Rodar coletor
+        working-directory: coletores/m8_acidentes
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          ARGS="--ambiente ${{ github.event.inputs.ambiente || 'piloto' }}"
+          if [ -n "${{ github.event.inputs.limite }}" ]; then
+            ARGS="$ARGS --limite ${{ github.event.inputs.limite }}"
+          fi
+          python main.py $ARGS
