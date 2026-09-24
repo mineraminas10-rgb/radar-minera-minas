@@ -68,6 +68,18 @@
   .prerelease{background:var(--surface2);border-left:3px solid var(--accent);padding:10px 12px;border-radius:6px;margin:10px 0;line-height:1.55;white-space:pre-wrap;}
   .prerelease.empty{color:var(--muted);font-style:italic;border-left-color:var(--border);}
   .prerelease .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--accent);display:block;margin-bottom:4px;}
+  .chkResumo{display:flex;align-items:center;gap:8px;margin:8px 0 2px;flex-wrap:wrap;}
+  .chkPill{font-size:12px;font-weight:600;padding:3px 10px;border-radius:20px;border:1px solid var(--border);white-space:nowrap;}
+  .chkPill-alta{background:rgba(46,160,67,.13);border-color:rgba(46,160,67,.4);color:#2ea043;}
+  .chkPill-media{background:rgba(210,153,34,.13);border-color:rgba(210,153,34,.4);color:#9a6700;}
+  .chkPill-baixa{background:var(--surface2);border-color:var(--border);color:var(--muted);}
+  .chkResumo .obs{color:var(--muted);font-size:11.5px;}
+  .chkQ{display:flex;gap:6px;align-items:flex-start;padding:3px 0;}
+  .chkQ .ic{flex:none;font-size:13px;line-height:1.4;}
+  .chkQ.st-confirmado .ic{color:#2ea043;}
+  .chkQ.st-nao_localizado .ic,.chkQ.st-vazio .ic{color:var(--muted);}
+  .chkQ.st-requer_apuracao_humana .ic{color:#9a6700;}
+  .chkQ.st-nao_aplicavel .ic{color:var(--muted);}
   details{margin-top:8px;}
   summary{cursor:pointer;color:var(--muted);font-size:12.5px;padding:4px 0;}
   summary:hover{color:var(--text);}
@@ -733,6 +745,24 @@ function cardHTML(item){
   const evid = e.evidencias || [];
   const chk = e.checklist_editorial || [];
   const chkCount = chk.filter(c=>c.resposta).length;
+  const chkConfirmados = chk.filter(c=>c.resposta==='confirmado').length;
+  const chkNaoLocalizados = chk.filter(c=>c.resposta==='nao_localizado').length;
+  const chkRequerApuracao = chk.filter(c=>c.resposta==='requer_apuracao_humana').length;
+  const chkNaoAplicaveis = chk.filter(c=>c.resposta==='nao_aplicavel').length;
+  // Indicador informativo de completude — NUNCA trava a matéria nem esconde o pré-release.
+  // Nem toda matéria responde às 12 perguntas da matriz de fechamento; isso não a torna
+  // descartável — cabe ao editor avaliar. Ver doc_mestre §18: "a ausência de uma informação
+  // não impede automaticamente a geração de proposta editorial".
+  const chkNivel = chkConfirmados>=9 ? 'alta' : (chkConfirmados>=5 ? 'media' : 'baixa');
+  const chkResumoHTML = `
+    <div class="chkResumo">
+      <span class="chkPill chkPill-${chkNivel}">Atende ${chkConfirmados} de 12 pontos do checklist editorial</span>
+      <span class="obs">${[
+        chkRequerApuracao ? chkRequerApuracao+' a apurar' : '',
+        chkNaoLocalizados ? chkNaoLocalizados+' não localizado(s)' : '',
+        chkNaoAplicaveis ? chkNaoAplicaveis+' n/a' : ''
+      ].filter(Boolean).join(' · ')}</span>
+    </div>`;
 
   const ROTULO_COMP = {
     score_dano_risco: 'Dano / risco',
@@ -821,8 +851,10 @@ function cardHTML(item){
     ${(e.processo||e.tipo_evento||e.decisao||e.situacao_processual)?`<div class="sub">${[e.processo?('Processo: '+e.processo):'',e.tipo_evento?('Tipo: '+e.tipo_evento):'',e.decisao?('Decisão: '+e.decisao):'',e.situacao_processual?('Situação: '+e.situacao_processual):''].filter(Boolean).map(esc).join(' · ')}</div>`:''}
     ${e.resumo_factual?`<div class="resumo">${esc(e.resumo_factual)}</div>`:''}
 
+    ${chkResumoHTML}
+
     ${e.pre_release
-      ? `<div class="prerelease"><span class="lbl">Pré-release — pronto para revisão</span>${esc(e.pre_release)}</div>`
+      ? `<div class="prerelease"><span class="lbl">Proposta de release (rascunho) — revisão do editor decide se publica</span>${esc(e.pre_release)}</div>`
       : `<div class="prerelease empty"><span class="lbl">Pré-release</span>Ainda sem pré-release gerado para este assunto.</div>`}
 
     <details>
@@ -836,7 +868,7 @@ function cardHTML(item){
       <ul class="srcList">${srcItems}</ul>
     </details>
     <details>
-      <summary>Checklist editorial (${chkCount}/12)</summary>
+      <summary>Checklist editorial — ${chkCount}/12 avaliadas, ${chkConfirmados} confirmadas</summary>
       <ul class="chkList">${chkItems}</ul>
     </details>
 
