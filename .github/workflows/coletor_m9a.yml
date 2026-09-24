@@ -1,0 +1,64 @@
+name: Coletor M9A - Movimentacoes ANM
+
+# Cadência não é fixada de forma explícita na Carta Operacional M9A (ela
+# fala em "execução recorrente" e "reconciliação em nova data", sem cravar
+# uma frequência como a do M8). Comecei com diário à noite (horário de
+# menor tráfego) — CONFIRMAR com a Rapha se ela prefere outra cadência
+# (ex.: semanal, já que o SCM não deve atualizar todo dia).
+on:
+  schedule:
+    - cron: '0 3 * * *'   # 00h em Brasília (UTC-3), todos os dias
+  workflow_dispatch:
+    inputs:
+      ambiente:
+        description: 'Ambiente (piloto | homologacao | producao)'
+        required: false
+        default: 'piloto'
+      limite_casos:
+        description: 'Processar só os N primeiros casos consolidados (deixar vazio para todos)'
+        required: false
+        default: ''
+
+jobs:
+  coletar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar dependências
+        run: pip install -r coletores/m9a_movimentacoes/requirements.txt
+
+      - name: Rodar testes da regra de score e de consolidação (não pode divergir da carta)
+        working-directory: coletores/m9a_movimentacoes
+        run: |
+          python -m unittest test_scoring.py -v
+          python -m unittest test_consolidacao.py -v
+
+      # TODO (pendente de confirmação): a URL exata do arquivo de
+      # microdados dentro de https://dadosabertos.anm.gov.br/SCM/microdados/
+      # não foi confirmada (o sandbox onde este workflow foi escrito não
+      # tem acesso a essa página). Ajustar o `curl` abaixo com o nome real
+      # do arquivo assim que confirmado.
+      - name: Baixar microdados SCM
+        working-directory: coletores/m9a_movimentacoes
+        run: |
+          echo "TODO: confirmar URL exata do arquivo de microdados SCM antes de habilitar este passo."
+          echo "curl -sSL -o scm_microdados.csv https://dadosabertos.anm.gov.br/SCM/microdados/<ARQUIVO_REAL>.csv"
+          exit 1
+
+      - name: Rodar coletor
+        working-directory: coletores/m9a_movimentacoes
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          ARGS="--microdados scm_microdados.csv --ambiente ${{ github.event.inputs.ambiente || 'piloto' }}"
+          if [ -n "${{ github.event.inputs.limite_casos }}" ]; then
+            ARGS="$ARGS --limite-casos ${{ github.event.inputs.limite_casos }}"
+          fi
+          python main.py $ARGS
