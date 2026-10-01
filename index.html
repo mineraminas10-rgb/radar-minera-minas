@@ -353,6 +353,21 @@ function comLimiteDeTempo(promessa, ms, rotulo){
   return Promise.race([promessa, limite]).finally(()=>clearTimeout(idTimeout));
 }
 
+// Decisão de 30/09/2026 (carta de Revisão/Calibração de Scores M8/M9A): nenhuma
+// fórmula de score_bruto/score_normalizado está homologada para produção.
+// event_scores.estagio = 'preliminar' em QUALQUER linha (hoje, as 59 existentes)
+// bloqueia esses dois campos de alimentar ranking/exibição — só score_relevancia
+// (nota editorial humana, não calculada pela fórmula) ou um futuro estagio='final'
+// (pós-homologação) liberam de novo. Usar esta função em todo lugar que hoje lê
+// score_relevancia ?? score_normalizado ?? score_bruto, para não reabrir o
+// vazamento em um novo trecho de código.
+function scoreParaRanking(vig){
+  if(!vig) return null;
+  if(vig.score_relevancia != null) return vig.score_relevancia;
+  if(vig.estagio !== 'final') return null; // score_normalizado/score_bruto provisórios: não usar
+  return vig.score_normalizado ?? vig.score_bruto ?? null;
+}
+
 let sb, filaData = [];
 let clientesCache = [], clienteSelecionado = null;
 
@@ -573,7 +588,7 @@ async function carregarFila(){
         .select(`id, id_evento, titulo_fato, resumo_factual, empresa, municipio, fonte_id,
           status_editorial, pre_release, url_oficial, data_evento, data_publicacao, created_at, processo, tipo_evento,
           decisao, situacao_processual, proximo_marco, palavras_chave, justificativa_editorial,
-          event_scores ( score_bruto, score_normalizado, score_relevancia, componentes, prioridade, justificativa_score, versao_score, vigente ),
+          event_scores ( score_bruto, score_normalizado, score_relevancia, componentes, prioridade, justificativa_score, versao_score, vigente, estagio ),
           documentos ( id, url, tipo, orgao ),
           evidencias ( id, resumo_extraido, trecho_literal ),
           checklist_editorial ( pergunta_numero, resposta )`)
@@ -587,7 +602,8 @@ async function carregarFila(){
       return {
         event: e,
         fonteOficial: e.fonte_id ? (fontesEventoPorId[e.fonte_id] || null) : null,
-        score: vig?.score_relevancia ?? vig?.score_normalizado ?? vig?.score_bruto ?? null,
+        score: scoreParaRanking(vig),
+        scoreProvisorio: Boolean(vig && !vig.score_relevancia && vig.estagio !== 'final'),
         prioridade: vig?.prioridade ?? null,
         componentes: vig?.componentes ?? null,
         justificativaScore: vig?.justificativa_score ?? null,
@@ -842,7 +858,7 @@ function cardHTML(item){
   <div class="card">
     <div class="cardTop">
       ${prio!=='—'?`<span class="prio ${prioClass}">${prio}</span>`:''}
-      <span class="score">${item.score ?? '—'}</span>
+      <span class="score">${item.score ?? '—'}</span>${item.scoreProvisorio?'<span class="sub" title="Fórmula de score ainda não homologada (carta de Revisão/Calibração M8/M9A) — não usar para ranking ou priorização"> (provisório)</span>':''}
       <span class="sub entradaTopo"><strong>Entrada:</strong> ${esc(formatarEntradaSistema(e.created_at))}</span>
       <span class="statusTag st-${e.status_editorial}">${STATUS_LABEL[e.status_editorial]||e.status_editorial}</span>
       <div class="grow"></div>
@@ -860,7 +876,7 @@ function cardHTML(item){
 
     <details>
       <summary>Por que esse score</summary>
-      <div class="sub" style="margin:8px 0;"><strong>Score editorial:</strong> ${item.score ?? '—'} ${prio!=='—'?'· Prioridade '+esc(prio):''}</div>
+      <div class="sub" style="margin:8px 0;"><strong>Score editorial:</strong> ${item.score ?? (item.scoreProvisorio?'— (score calculado existe, mas está provisório — fórmula ainda não homologada)':'—')} ${prio!=='—'?'· Prioridade '+esc(prio):''}</div>
       ${explicacaoScore}
       <table class="compTable" style="margin-top:8px;"><tbody>${compRows || '<tr><td colspan="4" style="color:var(--muted)">Esta versão de score não possui decomposição numérica reproduzível registrada. Use a justificativa editorial acima como explicação oficial.</td></tr>'}</tbody></table>
     </details>
@@ -1021,7 +1037,7 @@ async function abrirDetalheCarteira(id){
       .eq('carteira_id', id),
     sb.from('events')
       .select(`id, titulo_fato, empresa,
-        event_scores(score_relevancia, score_normalizado, score_bruto, prioridade, justificativa_score, versao_score, vigente)`)
+        event_scores(score_relevancia, score_normalizado, score_bruto, prioridade, justificativa_score, versao_score, vigente, estagio)`)
       .eq('empresa_id', clienteSelecionado)
   ]);
 
@@ -1035,7 +1051,7 @@ async function abrirDetalheCarteira(id){
     const vig = (e.event_scores||[]).find(s=>s.vigente) || (e.event_scores||[])[0];
     return vig ? {
       titulo_fato: e.titulo_fato,
-      score: vig.score_relevancia ?? vig.score_normalizado ?? vig.score_bruto ?? null,
+      score: scoreParaRanking(vig),
       prioridade: vig.prioridade,
       versao_score: vig.versao_score,
       justificativa_score: vig.justificativa_score
