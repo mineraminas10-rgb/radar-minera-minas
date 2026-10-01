@@ -1,0 +1,47 @@
+name: Coletor M6 - Outorgas IGAM
+
+# ESTADO EM 01/10/2026 (ler antes de mexer): este workflow roda só os
+# testes de regressão do M6 (signals.py, scoring.py — contra o gabarito
+# da Carta de Homologação M6-V1.0). Diferente do M8/M9A, o M6 AINDA NÃO
+# TEM um passo de "rodar coletor" de verdade:
+#   - discovery.py (índice de publicações do IGAM) e extractor.py
+#     (conversão/segmentação de DOC/PDF) nunca foram validados contra um
+#     arquivo real do IGAM — nenhum dos dois foi testado contra rede real.
+#   - extractor.extrair_texto() levanta NotImplementedError de propósito.
+#   - main.py não tem um bloco `if __name__ == "__main__":` / CLI ainda —
+#     só é chamado hoje pelo harness de teste em memória
+#     (test_regressao_m6.py), nunca por um script de linha de comando.
+# Ou seja: faltam pelo menos dois passos antes deste workflow poder rodar
+# o coletor de verdade — (1) implementar extrair_texto() e validar
+# discovery.py/extractor.py contra documentos reais do IGAM, (2) dar a
+# main.py um entrypoint de CLI equivalente ao do M8/M9A. Até lá, este
+# workflow serve só como rede de segurança: qualquer mudança em
+# signals.py/scoring.py que quebrar o gabarito da carta falha aqui antes
+# de chegar em qualquer lugar.
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - 'coletores/m6_outorgas/**'
+
+jobs:
+  testar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar dependências
+        run: pip install -r coletores/m6_outorgas/requirements.txt
+
+      - name: Rodar testes (não pode divergir do gabarito da Carta de Homologação M6-V1.0)
+        working-directory: coletores/m6_outorgas
+        run: |
+          python -m unittest test_signals.py -v
+          python -m unittest test_scoring.py -v
+          python -m unittest test_regressao_m6.py -v
