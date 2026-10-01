@@ -22,6 +22,58 @@ from typing import List, Tuple
 
 VERSAO_REGRA_SCORE = "SCORE-M8-V1.0"
 
+# ----------------------------------------------------------------------------
+# Pesos documentados (extração pura dos números já usados dentro de
+# score_vinculo/score_gravidade abaixo — não muda nenhum cálculo, só dá um
+# nome endereçável a cada peso pra montar_memoria_calculo_* conseguir
+# montar gatilhos_aplicados/redutores_aplicados sem duplicar a lógica de
+# pontuação num segundo lugar). Adição de 28/09/2026, etapa "pipeline" da
+# implementação do Escopo v2.8 — a fórmula em si (valores, faixas) não foi
+# tocada.
+# ----------------------------------------------------------------------------
+PESOS_VINCULO = {
+    "modalidade_mineracao": 4,
+    "mina_identificada": 4,
+    "material_mineral": 5,
+    "insumo_estrutura_vinculada": 2,
+    "municipio_minerador": 1,
+}
+REDUTORES_VINCULO = {
+    "produto_causa_nao_mineraria": -4,
+    "acidente_rodoviario_comum": -3,
+}
+PESOS_GRAVIDADE = {
+    "atingiu_ou_pode_atingir_curso_dagua": 3,
+    "ultrapassou_limites_operacao": 2,
+    "rejeito_ou_produto_perigoso_ou_volume_significativo": 2,
+    "risco_estrutural_ou_interrupcao_abastecimento": 2,
+    "comunicacao_mais_de_6_horas": 1,
+    "vitimas_evacuacao_bloqueio_ou_risco_comunidade": 1,
+}
+
+# Teto teórico usado só para normalizar score_bruto em score_normalizado
+# (0-100) — NÃO é uma trava nova da fórmula (a fórmula/faixas continuam
+# exatamente como a Carta M8 v1.0 define). score_gravidade é o score_bruto
+# realmente gravado em event_scores (main.py só chama gravar_score() com
+# score_gravidade, nunca com score_vinculo) — por isso o teto de
+# normalização é a soma dos pesos positivos de PESOS_GRAVIDADE (11), não os
+# 10 do vínculo. A carta não define um teto explícito pra gravidade (só
+# define os limiares de nível) — esta é uma leitura minha para permitir
+# ranking transversal comparável a outros módulos; confirmar com a Rapha
+# antes de considerar definitiva.
+TETO_NORMALIZACAO_GRAVIDADE = float(sum(PESOS_GRAVIDADE.values()))  # = 11.0
+
+
+def calcular_score_normalizado(score_bruto: float, teto_teorico: float = TETO_NORMALIZACAO_GRAVIDADE) -> float:
+    """Reescala score_bruto (escala própria do módulo) para 0-100, para
+    permitir ranking transversal entre módulos (score_normalizado é o campo
+    que a fila do editor usa para comparar eventos de módulos diferentes —
+    nunca compare score_bruto entre módulos diretamente)."""
+    if teto_teorico <= 0:
+        return 0.0
+    normalizado = (max(score_bruto, 0.0) / teto_teorico) * 100
+    return round(min(normalizado, 100.0), 2)
+
 
 # ============================================================================
 # Score de vínculo minerário (Carta §8)
@@ -131,6 +183,36 @@ def score_vinculo(sig: SignaisVinculo) -> Tuple[float, str, List[str]]:
     return pontos, faixa, justificativa
 
 
+def montar_memoria_calculo_vinculo(sig: SignaisVinculo, justificativa: List[str]) -> dict:
+    """Extrai, dos sinais já calculados por score_vinculo (não recalcula
+    nada), os gatilhos/redutores que estavam ativos — para popular
+    event_scores.gatilhos_aplicados/redutores_aplicados (memória de cálculo
+    auditável, Carta de Calibração M8/M9A, campo de normalização). Chamar
+    DEPOIS de score_vinculo(sig), com a mesma justificativa que ele devolveu."""
+    gatilhos = {campo: peso for campo, peso in PESOS_VINCULO.items() if getattr(sig, campo, False)}
+    redutores = {campo: peso for campo, peso in REDUTORES_VINCULO.items() if getattr(sig, campo, False)}
+    if sig.cadeia_mineral_industrial_nao_confirmada:
+        gatilhos["cadeia_mineral_industrial_nao_confirmada_piso5"] = 5
+
+    # ACHADO da auditoria de 28/09/2026, corrigido aqui: event_scores.
+    # piso_aplicado/teto_aplicado são numeric(6,2) no banco, mas esta
+    # função gravava a LISTA de texto da justificativa (não um número) —
+    # isso teria estourado com IntegrityError/InvalidTextRepresentation em
+    # qualquer evento real que disparasse o piso de §13 (não testado antes
+    # porque nenhum caso de teste anterior tinha
+    # cadeia_mineral_industrial_nao_confirmada=True). O valor correto é o
+    # piso numérico que score_vinculo() de fato aplica (5), não o texto da
+    # regra — detectamos SE ele disparou olhando a mesma justificativa que
+    # score_vinculo() já produziu (não recalculamos pontos aqui).
+    piso_disparado = any(j.startswith("carga/produto ligado") for j in justificativa)
+    return {
+        "gatilhos_aplicados": gatilhos,
+        "redutores_aplicados": redutores,
+        "piso_aplicado": 5.0 if piso_disparado else None,
+        "teto_aplicado": None,  # vínculo só tem teto de acumulação (10), já refletido no próprio pontos
+    }
+
+
 # ============================================================================
 # Score de gravidade (Carta §9) — só roda após vínculo confirmado/aprovado
 # ============================================================================
@@ -175,6 +257,18 @@ def score_gravidade(sig: SignaisGravidade) -> Tuple[float, str]:
         nivel = "arquivo_contextual"
 
     return pontos, nivel
+
+
+def montar_memoria_calculo_gravidade(sig: SignaisGravidade) -> dict:
+    """Idem à de vínculo, para score_gravidade — não tem redutores nem
+    piso/teto semânticos na Carta §9 (só soma direta até o limiar de nível)."""
+    gatilhos = {campo: peso for campo, peso in PESOS_GRAVIDADE.items() if getattr(sig, campo, False)}
+    return {
+        "gatilhos_aplicados": gatilhos,
+        "redutores_aplicados": {},
+        "piso_aplicado": None,
+        "teto_aplicado": None,
+    }
 
 
 def calcular_atraso_minutos(data_hora_ocorrencia, data_hora_comunicacao) -> int:
