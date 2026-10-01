@@ -258,12 +258,17 @@ def gravar_score(sb: Client, event_id: str, score_bruto: float, prioridade: str,
                   regra_evento_id: Optional[str] = None, regra_evento_versao: Optional[int] = None,
                   gatilhos_aplicados: Optional[dict] = None, redutores_aplicados: Optional[dict] = None,
                   piso_aplicado=None, teto_aplicado=None,
-                  confianca_evidencial: Optional[float] = None, estagio: str = "final"):
+                  confianca_evidencial: Optional[float] = None, estagio: str = "preliminar"):
     """Mesma extensão feita em coletores/m8_acidentes/db_writer.py — ver
     docstring lá para o raciocínio completo de cada campo.
     confianca_evidencial fica None por padrão de propósito (decisão de
     28/09/2026, mesma regra do M8): ainda não existe critério objetivo e
-    reproduzível para calculá-la."""
+    reproduzível para calculá-la.
+
+    estagio fica 'preliminar' por padrão (correção de 01/10/2026): mesma
+    razão documentada em coletores/m8_acidentes/db_writer.py — nenhuma
+    fórmula está homologada, e este coletor está prestes a passar a rodar
+    de verdade (item 1 da atualização de 01/10/2026)."""
     sb.table("event_scores").update({"vigente": False}).eq("event_id", event_id).eq("vigente", True).execute()
     sb.table("event_scores").insert({
         "event_id": event_id,
