@@ -12,6 +12,43 @@ from typing import List, Tuple
 
 VERSAO_REGRA_SCORE = "SCORE-M9A-V0.2"
 
+# ----------------------------------------------------------------------------
+# Pesos documentados (extração pura dos números já usados dentro de
+# score_m9a abaixo — não muda nenhum cálculo). Mesma lógica/propósito do
+# equivalente em coletores/m8_acidentes/scoring.py — ver os comentários lá.
+# Adição de 28/09/2026, etapa "pipeline" da implementação do Escopo v2.8.
+# ----------------------------------------------------------------------------
+PESOS_M9A = {
+    "mudanca_material_direito": 4,
+    "autorizacao_extracao": 3,
+    "avanco_pesquisa": 3,
+    "alvara_comum_pesquisa": 2,
+    "dimensao_objetiva": 2,
+    "empresa_relevante": 2,
+    "mineral_estrategico": 2,
+    "reserva_ou_substancia": 1,
+    "varios_municipios": 1,
+}
+REDUTORES_M9A = {
+    "rotina": -5,
+    "exigencia_generica": -3,
+    "retificacao_formal": -2,
+}
+
+# Escala já é 0-10 por definição da carta (§6) — não é uma leitura minha
+# como o teto do M8-gravidade é; é o valor literal do documento.
+TETO_NORMALIZACAO_M9A = 10.0
+
+
+def calcular_score_normalizado(score_bruto: float, teto_teorico: float = TETO_NORMALIZACAO_M9A) -> float:
+    """Reescala score_bruto (0-10) para 0-100 — mesmo contrato da função
+    equivalente em m8_acidentes/scoring.py, para ranking transversal entre
+    módulos usar sempre a mesma escala (score_normalizado)."""
+    if teto_teorico <= 0:
+        return 0.0
+    normalizado = (max(score_bruto, 0.0) / teto_teorico) * 100
+    return round(min(normalizado, 100.0), 2)
+
 
 @dataclass
 class SignaisM9A:
@@ -123,3 +160,50 @@ def score_m9a(sig: SignaisM9A) -> Tuple[float, str, List[str]]:
         faixa = "D"
 
     return pontos, faixa, justificativa
+
+
+# Valores numéricos dos pisos/tetos semânticos do §7 — mesmos números já
+# usados dentro de score_m9a() (min()/max() acima), só nomeados aqui para
+# montar_memoria_calculo() não precisar duplicar a matemática, só detectar
+# (via a justificativa que score_m9a() já produziu) qual regra disparou.
+# Casamento por trecho único do texto, não string inteira, para não
+# quebrar com uma vírgula fora de lugar.
+_PISO_FRAGMENTOS_M9A = [
+    ("piso A: decaimento/caducidade/interdição de concessão de lavra", 8.0),
+]
+_TETO_FRAGMENTOS_M9A = [
+    ("teto: rotina não gera prioridade", 1.0),
+    ("teto: exigência genérica não vira alerta", 4.0),
+    ("teto B: relatório de pesquisa aprovado", 7.0),
+    ("teto C: alvará comum de pesquisa", 4.0),
+]
+
+
+def montar_memoria_calculo(sig: SignaisM9A, justificativa: List[str]) -> dict:
+    """Extrai, dos sinais já calculados por score_m9a (não recalcula nada),
+    os gatilhos/redutores/piso/teto que estavam ativos — para popular
+    event_scores.gatilhos_aplicados/redutores_aplicados/piso_aplicado/
+    teto_aplicado. Chamar DEPOIS de score_m9a(sig), com a mesma
+    justificativa que ele devolveu.
+
+    ACHADO da auditoria de 28/09/2026, corrigido aqui: event_scores.
+    piso_aplicado/teto_aplicado são numeric(6,2) no banco, mas esta função
+    gravava a LISTA de texto da justificativa (não um número) — mesmo bug
+    do equivalente em coletores/m8_acidentes/scoring.py, confirmado aqui
+    porque este caso de teste dispara justamente o piso A (decaimento).
+    Quando mais de um teto dispara na mesma pontuação (podem se acumular
+    — score_m9a() aplica vários min() em sequência), grava o mais
+    restritivo (o menor valor), que é o que de fato limitou o score
+    final."""
+    gatilhos = {campo: peso for campo, peso in PESOS_M9A.items() if getattr(sig, campo, False)}
+    redutores = {campo: peso for campo, peso in REDUTORES_M9A.items() if getattr(sig, campo, False)}
+    pisos_disparados = [valor for frag, valor in _PISO_FRAGMENTOS_M9A
+                         if any(frag in j for j in justificativa)]
+    tetos_disparados = [valor for frag, valor in _TETO_FRAGMENTOS_M9A
+                         if any(frag in j for j in justificativa)]
+    return {
+        "gatilhos_aplicados": gatilhos,
+        "redutores_aplicados": redutores,
+        "piso_aplicado": max(pisos_disparados) if pisos_disparados else None,
+        "teto_aplicado": min(tetos_disparados) if tetos_disparados else None,
+    }
