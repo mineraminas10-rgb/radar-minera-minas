@@ -97,3 +97,29 @@ def derivar_checklist_m9a(
     respostas[12] = RESPOSTA_REQUER_APURACAO
 
     return respostas
+
+
+# Limiares documentados de 28/09/2026 (achado da auditoria: events.grau_completude
+# já existia no schema desde antes, mas nenhum coletor o preenchia). Cobertura
+# = proporção de respostas 'confirmado' sobre as 12 perguntas — NUNCA a
+# partir do tamanho do texto (regra explícita da Rapha, 28/09/2026). Mesmos
+# limiares usados em coletores/m8_acidentes/checklist_editorial.py.
+LIMIAR_GRAU_ALTA = 0.75   # >= 9/12 confirmadas
+LIMIAR_GRAU_MEDIA = 0.40  # >= 5/12 confirmadas
+
+
+def calcular_grau_completude(respostas: dict) -> str:
+    """Retorna 'Alta' | 'Media' | 'Baixa' (mesmos valores do enum
+    grau_completude do banco) a partir da proporção de respostas
+    'confirmado' entre as 12 perguntas do checklist — mesma convenção de
+    denominador (12, não só as aplicáveis) já usada hoje no painel
+    ("Atende N de 12 pontos")."""
+    if not respostas:
+        return "Baixa"
+    confirmadas = sum(1 for r in respostas.values() if r == RESPOSTA_CONFIRMADO)
+    proporcao = confirmadas / 12
+    if proporcao >= LIMIAR_GRAU_ALTA:
+        return "Alta"
+    if proporcao >= LIMIAR_GRAU_MEDIA:
+        return "Media"
+    return "Baixa"
