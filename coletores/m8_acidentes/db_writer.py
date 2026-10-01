@@ -174,7 +174,7 @@ def gravar_score(sb: Client, event_id: str, score_bruto: float, prioridade: str,
                   regra_evento_id: Optional[str] = None, regra_evento_versao: Optional[int] = None,
                   gatilhos_aplicados: Optional[dict] = None, redutores_aplicados: Optional[dict] = None,
                   piso_aplicado=None, teto_aplicado=None,
-                  confianca_evidencial: Optional[float] = None, estagio: str = "final"):
+                  confianca_evidencial: Optional[float] = None, estagio: str = "preliminar"):
     """Nunca sobrescreve — marca a versão anterior vigente=false e insere
     uma nova linha vigente=true (mesmo padrão do resto do Radar).
 
@@ -190,7 +190,15 @@ def gravar_score(sb: Client, event_id: str, score_bruto: float, prioridade: str,
     confianca_evidencial fica None por padrão de propósito: ainda não
     existe uma regra objetiva e reproduzível para calculá-la (decisão de
     28/09/2026) — nunca atribuir um valor arbitrário só para preencher a
-    coluna."""
+    coluna.
+
+    estagio fica 'preliminar' por padrão (correção de 01/10/2026): nenhuma
+    fórmula de score do Radar está homologada para produção — decisão de
+    30/09/2026, mesma regra já aplicada em coletores/m6_outorgas/db_writer.py.
+    Antes desta correção este coletor gravava 'final' por padrão, o que
+    teria liberado automaticamente qualquer evento novo assim que o
+    coletor encontrasse um real (o workflow já roda 2x/dia). Só passar
+    estagio='final' explicitamente depois de uma homologação formal."""
     sb.table("event_scores").update({"vigente": False}).eq("event_id", event_id).eq("vigente", True).execute()
     sb.table("event_scores").insert({
         "event_id": event_id,
