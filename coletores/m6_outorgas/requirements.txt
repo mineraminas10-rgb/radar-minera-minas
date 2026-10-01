@@ -1,0 +1,3 @@
+# Módulo 6 — coletor de Outorgas de Recursos Hídricos do IGAM
+requests==2.32.3
+supabase==2.9.1     # client oficial — grava via service_role key (nunca a anon key)
