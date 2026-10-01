@@ -39,9 +39,13 @@ jobs:
       - name: Instalar dependências
         run: pip install -r coletores/m8_acidentes/requirements.txt
 
-      - name: Rodar testes da regra de score (não pode divergir da carta)
-        run: python -m unittest test_scoring.py -v
+      - name: Rodar testes (não pode divergir da carta nem da trava de identidade do evento)
         working-directory: coletores/m8_acidentes
+        run: |
+          python -m unittest test_scoring.py -v
+          python -m unittest test_signals.py -v
+          python -m unittest test_checklist_editorial.py -v
+          python -m unittest test_identidade_evento.py -v
 
       - name: Rodar coletor
         working-directory: coletores/m8_acidentes
