@@ -301,7 +301,6 @@
   <nav class="tabs" aria-label="Navegação principal">
     <button class="active" data-view="fila">Fila do Editor</button>
     <button data-view="carteiras">Carteiras</button>
-    <button data-view="consumo" id="tabConsumo" hidden>Consumo</button>
     <button data-view="admin" id="tabAdmin" hidden>ADMIN</button>
   </nav>
   <div id="connStatus"><span class="dot"></span><span id="connLabel">conectando…</span></div>
@@ -375,22 +374,18 @@
     </div>
   </section>
 
-  <!-- ===================== CONSUMO (admin_empresa: só a própria empresa) ===================== -->
-  <section id="view-consumo" class="view">
-    <div id="consumoBodyEmpresa"></div>
-  </section>
-
-  <!-- ===================== ADMIN (somente master) ===================== -->
+  <!-- ===================== ADMIN (somente master: Empresas, Usuários, API, Consumo, Auditoria) ===================== -->
   <section id="view-admin" class="view">
     <div class="adminBar">
       <label for="adminEmpresaSel">Empresa ativa</label>
       <select id="adminEmpresaSel"><option value="">—</option></select>
     </div>
     <div class="adminSub" id="adminSubTabs">
-      <button type="button" data-sub="usuarios" class="active">Usuários</button>
-      <button type="button" data-sub="empresas">Empresas</button>
+      <button type="button" data-sub="empresas" class="active">Empresas</button>
+      <button type="button" data-sub="usuarios">Usuários</button>
       <button type="button" data-sub="api">API</button>
       <button type="button" data-sub="consumo">Consumo</button>
+      <button type="button" data-sub="auditoria">Auditoria</button>
     </div>
     <div id="adminBody"></div>
   </section>
@@ -497,26 +492,25 @@ let clientesCache = [], clienteSelecionado = null;
 //   com sessão: lê usuarios_perfil (id = auth.users.id) -> valida (existe,
 //   ativo, papel conhecido, empresa atribuída) -> só então mostra o dashboard.
 // ============================================================================
-const ROLES_VALIDOS = ['master', 'admin_empresa', 'editor', 'viewer'];
-const ROTULO_ROLE = {
-  master: 'Master', admin_empresa: 'Admin da empresa', editor: 'Editor', viewer: 'Leitor (somente leitura)',
-};
-// Matriz de permissões de INTERFACE (espelha as policies preparadas no banco).
+const ROLES_VALIDOS = ['master', 'admin'];
+const ROTULO_ROLE = { master: 'Master', admin: 'Admin' };
+// Matriz de permissões de INTERFACE (espelha o servidor; quem barra de verdade é o banco/Edge Functions).
+// Só existem DOIS perfis:
+//   master -> tudo: todas as empresas, usuários, API, consumo, limites, auditoria.
+//   admin  -> opera o RADAR (fila, checklist, carteiras) nas empresas que o master liberou
+//             em usuario_empresas. NÃO vê usuários, API, segredos, consumo, limites nem auditoria.
 //   editorial          -> mudar status do evento e marcar checklist
-//   checklist_desmarcar-> apagar linha do checklist (o banco só deixa admin_empresa/master apagar)
+//   checklist_desmarcar-> apagar linha do checklist
 //   carteiras_editar   -> criar/editar/excluir carteiras, pesos e fontes
-//   cliente_criar      -> botão "+ Novo cliente"
-//   admin_painel       -> menu ADMIN (usuários, empresas, API, consumo global) — só master
-//   consumo_ver        -> aba Consumo da própria empresa (master vê tudo dentro do ADMIN)
+//   cliente_criar      -> botão "+ Novo cliente" (só master)
+//   admin_painel       -> menu ADMIN (empresas, usuários, API, consumo, auditoria) — só master
 const PERMISSOES = {
-  master:        { editorial: true,  checklist_desmarcar: true,  carteiras_editar: true,  cliente_criar: true,  admin_painel: true,  consumo_ver: true  },
-  admin_empresa: { editorial: true,  checklist_desmarcar: true,  carteiras_editar: true,  cliente_criar: false, admin_painel: false, consumo_ver: true  },
-  editor:        { editorial: true,  checklist_desmarcar: false, carteiras_editar: false, cliente_criar: false, admin_painel: false, consumo_ver: false },
-  viewer:        { editorial: false, checklist_desmarcar: false, carteiras_editar: false, cliente_criar: false, admin_painel: false, consumo_ver: false },
+  master: { editorial: true, checklist_desmarcar: true, carteiras_editar: true, cliente_criar: true,  admin_painel: true  },
+  admin:  { editorial: true, checklist_desmarcar: true, carteiras_editar: true, cliente_criar: false, admin_painel: false },
 };
 const MSG_SEM_PERMISSAO = 'Seu perfil não tem permissão para esta ação (ou o registro não pertence à sua empresa). Nada foi alterado.';
 
-let authState = { user: null, perfil: null };   // preenchido só depois da validação completa
+let authState = { user: null, perfil: null, empresas: [] };   // preenchido só depois da validação completa (empresas = as que este usuário pode acessar)
 let sessaoCarregadaUid = null;   // uid cuja sessão já foi (ou está sendo) processada — evita reprocessar eventos repetidos
 let seqAuth = 0;                 // invalida carregamentos de perfil que ficaram obsoletos (logout no meio)
 let saidaManual = false;         // true quando o próprio usuário clicou em "Sair"
@@ -535,18 +529,22 @@ function exigirPermissao(acao, mensagem){
   alert(mensagem || MSG_SEM_PERMISSAO);
   return false;
 }
-// empresa_id que vai em QUALQUER registro novo. Nunca vem de campo digitado:
-// usuário comum -> sempre a empresa do próprio perfil; master -> o cliente que
-// ele escolheu no seletor. (O RLS ainda confere de novo no banco.)
+// Empresas que este usuário pode acessar: master = todas as ativas; admin = só as com vínculo ATIVO
+// em usuario_empresas (o banco filtra por RLS; aqui filtramos de novo por defesa).
+function empresaPermitida(id){
+  if (!id || !authState.perfil) return false;
+  if (authState.perfil.role === 'master') return true;
+  return (authState.empresas || []).some(e => e.id === id);
+}
+// empresa_id que vai em QUALQUER registro novo. Nunca vem de campo digitado: é o cliente
+// escolhido no seletor, e só vale se estiver na lista de empresas liberadas para o usuário.
+// (O RLS confere de novo no banco — o seletor NUNCA é a fonte de autorização.)
 function empresaParaGravar(){
   const p = authState.perfil;
   if (!p) throw new Error('Sem usuário autenticado.');
-  if (p.role === 'master') {
-    if (!clienteSelecionado) throw new Error('Selecione um cliente antes de gravar.');
-    return clienteSelecionado;
-  }
-  if (!p.empresa_id) throw new Error('Usuário sem empresa atribuída.');
-  return p.empresa_id;
+  if (!clienteSelecionado) throw new Error('Selecione um cliente antes de gravar.');
+  if (!empresaPermitida(clienteSelecionado)) throw new Error('Empresa não autorizada para este usuário.');
+  return clienteSelecionado;
 }
 
 function mostrarTela(qual){
@@ -583,7 +581,7 @@ function limparEstadoDoApp(){
   filaData = []; clientesCache = []; clienteSelecionado = null;
   carteirasCache = []; sourcesCache = []; camposCriterioCache = []; carteiraSelecionada = null;
   window.__erroFontes = '';
-  authState = { user: null, perfil: null };
+  authState = { user: null, perfil: null, empresas: [] };
   const set = (id, html)=>{ const el = document.getElementById(id); if (el) el.innerHTML = html; };
   set('filaWrap', ''); set('carteirasList', ''); set('carteiraDetail', '');
   set('clienteSelect', '<option value="">—</option>');
@@ -596,8 +594,8 @@ function limparEstadoDoApp(){
   document.querySelectorAll('.view').forEach(v=>v.classList.toggle('active', v.id === 'view-fila'));
   ['novaSenha','novaSenha2'].forEach(id=>{ const el = document.getElementById(id); if (el) el.value = ''; });
   adminResetar();
-  set('adminBody', ''); set('consumoBodyEmpresa', ''); set('adminEmpresaSel', '<option value="">—</option>');
-  document.getElementById('tabAdmin').hidden = true; document.getElementById('tabConsumo').hidden = true;
+  set('adminBody', ''); set('adminEmpresaSel', '<option value="">—</option>');
+  document.getElementById('tabAdmin').hidden = true;
   document.getElementById('userNome').textContent = '—';
   document.getElementById('userPapel').textContent = '';
   document.title = 'Radar Minera Minas';
@@ -716,11 +714,29 @@ async function tratarSessao(user, origem){
   await carregarPerfilEIniciar(user, meuSeq);
 }
 
+// Lê (1) os vínculos ativos do usuário em usuario_empresas e (2) as empresas visíveis por RLS.
+// admin: só vale a interseção (vínculo ativo + empresa ativa). master: todas as empresas ativas.
+async function carregarEmpresasDoUsuario(uid, role){
+  let vinculos = [];
+  if (role !== 'master') {
+    const rv = await sb.from('usuario_empresas').select('empresa_id').eq('usuario_id', uid).eq('ativo', true);
+    if (rv.error) return { erro: rv.error };
+    vinculos = (rv.data || []).map(v => String(v.empresa_id).toLowerCase());
+    if (!vinculos.length) return { vinculos, empresas: [] };   // sem vínculo: nem consulta empresas
+  }
+  const re = await sb.from('empresas').select('id, nome, slug, ativa').order('nome', { ascending: true });
+  if (re.error) return { erro: re.error };
+  let empresas = (re.data || []).filter(e => e.ativa !== false);
+  if (role !== 'master') empresas = empresas.filter(e => vinculos.includes(String(e.id).toLowerCase()));
+  return { vinculos, empresas };
+}
+const assinaturaAcesso = (perfil, empresas) => [perfil.role, perfil.ativo ? 1 : 0, (empresas || []).map(e => e.id).sort().join(',')].join('|');
+
 async function carregarPerfilEIniciar(user, meuSeq){
   let perfil = null, erro = null;
   try {
     const r = await comLimiteDeTempo(
-      sb.from('usuarios_perfil').select('id, empresa_id, role, nome, ativo').eq('id', user.id).maybeSingle(),
+      sb.from('usuarios_perfil').select('id, role, nome, ativo').eq('id', user.id).maybeSingle(),
       15000, 'usuarios_perfil');
     perfil = r.data; erro = r.error;
   } catch (e) { erro = e; }
@@ -761,46 +777,39 @@ async function carregarPerfilEIniciar(user, meuSeq){
     });
     return;
   }
-  if (perfil.role !== 'master' && !perfil.empresa_id) {
+  // Empresas liberadas (vínculos ativos). master: todas as ativas, sem vínculo.
+  let acesso = null;
+  try { acesso = await comLimiteDeTempo(carregarEmpresasDoUsuario(user.id, perfil.role), 20000, 'empresas'); }
+  catch (e) { acesso = { erro: e }; }
+  if (meuSeq !== seqAuth) return;
+  if (acesso.erro) {
+    sessaoCarregadaUid = null;
+    exibirBloqueio({
+      titulo: 'Não foi possível verificar suas empresas',
+      msg: 'Houve uma falha ao consultar as empresas liberadas para você. Tente novamente em instantes.',
+      detalhe: 'Detalhe técnico: ' + (acesso.erro.message || String(acesso.erro)),
+      acoes: ['retry', 'sair'],
+    });
+    return;
+  }
+  if (perfil.role !== 'master' && !acesso.vinculos.length) {
     exibirBloqueio({
       titulo: 'Aguardando liberação de empresa',
-      msg: 'Seu cadastro ainda não foi vinculado a uma empresa. Um administrador master precisa atribuir sua empresa antes de você acessar o sistema.',
+      msg: 'Seu cadastro ainda não tem nenhuma empresa liberada. O administrador master precisa liberar ao menos uma empresa antes de você acessar o sistema.',
+      acoes: ['retry', 'sair'],
+    });
+    return;
+  }
+  if (perfil.role !== 'master' && !acesso.empresas.length) {
+    exibirBloqueio({
+      titulo: 'Empresa indisponível',
+      msg: 'As empresas liberadas para você estão inativas ou não foram encontradas. Fale com o administrador.',
       acoes: ['retry', 'sair'],
     });
     return;
   }
 
-  // Empresa do usuário comum precisa existir e estar ativa (só ela é consultada).
-  if (perfil.role !== 'master') {
-    let emp = null, eEmp = null;
-    try {
-      const r = await comLimiteDeTempo(
-        sb.from('empresas').select('id, nome, ativa').eq('id', perfil.empresa_id).maybeSingle(),
-        15000, 'empresas');
-      emp = r.data; eEmp = r.error;
-    } catch (e) { eEmp = e; }
-    if (meuSeq !== seqAuth) return;
-    if (eEmp) {
-      sessaoCarregadaUid = null;
-      exibirBloqueio({
-        titulo: 'Não foi possível verificar sua empresa',
-        msg: 'Houve uma falha ao consultar sua empresa. Tente novamente em instantes.',
-        detalhe: 'Detalhe técnico: ' + (eEmp.message || String(eEmp)),
-        acoes: ['retry', 'sair'],
-      });
-      return;
-    }
-    if (!emp || emp.ativa === false) {
-      exibirBloqueio({
-        titulo: 'Empresa indisponível',
-        msg: 'A empresa vinculada ao seu cadastro está inativa ou não foi encontrada. Fale com o administrador.',
-        acoes: ['retry', 'sair'],
-      });
-      return;
-    }
-  }
-
-  authState = { user, perfil };
+  authState = { user, perfil, empresas: acesso.empresas };
   iniciarApp();
 }
 
@@ -822,11 +831,10 @@ function iniciarApp(){
 // UX por papel. (O banco é quem realmente barra — ver comentário do topo.)
 function aplicarPermissoesUI(){
   document.getElementById('btnNovoCliente').hidden = !pode('cliente_criar');
-  // Usuário comum só enxerga a própria empresa: seletor travado.
-  document.getElementById('clienteSelect').disabled = !ehMaster();
-  // Abas administrativas: só aparecem conforme o papel (UX). Quem barra de verdade é o servidor.
+  // Seletor de cliente: master escolhe qualquer empresa; admin só entre as liberadas (travado se for uma só).
+  document.getElementById('clienteSelect').disabled = !(ehMaster() || (authState.empresas || []).length > 1);
+  // Menu ADMIN (Empresas, Usuários, API, Consumo, Auditoria) é só do master. Isto é UX; o servidor barra de verdade.
   document.getElementById('tabAdmin').hidden = !pode('admin_painel');
-  document.getElementById('tabConsumo').hidden = !(pode('consumo_ver') && !pode('admin_painel'));
 }
 
 // Revalida o perfil quando a sessão é renovada / a aba volta ao foco: se o
@@ -837,10 +845,16 @@ async function revalidarPerfil(user){
   if (agora - ultimaRevalidacao < 30000) return;
   ultimaRevalidacao = agora;
   try {
-    const { data, error } = await sb.from('usuarios_perfil').select('id, empresa_id, role, ativo').eq('id', user.id).maybeSingle();
+    const { data, error } = await sb.from('usuarios_perfil').select('id, role, ativo').eq('id', user.id).maybeSingle();
     if (error) return;   // falha de rede: não derruba quem está trabalhando
     const p = authState.perfil;
-    if (!data || data.ativo !== true || data.role !== p.role || (data.empresa_id || null) !== (p.empresa_id || null)) {
+    let mudou = !data || data.ativo !== true || data.role !== p.role;
+    if (!mudou) {
+      const ac = await carregarEmpresasDoUsuario(user.id, data.role);
+      if (ac.erro) return;
+      mudou = assinaturaAcesso(data, ac.empresas) !== assinaturaAcesso(p, authState.empresas);
+    }
+    if (mudou) {
       sessaoCarregadaUid = null;
       await tratarSessao(user, 'revalidacao');
     }
@@ -952,14 +966,12 @@ function ligarListenersDoApp(){
   document.querySelectorAll('nav.tabs button').forEach(btn=>{
     btn.addEventListener('click', ()=>{
       if(btn.dataset.view==='admin' && !pode('admin_painel')) return;
-      if(btn.dataset.view==='consumo' && !pode('consumo_ver')) return;
-      document.querySelectorAll('nav.tabs button').forEach(b=>b.classList.remove('active'));
+            document.querySelectorAll('nav.tabs button').forEach(b=>b.classList.remove('active'));
       document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
       btn.classList.add('active');
       document.getElementById('view-'+btn.dataset.view).classList.add('active');
       if(btn.dataset.view==='carteiras') carregarCarteirasTab();
       if(btn.dataset.view==='admin') abrirAdmin();
-      if(btn.dataset.view==='consumo') abrirConsumoEmpresa();
     });
   });
   ligarListenersAdmin();
@@ -989,17 +1001,16 @@ async function carregarClientes(){
   try{
     // Busca diretamente a tabela-mãe de clientes. Não usa cache local para
     // descobrir clientes novos: toda recarga consulta o Supabase novamente.
-    // Usuário que não é master só consulta a PRÓPRIA empresa (a policy
-    // listar_empresas_ativas deixaria listar todas — não usamos isso aqui).
-    let qEmpresas = sb.from('empresas')
-        .select('id,nome,slug,ativa')
-        .order('nome', { ascending: true });
-    if(!ehMaster()) qEmpresas = qEmpresas.eq('id', authState.perfil.empresa_id);
-    const { data, error } = await comLimiteDeTempo(qEmpresas, 15000, 'empresas');
+    // O banco (RLS) já devolve só as empresas que o usuário pode ver: master = todas;
+    // admin = as com vínculo ativo em usuario_empresas. Filtramos de novo por defesa.
+    const { data, error } = await comLimiteDeTempo(
+      sb.from('empresas').select('id,nome,slug,ativa').order('nome', { ascending: true }), 15000, 'empresas');
 
     if(error) throw error;
 
-    clientesCache = (data || []).filter(c => c.ativa !== false);
+    clientesCache = (data || []).filter(c => c.ativa !== false)
+      .filter(c => ehMaster() || (authState.empresas || []).some(e => e.id === c.id));
+    if(!ehMaster()) authState.empresas = clientesCache.slice();
 
     if(!clientesCache.length){
       clienteSelecionado = null;
@@ -1013,14 +1024,12 @@ async function carregarClientes(){
       .map(c => `<option value="${esc(c.id)}">${esc(c.nome)}</option>`)
       .join('');
 
-    // Só o master escolhe cliente. Usuário comum fica sempre na própria empresa,
-    // ignorando qualquer valor guardado no navegador.
-    const salvo = ehMaster() ? localStorage.getItem('radar_cliente_id') : null;
-    const preferido = !ehMaster()
-      ? clientesCache.find(c => c.id === authState.perfil.empresa_id)
-      : (clientesCache.find(c => c.id === salvo)
+    // Cliente inicial: o último escolhido neste navegador SE ainda estiver na lista liberada
+    // para este usuário (valor guardado é só conveniência, nunca autorização).
+    let salvo = null; try { salvo = localStorage.getItem('radar_cliente_id'); } catch (_) {}
+    const preferido = clientesCache.find(c => c.id === salvo)
         || clientesCache.find(c => c.slug === 'minera-minas')
-        || clientesCache[0]);
+        || clientesCache[0];
     if(!preferido){
       clienteSelecionado = null;
       sel.innerHTML = '<option value="">Empresa não disponível</option>';
@@ -1047,7 +1056,7 @@ async function carregarClientes(){
         'Detalhe: ' + esc(err?.message || String(err)) + '</div>';
     }
   }finally{
-    sel.disabled = !ehMaster();   // usuário comum: seletor sempre travado
+    sel.disabled = !(ehMaster() || clientesCache.length > 1);   // admin com uma só empresa: seletor travado
     if(btn) btn.disabled = false;
   }
 }
@@ -1060,7 +1069,7 @@ function atualizarTituloCliente(){
 async function trocarCliente(){
   const novo = document.getElementById('clienteSelect').value;
   if(!novo || novo===clienteSelecionado) return;
-  if(!ehMaster()){   // defesa extra: só o master troca de empresa
+  if(!clientesCache.some(c => c.id === novo) || !empresaPermitida(novo)){   // defesa extra: só empresas liberadas para o usuário
     document.getElementById('clienteSelect').value = clienteSelecionado || '';
     return;
   }
@@ -1094,7 +1103,7 @@ async function criarCliente(){
       : 'Não consegui criar o cliente: ' + error.message);
     return;
   }
-  clientesCache.push(data);
+  clientesCache.push(data); if (authState.empresas) authState.empresas.push(data);
   clientesCache.sort((a,b)=>a.nome.localeCompare(b.nome,'pt-BR'));
   const sel = document.getElementById('clienteSelect');
   sel.innerHTML = clientesCache.map(c=>`<option value="${esc(c.id)}">${esc(c.nome)}</option>`).join('');
@@ -1480,7 +1489,7 @@ async function atualizarChecklist(chk){
       }
     } else if(jaExiste){
       if(pode('checklist_desmarcar')){
-        // admin_empresa / master: remove a linha (comportamento original).
+        // admin / master: remove a linha (comportamento original).
         const { data: del, error: eDel } = await filtro(
           sb.from('checklist_editorial').delete()).select('id');
         if(eDel) throw eDel;
@@ -1972,17 +1981,19 @@ async function salvarCarteira(id){
 }
 
 // ===========================================================================
-// ADMIN (somente master) + CONSUMO (master e admin_empresa)
+// ADMIN (somente master): Empresas, Usuários, API, Consumo e Auditoria
 //
 // Esconder as abas aqui é UX. A segurança está no servidor:
 //   - admin-usuarios / admin-api (Edge Functions) confirmam role=master em usuarios_perfil;
-//   - leitura de api_execucoes/empresa_api_config/admin_auditoria é limitada por RLS;
+//   - leitura de api_execucoes/empresa_api_config/admin_auditoria/api_model_pricing é só do master (RLS);
+//   - admin não consegue se vincular a empresas nem mudar o próprio perfil: a escrita em usuario_empresas/usuarios_perfil
+//     só existe nas Edge Functions (service_role), que exigem master;
 //   - nenhuma chave de API existe neste arquivo: o navegador só chama Edge Functions
 //     com o JWT do próprio usuário e recebe resultados/métricas.
 // A "Empresa ativa" do Admin é um estado PRÓPRIO (adminState.empresaId), separado do
 // seletor de cliente da Fila, e sempre vai ao servidor como UUID (empresa_id).
 // ===========================================================================
-const adminState = { empresas: [], empresaId: null, sub: 'usuarios', usuarios: null, seq: 0 };
+const adminState = { empresas: [], empresaId: null, sub: 'empresas', usuarios: null, seq: 0 };
 let consumoSeq = 0;
 
 const fmtUsd = n => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(Number(n || 0));
@@ -2009,7 +2020,7 @@ async function chamarFuncao(nome, corpo){
 }
 
 function adminResetar(){
-  adminState.empresas = []; adminState.empresaId = null; adminState.sub = 'usuarios'; adminState.usuarios = null; adminState.seq++; consumoSeq++;
+  adminState.empresas = []; adminState.empresaId = null; adminState.sub = 'empresas'; adminState.usuarios = null; adminState.seq++; consumoSeq++;
 }
 const adminNovaRodada = () => ++adminState.seq;
 
@@ -2049,13 +2060,14 @@ function renderAdminSub(){
   if (adminState.sub === 'usuarios') adminUsuarios();
   else if (adminState.sub === 'empresas') adminEmpresas();
   else if (adminState.sub === 'api') adminApi();
-  else if (adminState.sub === 'consumo') montarConsumo(body, { modo: 'master' });
+  else if (adminState.sub === 'consumo') montarConsumo(body);
+  else if (adminState.sub === 'auditoria') adminAuditoria();
 }
 
 // ---------------------------------------------------------------------------
 // ADMIN > USUÁRIOS
 // ---------------------------------------------------------------------------
-const ROLES_UI = [['master', 'Master'], ['admin_empresa', 'Admin da empresa'], ['editor', 'Editor'], ['viewer', 'Leitor']];
+const ROTULO_PERFIL = { master: 'Master', admin: 'Admin' };
 
 async function adminUsuarios(){
   const body = document.getElementById('adminBody'); const meu = adminState.seq;
@@ -2070,11 +2082,14 @@ async function adminUsuarios(){
   }
 }
 
-function optsEmpresas(sel){
-  return '<option value="">— selecione —</option>' + adminState.empresas.filter(e => e.ativa || e.id === sel)
-    .map(e => `<option value="${esc(e.id)}"${e.id === sel ? ' selected' : ''}>${esc(e.nome)}</option>`).join('');
+// caixas de seleção das empresas liberadas (só empresas ativas, mais as já vinculadas)
+function checksEmpresas(selecionadas){
+  const sel = new Set((selecionadas || []).map(x => String(x).toLowerCase()));
+  const lista = adminState.empresas.filter(e => e.ativa || sel.has(String(e.id).toLowerCase()));
+  if (!lista.length) return '<span class="sub">Nenhuma empresa cadastrada.</span>';
+  return lista.map(e => `<label style="display:block;margin:2px 0"><input type="checkbox" name="uEmp" value="${esc(e.id)}"${sel.has(String(e.id).toLowerCase()) ? ' checked' : ''}> ${esc(e.nome)}${e.ativa ? '' : ' (inativa)'}</label>`).join('');
 }
-const optsRoles = sel => ROLES_UI.map(([v, l]) => `<option value="${v}"${v === sel ? ' selected' : ''}>${l}</option>`).join('');
+const nomesEmpresas = ids => (ids || []).map(nomeEmpresaPorId).map(esc).join(', ');
 
 function renderUsuarios(){
   const body = document.getElementById('adminBody');
@@ -2083,8 +2098,8 @@ function renderUsuarios(){
     <tr>
       <td>${esc(u.nome || '—')}</td>
       <td>${esc(u.email || '—')}</td>
-      <td>${u.role === 'master' ? '<span class="sub">todas</span>' : esc(nomeEmpresaPorId(u.empresa_id))}</td>
-      <td>${esc((ROLES_UI.find(r => r[0] === u.role) || [0, u.role])[1])}</td>
+      <td>${u.role === 'master' ? '<span class="sub">todas</span>' : ((u.empresa_ids || []).length ? nomesEmpresas(u.empresa_ids) : '<span class="sub">nenhuma (aguardando liberação)</span>')}</td>
+      <td>${esc(ROTULO_PERFIL[u.role] || u.role)}</td>
       <td><span class="statusTag ${u.ativo ? 'st-publicado' : 'st-descartado'}">${u.ativo ? 'Ativo' : 'Inativo'}</span></td>
       <td>${u.ultimo_acesso ? esc(formatarEntradaSistema(u.ultimo_acesso)) : '<span class="sub">nunca / indisponível</span>'}</td>
       <td style="white-space:nowrap">
@@ -2097,7 +2112,7 @@ function renderUsuarios(){
       <span class="sub">Não existe senha padrão: cada novo usuário recebe uma senha temporária aleatória (ou convite) e é obrigado a criar a própria no primeiro acesso.</span></div>
     <div id="usrForm"></div>
     <div style="overflow-x:auto"><table class="miniTable" style="min-width:820px"><thead><tr>
-      <th>Nome</th><th>E-mail</th><th>Empresa</th><th>Perfil</th><th>Status</th><th>Último acesso</th><th>Ações</th></tr></thead>
+      <th>Nome</th><th>E-mail</th><th>Empresas liberadas</th><th>Perfil</th><th>Status</th><th>Último acesso</th><th>Ações</th></tr></thead>
       <tbody>${linhas || '<tr><td colspan="7" class="empty">Nenhum usuário.</td></tr>'}</tbody></table></div>`;
   body.onclick = ev => {
     const b = ev.target.closest('[data-adm]'); if (!b || !pode('admin_painel')) return;
@@ -2110,16 +2125,20 @@ function renderUsuarios(){
 
 function formUsuario(id){
   const u = id ? (adminState.usuarios || []).find(x => x.id === id) : null;
+  const ehMasterAlvo = !!u && u.role === 'master';
   const box = document.getElementById('usrForm');
   box.innerHTML = `<div class="card">
     <strong>${u ? 'Editar usuário' : 'Novo usuário'}</strong>
     <div class="row3" style="margin-top:10px">
       <div class="field"><label>Nome</label><input type="text" id="uNome" value="${esc(u ? u.nome : '')}"></div>
       <div class="field"><label>E-mail</label><input type="text" id="uEmail" value="${esc(u ? u.email : '')}" ${u ? 'disabled' : ''}></div>
-      <div class="field"><label>Perfil</label><select id="uRole">${optsRoles(u ? u.role : 'viewer')}</select></div>
+      <div class="field"><label>Perfil</label><input type="text" id="uRole" value="${esc(ROTULO_PERFIL[u ? u.role : 'admin'])}" disabled>
+        <div class="sub">${ehMasterAlvo ? 'O master não pode ser alterado por aqui.' : 'Novos usuários são sempre Admin. Só existe um master.'}</div></div>
     </div>
     <div class="row3">
-      <div class="field"><label>Empresa</label><select id="uEmpresa">${optsEmpresas(u ? u.empresa_id : adminState.empresaId)}</select></div>
+      <div class="field"><label>Empresas liberadas</label>
+        ${ehMasterAlvo ? '<div class="sub">O master acessa todas as empresas.</div>' : `<div id="uEmpresas">${checksEmpresas(u ? u.empresa_ids : [])}</div>
+        <div class="sub">O admin só enxerga e opera as empresas marcadas. Sem nenhuma marcada, ele fica aguardando liberação.</div>`}</div>
       ${u ? '' : '<div class="field"><label>Primeiro acesso</label><input type="text" id="uModo" value="Senha temporária única" disabled><div class="sub">O sistema gera uma senha aleatória só desta pessoa, mostrada uma vez; no 1º acesso ela é obrigada a criar a própria senha.</div></div>'}
     </div>
     <div id="uMsg" class="sub"></div>
@@ -2127,34 +2146,32 @@ function formUsuario(id){
       ${u ? '<button class="smallBtn" id="uRecSenha">Gerar nova senha temporária</button>' : ''}
       <button class="smallBtn" id="uCancel">Cancelar</button><button id="uSalvar">${u ? 'Salvar' : 'Criar usuário'}</button>
     </div></div>`;
-  const role = document.getElementById('uRole'), emp = document.getElementById('uEmpresa');
-  const ajusta = () => { emp.disabled = role.value === 'master'; if (emp.disabled) emp.value = ''; };
-  role.addEventListener('change', ajusta); ajusta();
   document.getElementById('uCancel').onclick = () => { box.innerHTML = ''; };
   document.getElementById('uSalvar').onclick = () => salvarUsuario(id);
-  if (u) {
-    document.getElementById('uRecSenha').onclick = () => recuperarSenha(id, 'senha');
-
-  }
+  if (u) document.getElementById('uRecSenha').onclick = () => recuperarSenha(id, 'senha');
 }
 
 async function salvarUsuario(id){
   if (!exigirPermissao('admin_painel')) return;
   const msg = document.getElementById('uMsg'), btn = document.getElementById('uSalvar');
   const nome = document.getElementById('uNome').value.trim();
-  const role = document.getElementById('uRole').value;
-  const empresa_id = role === 'master' ? null : (document.getElementById('uEmpresa').value || null);
+  const alvo = id ? (adminState.usuarios || []).find(x => x.id === id) : null;
+  const ehMasterAlvo = !!alvo && alvo.role === 'master';
+  const boxEmp = document.getElementById('uEmpresas');
+  const empresa_ids = boxEmp ? Array.from(boxEmp.querySelectorAll('input[name="uEmp"]:checked')).map(i => i.value) : null;
   if (nome.length < 2) { msg.textContent = 'Informe o nome.'; return; }
-  if (role !== 'master' && !empresa_id) { msg.textContent = 'Escolha a empresa deste perfil.'; return; }
   btn.disabled = true; msg.textContent = 'Salvando…';
   try {
     if (id) {
-      await chamarFuncao('admin-usuarios', { acao: 'atualizar', id, nome, role, empresa_id });
+      // perfil não é enviado: não muda por aqui. Master não tem lista de empresas.
+      const corpo = { acao: 'atualizar', id, nome };
+      if (!ehMasterAlvo && empresa_ids) corpo.empresa_ids = empresa_ids;
+      await chamarFuncao('admin-usuarios', corpo);
       msg.textContent = 'Salvo.';
     } else {
       const email = document.getElementById('uEmail').value.trim();
       const modo = 'senha';
-      const r = await chamarFuncao('admin-usuarios', { acao: 'criar', nome, email, role, empresa_id, modo });
+      const r = await chamarFuncao('admin-usuarios', { acao: 'criar', nome, email, role: 'admin', empresa_ids: empresa_ids || [], modo });
       msg.innerHTML = r.modo === 'senha'
         ? 'Usuário criado. Senha temporária (aparece só agora, repasse por um canal seguro): <input type="text" readonly style="width:100%;font-family:monospace" value="' + esc(r.senha_temporaria) + '"><br>No primeiro acesso a pessoa será obrigada a criar a própria senha.'
         : r.modo === 'link'
@@ -2208,7 +2225,7 @@ async function adminEmpresas(){
     const cons = {}; (rm.data || []).forEach(c => { cons[c.empresa_id] = c; });
     const linhas = adminState.empresas.map(e => {
       const c = cfg[e.id], k = cons[e.id];
-      const nUsers = (adminState.usuarios || []).filter(u => u.empresa_id === e.id).length;
+      const nUsers = (adminState.usuarios || []).filter(u => u.role === 'master' || (u.empresa_ids || []).includes(e.id)).length;
       return `<tr>
         <td><strong>${esc(e.nome)}</strong><div class="sub">${esc(e.slug)}</div></td>
         <td><span class="statusTag ${e.ativa ? 'st-publicado' : 'st-descartado'}">${e.ativa ? 'Ativa' : 'Inativa'}</span></td>
@@ -2217,7 +2234,7 @@ async function adminEmpresas(){
         <td>${k ? fmtUsd(k.custo_usd) + '<div class="sub">' + fmtNum(k.chamadas) + ' chamadas</div>' : '<span class="sub">—</span>'}</td>
         <td><button class="smallBtn" data-adm="operar" data-id="${esc(e.id)}"${e.id === adminState.empresaId ? ' disabled' : ''}>${e.id === adminState.empresaId ? 'Empresa ativa' : 'Operar esta empresa'}</button></td></tr>`;
     }).join('');
-    body.innerHTML = `<div class="sub" style="margin-bottom:10px">Criação e edição de empresas não fazem parte desta fase (a tabela empresas ainda não tem policy de escrita).</div>
+    body.innerHTML = `<div class="sub" style="margin-bottom:10px">Quem acessa cada empresa é definido em Usuários (empresas liberadas). Criação e edição de empresas não fazem parte desta fase (a tabela empresas ainda não tem policy de escrita).</div>
       <div style="overflow-x:auto"><table class="miniTable" style="min-width:760px"><thead><tr><th>Empresa</th><th>Status</th><th>API</th><th>Usuários</th><th>Consumo no mês</th><th></th></tr></thead><tbody>${linhas}</tbody></table></div>`;
     body.onclick = ev => {
       const b = ev.target.closest('[data-adm="operar"]'); if (!b || !pode('admin_painel')) return;
@@ -2336,19 +2353,17 @@ async function apiPreco(){
 }
 
 // ---------------------------------------------------------------------------
-// CONSUMO — usado em ADMIN > CONSUMO (master, todas as empresas) e na aba
-// "Consumo" do admin_empresa (travado na própria empresa, sem escolha de empresa).
+// CONSUMO — somente master (ADMIN > CONSUMO, todas as empresas). Admin não vê consumo, preços nem limites.
 // ---------------------------------------------------------------------------
 const diaSP = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(d || new Date());   // YYYY-MM-DD
 const inicioSP = dia => new Date(dia + 'T00:00:00-03:00').toISOString();
 const fimSP = dia => new Date(new Date(dia + 'T00:00:00-03:00').getTime() + 86400000).toISOString();   // exclusivo (dia seguinte)
 
-function montarConsumo(root, opt){
+function montarConsumo(root){
   const meu = ++consumoSeq;
-  const modoMaster = opt.modo === 'master' && pode('admin_painel');
-  if (!modoMaster && !pode('consumo_ver')) { root.innerHTML = '<div class="empty">Sem permissão.</div>'; return; }
+  const modoMaster = pode('admin_painel');
+  if (!modoMaster) { root.innerHTML = '<div class="empty">Sem permissão.</div>'; return; }
   const hoje = diaSP();
-  const fixa = modoMaster ? null : (authState.perfil && authState.perfil.empresa_id);   // admin_empresa: SEMPRE a própria
   root.innerHTML = `
     <div class="filtersPanel"><div class="filtersGrid">
       ${modoMaster ? `<div class="filterField"><label>Empresa</label><select id="cEmpresa"><option value="">Todas</option>${adminState.empresas.map(e => `<option value="${esc(e.id)}"${e.id === adminState.empresaId ? ' selected' : ''}>${esc(e.nome)}</option>`).join('')}</select></div>` : ''}
@@ -2367,10 +2382,10 @@ function montarConsumo(root, opt){
     <div id="cDrill"></div>`;
   const $ = id => root.querySelector('#' + id);
   const filtros = () => ({
-    empresa: modoMaster ? ($('cEmpresa').value || null) : fixa,
+    empresa: $('cEmpresa').value || null,
     de: $('cDe').value, ate: $('cAte').value,
     modelo: $('cModelo').value || null, modulo: $('cModulo').value || null,
-    usuario: modoMaster ? ($('cUsuario').value || null) : null,
+    usuario: $('cUsuario').value || null,
     status: $('cStatus').value || null, operacao: $('cOperacao').value || null,
   });
   const args = (f, de, ate) => ({ p_de: inicioSP(de), p_ate: fimSP(ate), p_empresa_id: f.empresa, p_modelo: f.modelo, p_modulo: f.modulo,
@@ -2382,7 +2397,6 @@ function montarConsumo(root, opt){
   async function carregar(){
     const f = filtros();
     if (!f.de || !f.ate || f.de > f.ate) { $('cKpis').innerHTML = '<div class="empty">Período inválido.</div>'; return; }
-    if (!modoMaster && !fixa) { $('cKpis').innerHTML = '<div class="empty">Seu usuário não tem empresa.</div>'; return; }
     $('cKpis').innerHTML = '<div class="empty">Carregando…</div>';
     try {
       const mesIni = hoje.slice(0, 7) + '-01';
@@ -2476,9 +2490,32 @@ function montarConsumo(root, opt){
   })();
 }
 
-function abrirConsumoEmpresa(){
-  if (!pode('consumo_ver') || pode('admin_painel')) return;
-  montarConsumo(document.getElementById('consumoBodyEmpresa'), { modo: 'empresa' });
+// ---------------------------------------------------------------------------
+// ADMIN > AUDITORIA (somente master; admin_auditoria é legível só pelo master via RLS)
+// ---------------------------------------------------------------------------
+async function adminAuditoria(){
+  const body = document.getElementById('adminBody'); const meu = adminState.seq;
+  if (!pode('admin_painel')) return;
+  body.innerHTML = '<div class="empty">Carregando auditoria…</div>';
+  try {
+    const [rA, rU] = await Promise.all([
+      sb.from('admin_auditoria').select('id, usuario_id, empresa_id, acao, entidade, entidade_id, valor_anterior, valor_novo, created_at').order('created_at', { ascending: false }).limit(300),
+      adminState.usuarios ? Promise.resolve({ usuarios: adminState.usuarios }) : chamarFuncao('admin-usuarios', { acao: 'listar' }).catch(() => ({ usuarios: [] })),
+    ]);
+    if (meu !== adminState.seq) return;
+    if (rA.error) throw rA.error;
+    adminState.usuarios = rU.usuarios || adminState.usuarios;
+    const nomeU = id => { const u = (adminState.usuarios || []).find(x => x.id === id); return u ? (u.nome || u.email || '—') : (id ? String(id).slice(0, 8) + '…' : 'sistema'); };
+    const resumo = v => { if (v === null || v === undefined) return ''; const t = JSON.stringify(v); return t.length > 160 ? t.slice(0, 157) + '…' : t; };
+    const linhas = (rA.data || []).map(a => `<tr>
+      <td>${esc(formatarEntradaSistema(a.created_at))}</td><td>${esc(nomeU(a.usuario_id))}</td><td><strong>${esc(a.acao)}</strong></td>
+      <td>${a.empresa_id ? esc(nomeEmpresaPorId(a.empresa_id)) : '<span class="sub">—</span>'}</td>
+      <td class="sub">${esc(a.entidade)}${a.entidade_id ? ' · ' + esc(String(a.entidade_id).slice(0, 8)) + '…' : ''}</td>
+      <td class="sub">${a.valor_anterior ? 'antes: ' + esc(resumo(a.valor_anterior)) + '<br>' : ''}${a.valor_novo ? 'depois: ' + esc(resumo(a.valor_novo)) : ''}</td></tr>`).join('');
+    body.innerHTML = `<div class="sub" style="margin-bottom:10px">Últimas ${(rA.data || []).length} ações administrativas (máx. 300). Nenhuma senha ou chave é registrada aqui.</div>
+      <div style="overflow-x:auto"><table class="miniTable" style="min-width:900px"><thead><tr><th>Quando</th><th>Quem</th><th>Ação</th><th>Empresa</th><th>Alvo</th><th>Mudança</th></tr></thead>
+      <tbody>${linhas || '<tr><td colspan="6" class="empty">Nenhum registro.</td></tr>'}</tbody></table></div>`;
+  } catch (e) { if (meu === adminState.seq) body.innerHTML = '<div class="empty">Não consegui carregar a auditoria: ' + esc(e.message || String(e)) + '</div>'; }
 }
 
 // ---------------------------------------------------------------------------
