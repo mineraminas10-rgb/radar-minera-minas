@@ -261,6 +261,22 @@
   </form>
 </div>
 
+<div id="senhaScreen" class="authScreen" style="display:none;">
+  <form id="senhaForm" class="authCard" autocomplete="off" novalidate>
+    <img class="authLogo" src="assets/logo.png" alt="Radar">
+    <h2>Crie sua nova senha</h2>
+    <p class="authSub">Este é o seu primeiro acesso (ou sua senha foi redefinida). Por segurança, escolha agora uma senha só sua para continuar.</p>
+    <div id="senhaMsg" class="authMsg" role="alert"></div>
+    <div class="field"><label for="novaSenha">Nova senha</label>
+      <input type="password" id="novaSenha" autocomplete="new-password" required>
+      <div class="sub">Mínimo de 10 caracteres, com letras e números. Evite senhas óbvias.</div></div>
+    <div class="field"><label for="novaSenha2">Repita a nova senha</label>
+      <input type="password" id="novaSenha2" autocomplete="new-password" required></div>
+    <button type="submit" id="btnSalvarSenha" class="authBtn">Salvar e entrar</button>
+    <button type="button" id="btnSenhaSair" class="authBtn secundario">Sair</button>
+  </form>
+</div>
+
 <div id="blockedScreen" class="authScreen" style="display:none;">
   <div class="authCard">
     <img class="authLogo" src="assets/logo.png" alt="Radar">
@@ -534,7 +550,7 @@ function empresaParaGravar(){
 }
 
 function mostrarTela(qual){
-  const mapa = { carregando: 'authLoading', login: 'authScreen', bloqueio: 'blockedScreen', app: 'app' };
+  const mapa = { carregando: 'authLoading', login: 'authScreen', senha: 'senhaScreen', bloqueio: 'blockedScreen', app: 'app' };
   telaAtual = qual;
   Object.keys(mapa).forEach(k=>{
     const el = document.getElementById(mapa[k]);
@@ -578,6 +594,7 @@ function limparEstadoDoApp(){
   document.getElementById('mostrarTodos').checked = false;
   document.querySelectorAll('nav.tabs button').forEach(b=>b.classList.toggle('active', b.dataset.view === 'fila'));
   document.querySelectorAll('.view').forEach(v=>v.classList.toggle('active', v.id === 'view-fila'));
+  ['novaSenha','novaSenha2'].forEach(id=>{ const el = document.getElementById(id); if (el) el.value = ''; });
   adminResetar();
   set('adminBody', ''); set('consumoBodyEmpresa', ''); set('adminEmpresaSel', '<option value="">—</option>');
   document.getElementById('tabAdmin').hidden = true; document.getElementById('tabConsumo').hidden = true;
@@ -633,6 +650,47 @@ async function sair(){
   await tratarSessao(null, 'logout');
 }
 
+// ---------------------------------------------------------------------------
+// Primeiro acesso com senha temporária: o usuário é OBRIGADO a criar a própria senha.
+// A marca vem de auth.users.app_metadata.must_change_password (só o servidor escreve;
+// o usuário não consegue alterá-la). Enquanto ela existir, o servidor também recusa
+// todas as Edge Functions (código "trocar_senha"), então esta tela não é o único bloqueio.
+// ---------------------------------------------------------------------------
+const precisaTrocarSenha = u => !!(u && u.app_metadata && u.app_metadata.must_change_password === true);
+
+function mostrarMsgSenha(tipo, texto){
+  const el = document.getElementById('senhaMsg'); if (!el) return;
+  el.className = 'authMsg' + (tipo ? ' ' + tipo : ''); el.textContent = texto || '';
+}
+function exibirTrocaSenha(){
+  limparEstadoDoApp();
+  document.getElementById('novaSenha').value = ''; document.getElementById('novaSenha2').value = '';
+  mostrarMsgSenha(null, '');
+  mostrarTela('senha');
+}
+async function salvarNovaSenha(ev){
+  ev.preventDefault();
+  const a = document.getElementById('novaSenha').value, b = document.getElementById('novaSenha2').value;
+  const btn = document.getElementById('btnSalvarSenha');
+  if (a.length < 10) { mostrarMsgSenha('erro', 'A senha precisa ter pelo menos 10 caracteres.'); return; }
+  if (!/[A-Za-z]/.test(a) || !/[0-9]/.test(a)) { mostrarMsgSenha('erro', 'Use letras e números na senha.'); return; }
+  if (a !== b) { mostrarMsgSenha('erro', 'As duas senhas não são iguais.'); return; }
+  btn.disabled = true; btn.textContent = 'Salvando…'; mostrarMsgSenha(null, '');
+  try {
+    await chamarFuncao('trocar-senha', { nova_senha: a });
+    // renova a sessão para o token/usuário já virem sem a marca de troca obrigatória
+    const { data, error } = await sb.auth.refreshSession();
+    if (error || !data || !data.session) { await sair(); return; }
+    document.getElementById('novaSenha').value = ''; document.getElementById('novaSenha2').value = '';
+    sessaoCarregadaUid = null;
+    await tratarSessao(data.session.user, 'senha-definida');
+  } catch (e) {
+    mostrarMsgSenha('erro', e && e.message ? e.message : 'Não foi possível salvar a senha. Tente de novo.');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Salvar e entrar';
+  }
+}
+
 // Ponto único de decisão: recebe o usuário da sessão (ou null) e escolhe a tela.
 async function tratarSessao(user, origem){
   if (!user) {
@@ -653,6 +711,7 @@ async function tratarSessao(user, origem){
   if (sessaoCarregadaUid !== null) limparEstadoDoApp();   // outro usuário entrou sem sair antes
   sessaoCarregadaUid = user.id;
   const meuSeq = ++seqAuth;
+  if (precisaTrocarSenha(user)) { exibirTrocaSenha(); return; }   // nada do sistema carrega antes de trocar a senha
   mostrarTela('carregando');
   await carregarPerfilEIniciar(user, meuSeq);
 }
@@ -827,6 +886,8 @@ function iniciarAuth(){
   document.getElementById('loginForm').addEventListener('submit', entrar);
   document.getElementById('btnSair').addEventListener('click', sair);
   document.getElementById('btnBlockedSair').addEventListener('click', sair);
+  document.getElementById('senhaForm').addEventListener('submit', salvarNovaSenha);
+  document.getElementById('btnSenhaSair').addEventListener('click', sair);
   document.getElementById('btnBlockedLogin').addEventListener('click', ()=>{
     bloqueioAtivo = null; mostrarMsgLogin(null, ''); mostrarTela('login');
   });
@@ -1940,6 +2001,7 @@ async function chamarFuncao(nome, corpo){
     try { det = await error.context.json(); } catch (_) {}
     const e = new Error((det && det.message) || error.message || 'Falha ao falar com o servidor.');
     e.code = det && det.code; e.detalhe = det;
+    if (e.code === 'trocar_senha' && nome !== 'trocar-senha') exibirTrocaSenha();   // servidor exigiu a troca (ex.: senha redefinida com a sessão aberta)
     throw e;
   }
   if (data && data.ok === false) { const e = new Error(data.message || 'Operação recusada.'); e.code = data.code; e.detalhe = data; throw e; }
@@ -2032,7 +2094,7 @@ function renderUsuarios(){
     </tr>`).join('');
   body.innerHTML = `
     <div class="toolbar"><button id="usrNovo" data-adm="novo">+ Novo usuário</button>
-      <span class="sub">A senha nunca é exibida nem definida aqui: o usuário recebe convite/redefinição por e-mail.</span></div>
+      <span class="sub">Não existe senha padrão: cada novo usuário recebe uma senha temporária aleatória (ou convite) e é obrigado a criar a própria no primeiro acesso.</span></div>
     <div id="usrForm"></div>
     <div style="overflow-x:auto"><table class="miniTable" style="min-width:820px"><thead><tr>
       <th>Nome</th><th>E-mail</th><th>Empresa</th><th>Perfil</th><th>Status</th><th>Último acesso</th><th>Ações</th></tr></thead>
@@ -2058,11 +2120,11 @@ function formUsuario(id){
     </div>
     <div class="row3">
       <div class="field"><label>Empresa</label><select id="uEmpresa">${optsEmpresas(u ? u.empresa_id : adminState.empresaId)}</select></div>
-      ${u ? '' : '<div class="field"><label><input type="checkbox" id="uConvite" checked> Enviar convite por e-mail</label><div class="sub">Desmarcado: gera um link de uso único para você repassar.</div></div>'}
+      ${u ? '' : '<div class="field"><label>Primeiro acesso</label><input type="text" id="uModo" value="Senha temporária única" disabled><div class="sub">O sistema gera uma senha aleatória só desta pessoa, mostrada uma vez; no 1º acesso ela é obrigada a criar a própria senha.</div></div>'}
     </div>
     <div id="uMsg" class="sub"></div>
     <div class="saveBar">
-      ${u ? '<button class="smallBtn" id="uRec">Enviar e-mail de redefinição</button><button class="smallBtn" id="uRecLink">Gerar link de redefinição</button>' : ''}
+      ${u ? '<button class="smallBtn" id="uRecSenha">Gerar nova senha temporária</button>' : ''}
       <button class="smallBtn" id="uCancel">Cancelar</button><button id="uSalvar">${u ? 'Salvar' : 'Criar usuário'}</button>
     </div></div>`;
   const role = document.getElementById('uRole'), emp = document.getElementById('uEmpresa');
@@ -2071,8 +2133,8 @@ function formUsuario(id){
   document.getElementById('uCancel').onclick = () => { box.innerHTML = ''; };
   document.getElementById('uSalvar').onclick = () => salvarUsuario(id);
   if (u) {
-    document.getElementById('uRec').onclick = () => recuperarSenha(id, true);
-    document.getElementById('uRecLink').onclick = () => recuperarSenha(id, false);
+    document.getElementById('uRecSenha').onclick = () => recuperarSenha(id, 'senha');
+
   }
 }
 
@@ -2091,8 +2153,11 @@ async function salvarUsuario(id){
       msg.textContent = 'Salvo.';
     } else {
       const email = document.getElementById('uEmail').value.trim();
-      const r = await chamarFuncao('admin-usuarios', { acao: 'criar', nome, email, role, empresa_id, enviar_email: document.getElementById('uConvite').checked });
-      msg.innerHTML = r.modo === 'link'
+      const modo = 'senha';
+      const r = await chamarFuncao('admin-usuarios', { acao: 'criar', nome, email, role, empresa_id, modo });
+      msg.innerHTML = r.modo === 'senha'
+        ? 'Usuário criado. Senha temporária (aparece só agora, repasse por um canal seguro): <input type="text" readonly style="width:100%;font-family:monospace" value="' + esc(r.senha_temporaria) + '"><br>No primeiro acesso a pessoa será obrigada a criar a própria senha.'
+        : r.modo === 'link'
         ? 'Usuário criado. Repasse este link de definição de senha (uso único): <input type="text" readonly style="width:100%" value="' + esc(r.link_definir_senha) + '">'
         : 'Usuário criado. O convite foi enviado por e-mail.';
     }
@@ -2110,12 +2175,15 @@ async function alternarAtivo(id, ativar){
   catch (e) { alert('Não foi possível alterar: ' + e.message); }
 }
 
-async function recuperarSenha(id, porEmail){
+async function recuperarSenha(id, modo){
   if (!exigirPermissao('admin_painel')) return;
   const msg = document.getElementById('uMsg');
+  if (modo === 'senha' && !confirm('Gerar uma nova senha temporária? A senha atual deixa de funcionar e a pessoa será obrigada a criar outra no próximo acesso.')) return;
   try {
-    const r = await chamarFuncao('admin-usuarios', { acao: 'recuperar_senha', id, enviar_email: porEmail });
-    msg.innerHTML = r.modo === 'link'
+    const r = await chamarFuncao('admin-usuarios', { acao: 'recuperar_senha', id, modo });
+    msg.innerHTML = r.modo === 'senha'
+      ? 'Nova senha temporária (aparece só agora, repasse por um canal seguro): <input type="text" readonly style="width:100%;font-family:monospace" value="' + esc(r.senha_temporaria) + '"><br>No próximo acesso a pessoa será obrigada a criar a própria senha.'
+      : r.modo === 'link'
       ? 'Link de redefinição (uso único): <input type="text" readonly style="width:100%" value="' + esc(r.link_definir_senha) + '">'
       : 'E-mail de redefinição enviado.';
   } catch (e) { msg.textContent = 'Não foi possível: ' + e.message; }
