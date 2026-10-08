@@ -20,6 +20,17 @@
   nav.tabs{display:flex;gap:4px;}
   nav.tabs button{background:transparent;border:1px solid var(--border);color:var(--muted);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px;}
   nav.tabs button.active{background:var(--accent-weak);color:var(--text);border-color:var(--accent);}
+  nav.tabs button[hidden]{display:none;}
+  .adminBar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px;}
+  .adminBar label{font-size:12px;color:var(--muted);}
+  .adminBar select{background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-size:13px;}
+  .adminSub{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;}
+  .adminSub button{background:transparent;border:1px solid var(--border);color:var(--muted);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:13px;}
+  .adminSub button.active{background:var(--accent-weak);color:var(--text);border-color:var(--accent);}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px;}
+  .kpi{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 12px;}
+  .kpiT{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;}
+  .kpiV{font-size:20px;font-weight:600;margin-top:4px;}
   .clientSwitch{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
   .clientSwitch label{font-size:11px;color:var(--muted);}
   .clientSwitch select,.clientSwitch button{background:var(--surface);border:1px solid var(--border);color:var(--text);padding:6px 9px;border-radius:6px;font-size:12.5px;}
@@ -274,6 +285,8 @@
   <nav class="tabs" aria-label="Navegação principal">
     <button class="active" data-view="fila">Fila do Editor</button>
     <button data-view="carteiras">Carteiras</button>
+    <button data-view="consumo" id="tabConsumo" hidden>Consumo</button>
+    <button data-view="admin" id="tabAdmin" hidden>ADMIN</button>
   </nav>
   <div id="connStatus"><span class="dot"></span><span id="connLabel">conectando…</span></div>
   <div class="userChip" id="userChip">
@@ -344,6 +357,26 @@
         <div class="empty">Selecione uma carteira à esquerda ou crie uma nova.</div>
       </div>
     </div>
+  </section>
+
+  <!-- ===================== CONSUMO (admin_empresa: só a própria empresa) ===================== -->
+  <section id="view-consumo" class="view">
+    <div id="consumoBodyEmpresa"></div>
+  </section>
+
+  <!-- ===================== ADMIN (somente master) ===================== -->
+  <section id="view-admin" class="view">
+    <div class="adminBar">
+      <label for="adminEmpresaSel">Empresa ativa</label>
+      <select id="adminEmpresaSel"><option value="">—</option></select>
+    </div>
+    <div class="adminSub" id="adminSubTabs">
+      <button type="button" data-sub="usuarios" class="active">Usuários</button>
+      <button type="button" data-sub="empresas">Empresas</button>
+      <button type="button" data-sub="api">API</button>
+      <button type="button" data-sub="consumo">Consumo</button>
+    </div>
+    <div id="adminBody"></div>
   </section>
 
 </main>
@@ -457,11 +490,13 @@ const ROTULO_ROLE = {
 //   checklist_desmarcar-> apagar linha do checklist (o banco só deixa admin_empresa/master apagar)
 //   carteiras_editar   -> criar/editar/excluir carteiras, pesos e fontes
 //   cliente_criar      -> botão "+ Novo cliente"
+//   admin_painel       -> menu ADMIN (usuários, empresas, API, consumo global) — só master
+//   consumo_ver        -> aba Consumo da própria empresa (master vê tudo dentro do ADMIN)
 const PERMISSOES = {
-  master:        { editorial: true,  checklist_desmarcar: true,  carteiras_editar: true,  cliente_criar: true  },
-  admin_empresa: { editorial: true,  checklist_desmarcar: true,  carteiras_editar: true,  cliente_criar: false },
-  editor:        { editorial: true,  checklist_desmarcar: false, carteiras_editar: false, cliente_criar: false },
-  viewer:        { editorial: false, checklist_desmarcar: false, carteiras_editar: false, cliente_criar: false },
+  master:        { editorial: true,  checklist_desmarcar: true,  carteiras_editar: true,  cliente_criar: true,  admin_painel: true,  consumo_ver: true  },
+  admin_empresa: { editorial: true,  checklist_desmarcar: true,  carteiras_editar: true,  cliente_criar: false, admin_painel: false, consumo_ver: true  },
+  editor:        { editorial: true,  checklist_desmarcar: false, carteiras_editar: false, cliente_criar: false, admin_painel: false, consumo_ver: false },
+  viewer:        { editorial: false, checklist_desmarcar: false, carteiras_editar: false, cliente_criar: false, admin_painel: false, consumo_ver: false },
 };
 const MSG_SEM_PERMISSAO = 'Seu perfil não tem permissão para esta ação (ou o registro não pertence à sua empresa). Nada foi alterado.';
 
@@ -543,6 +578,9 @@ function limparEstadoDoApp(){
   document.getElementById('mostrarTodos').checked = false;
   document.querySelectorAll('nav.tabs button').forEach(b=>b.classList.toggle('active', b.dataset.view === 'fila'));
   document.querySelectorAll('.view').forEach(v=>v.classList.toggle('active', v.id === 'view-fila'));
+  adminResetar();
+  set('adminBody', ''); set('consumoBodyEmpresa', ''); set('adminEmpresaSel', '<option value="">—</option>');
+  document.getElementById('tabAdmin').hidden = true; document.getElementById('tabConsumo').hidden = true;
   document.getElementById('userNome').textContent = '—';
   document.getElementById('userPapel').textContent = '';
   document.title = 'Radar Minera Minas';
@@ -727,6 +765,9 @@ function aplicarPermissoesUI(){
   document.getElementById('btnNovoCliente').hidden = !pode('cliente_criar');
   // Usuário comum só enxerga a própria empresa: seletor travado.
   document.getElementById('clienteSelect').disabled = !ehMaster();
+  // Abas administrativas: só aparecem conforme o papel (UX). Quem barra de verdade é o servidor.
+  document.getElementById('tabAdmin').hidden = !pode('admin_painel');
+  document.getElementById('tabConsumo').hidden = !(pode('consumo_ver') && !pode('admin_painel'));
 }
 
 // Revalida o perfil quando a sessão é renovada / a aba volta ao foco: se o
@@ -849,13 +890,18 @@ function ligarListenersDoApp(){
 
   document.querySelectorAll('nav.tabs button').forEach(btn=>{
     btn.addEventListener('click', ()=>{
+      if(btn.dataset.view==='admin' && !pode('admin_painel')) return;
+      if(btn.dataset.view==='consumo' && !pode('consumo_ver')) return;
       document.querySelectorAll('nav.tabs button').forEach(b=>b.classList.remove('active'));
       document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
       btn.classList.add('active');
       document.getElementById('view-'+btn.dataset.view).classList.add('active');
       if(btn.dataset.view==='carteiras') carregarCarteirasTab();
+      if(btn.dataset.view==='admin') abrirAdmin();
+      if(btn.dataset.view==='consumo') abrirConsumoEmpresa();
     });
   });
+  ligarListenersAdmin();
 
   document.getElementById('btnRecarregar').addEventListener('click', carregarFila);
   document.getElementById('busca').addEventListener('input', renderFila);
@@ -1862,6 +1908,509 @@ async function salvarCarteira(id){
   renderCarteirasList();
   abrirDetalheCarteira(id);
   alert('Carteira salva.');
+}
+
+// ===========================================================================
+// ADMIN (somente master) + CONSUMO (master e admin_empresa)
+//
+// Esconder as abas aqui é UX. A segurança está no servidor:
+//   - admin-usuarios / admin-api (Edge Functions) confirmam role=master em usuarios_perfil;
+//   - leitura de api_execucoes/empresa_api_config/admin_auditoria é limitada por RLS;
+//   - nenhuma chave de API existe neste arquivo: o navegador só chama Edge Functions
+//     com o JWT do próprio usuário e recebe resultados/métricas.
+// A "Empresa ativa" do Admin é um estado PRÓPRIO (adminState.empresaId), separado do
+// seletor de cliente da Fila, e sempre vai ao servidor como UUID (empresa_id).
+// ===========================================================================
+const adminState = { empresas: [], empresaId: null, sub: 'usuarios', usuarios: null, seq: 0 };
+let consumoSeq = 0;
+
+const fmtUsd = n => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(Number(n || 0));
+const fmtNum = n => new Intl.NumberFormat('pt-BR').format(Number(n || 0));
+const numOuNullUI = v => { const t = String(v ?? '').trim().replace(',', '.'); if (t === '') return null; const n = Number(t); return Number.isFinite(n) ? n : NaN; };
+
+function nomeEmpresaPorId(id){
+  const e = (adminState.empresas || []).find(x => x.id === id) || (clientesCache || []).find(x => x.id === id);
+  return e ? e.nome : (id ? String(id).slice(0, 8) + '…' : '—');
+}
+
+async function chamarFuncao(nome, corpo){
+  const { data, error } = await sb.functions.invoke(nome, { body: corpo });
+  if (error) {
+    let det = null;
+    try { det = await error.context.json(); } catch (_) {}
+    const e = new Error((det && det.message) || error.message || 'Falha ao falar com o servidor.');
+    e.code = det && det.code; e.detalhe = det;
+    throw e;
+  }
+  if (data && data.ok === false) { const e = new Error(data.message || 'Operação recusada.'); e.code = data.code; e.detalhe = data; throw e; }
+  return data;
+}
+
+function adminResetar(){
+  adminState.empresas = []; adminState.empresaId = null; adminState.sub = 'usuarios'; adminState.usuarios = null; adminState.seq++; consumoSeq++;
+}
+const adminNovaRodada = () => ++adminState.seq;
+
+function ligarListenersAdmin(){
+  document.querySelectorAll('#adminSubTabs button').forEach(b => b.addEventListener('click', () => {
+    if (!pode('admin_painel')) return;
+    adminState.sub = b.dataset.sub; renderAdminSub();
+  }));
+  document.getElementById('adminEmpresaSel').addEventListener('change', e => {
+    if (!pode('admin_painel')) return;
+    adminState.empresaId = e.target.value || null; renderAdminSub();
+  });
+}
+
+async function abrirAdmin(){
+  if (!pode('admin_painel')) return;
+  const meu = adminNovaRodada();
+  if (!adminState.empresas.length) {
+    const { data, error } = await sb.from('empresas').select('id, nome, slug, ativa').order('nome');
+    if (meu !== adminState.seq) return;
+    if (error) { document.getElementById('adminBody').innerHTML = '<div class="empty">Não consegui carregar as empresas: ' + esc(error.message) + '</div>'; return; }
+    adminState.empresas = data || [];
+    const pref = adminState.empresas.find(e => e.slug === 'minera-minas') || adminState.empresas[0];
+    adminState.empresaId = pref ? pref.id : null;
+  }
+  document.getElementById('adminEmpresaSel').innerHTML = adminState.empresas
+    .map(e => `<option value="${esc(e.id)}"${e.id === adminState.empresaId ? ' selected' : ''}>${esc(e.nome)}${e.ativa ? '' : ' (inativa)'}</option>`).join('');
+  renderAdminSub();
+}
+
+function renderAdminSub(){
+  if (!pode('admin_painel')) return;
+  adminNovaRodada();
+  document.querySelectorAll('#adminSubTabs button').forEach(b => b.classList.toggle('active', b.dataset.sub === adminState.sub));
+  const body = document.getElementById('adminBody');
+  body.onclick = null;
+  if (adminState.sub === 'usuarios') adminUsuarios();
+  else if (adminState.sub === 'empresas') adminEmpresas();
+  else if (adminState.sub === 'api') adminApi();
+  else if (adminState.sub === 'consumo') montarConsumo(body, { modo: 'master' });
+}
+
+// ---------------------------------------------------------------------------
+// ADMIN > USUÁRIOS
+// ---------------------------------------------------------------------------
+const ROLES_UI = [['master', 'Master'], ['admin_empresa', 'Admin da empresa'], ['editor', 'Editor'], ['viewer', 'Leitor']];
+
+async function adminUsuarios(){
+  const body = document.getElementById('adminBody'); const meu = adminState.seq;
+  body.innerHTML = '<div class="empty">Carregando usuários…</div>';
+  try {
+    const r = await chamarFuncao('admin-usuarios', { acao: 'listar' });
+    if (meu !== adminState.seq) return;
+    adminState.usuarios = r.usuarios || [];
+    renderUsuarios();
+  } catch (e) {
+    if (meu === adminState.seq) body.innerHTML = '<div class="empty">Não consegui carregar os usuários: ' + esc(e.message) + '</div>';
+  }
+}
+
+function optsEmpresas(sel){
+  return '<option value="">— selecione —</option>' + adminState.empresas.filter(e => e.ativa || e.id === sel)
+    .map(e => `<option value="${esc(e.id)}"${e.id === sel ? ' selected' : ''}>${esc(e.nome)}</option>`).join('');
+}
+const optsRoles = sel => ROLES_UI.map(([v, l]) => `<option value="${v}"${v === sel ? ' selected' : ''}>${l}</option>`).join('');
+
+function renderUsuarios(){
+  const body = document.getElementById('adminBody');
+  const meuId = authState.user && authState.user.id;
+  const linhas = (adminState.usuarios || []).map(u => `
+    <tr>
+      <td>${esc(u.nome || '—')}</td>
+      <td>${esc(u.email || '—')}</td>
+      <td>${u.role === 'master' ? '<span class="sub">todas</span>' : esc(nomeEmpresaPorId(u.empresa_id))}</td>
+      <td>${esc((ROLES_UI.find(r => r[0] === u.role) || [0, u.role])[1])}</td>
+      <td><span class="statusTag ${u.ativo ? 'st-publicado' : 'st-descartado'}">${u.ativo ? 'Ativo' : 'Inativo'}</span></td>
+      <td>${u.ultimo_acesso ? esc(formatarEntradaSistema(u.ultimo_acesso)) : '<span class="sub">nunca / indisponível</span>'}</td>
+      <td style="white-space:nowrap">
+        <button class="smallBtn" data-adm="editar" data-id="${esc(u.id)}">Editar</button>
+        ${u.id === meuId ? '' : `<button class="smallBtn" data-adm="${u.ativo ? 'desativar' : 'ativar'}" data-id="${esc(u.id)}">${u.ativo ? 'Desativar' : 'Ativar'}</button>`}
+      </td>
+    </tr>`).join('');
+  body.innerHTML = `
+    <div class="toolbar"><button id="usrNovo" data-adm="novo">+ Novo usuário</button>
+      <span class="sub">A senha nunca é exibida nem definida aqui: o usuário recebe convite/redefinição por e-mail.</span></div>
+    <div id="usrForm"></div>
+    <div style="overflow-x:auto"><table class="miniTable" style="min-width:820px"><thead><tr>
+      <th>Nome</th><th>E-mail</th><th>Empresa</th><th>Perfil</th><th>Status</th><th>Último acesso</th><th>Ações</th></tr></thead>
+      <tbody>${linhas || '<tr><td colspan="7" class="empty">Nenhum usuário.</td></tr>'}</tbody></table></div>`;
+  body.onclick = ev => {
+    const b = ev.target.closest('[data-adm]'); if (!b || !pode('admin_painel')) return;
+    const a = b.dataset.adm;
+    if (a === 'novo') formUsuario(null);
+    else if (a === 'editar') formUsuario(b.dataset.id);
+    else if (a === 'desativar' || a === 'ativar') alternarAtivo(b.dataset.id, a === 'ativar');
+  };
+}
+
+function formUsuario(id){
+  const u = id ? (adminState.usuarios || []).find(x => x.id === id) : null;
+  const box = document.getElementById('usrForm');
+  box.innerHTML = `<div class="card">
+    <strong>${u ? 'Editar usuário' : 'Novo usuário'}</strong>
+    <div class="row3" style="margin-top:10px">
+      <div class="field"><label>Nome</label><input type="text" id="uNome" value="${esc(u ? u.nome : '')}"></div>
+      <div class="field"><label>E-mail</label><input type="text" id="uEmail" value="${esc(u ? u.email : '')}" ${u ? 'disabled' : ''}></div>
+      <div class="field"><label>Perfil</label><select id="uRole">${optsRoles(u ? u.role : 'viewer')}</select></div>
+    </div>
+    <div class="row3">
+      <div class="field"><label>Empresa</label><select id="uEmpresa">${optsEmpresas(u ? u.empresa_id : adminState.empresaId)}</select></div>
+      ${u ? '' : '<div class="field"><label><input type="checkbox" id="uConvite" checked> Enviar convite por e-mail</label><div class="sub">Desmarcado: gera um link de uso único para você repassar.</div></div>'}
+    </div>
+    <div id="uMsg" class="sub"></div>
+    <div class="saveBar">
+      ${u ? '<button class="smallBtn" id="uRec">Enviar e-mail de redefinição</button><button class="smallBtn" id="uRecLink">Gerar link de redefinição</button>' : ''}
+      <button class="smallBtn" id="uCancel">Cancelar</button><button id="uSalvar">${u ? 'Salvar' : 'Criar usuário'}</button>
+    </div></div>`;
+  const role = document.getElementById('uRole'), emp = document.getElementById('uEmpresa');
+  const ajusta = () => { emp.disabled = role.value === 'master'; if (emp.disabled) emp.value = ''; };
+  role.addEventListener('change', ajusta); ajusta();
+  document.getElementById('uCancel').onclick = () => { box.innerHTML = ''; };
+  document.getElementById('uSalvar').onclick = () => salvarUsuario(id);
+  if (u) {
+    document.getElementById('uRec').onclick = () => recuperarSenha(id, true);
+    document.getElementById('uRecLink').onclick = () => recuperarSenha(id, false);
+  }
+}
+
+async function salvarUsuario(id){
+  if (!exigirPermissao('admin_painel')) return;
+  const msg = document.getElementById('uMsg'), btn = document.getElementById('uSalvar');
+  const nome = document.getElementById('uNome').value.trim();
+  const role = document.getElementById('uRole').value;
+  const empresa_id = role === 'master' ? null : (document.getElementById('uEmpresa').value || null);
+  if (nome.length < 2) { msg.textContent = 'Informe o nome.'; return; }
+  if (role !== 'master' && !empresa_id) { msg.textContent = 'Escolha a empresa deste perfil.'; return; }
+  btn.disabled = true; msg.textContent = 'Salvando…';
+  try {
+    if (id) {
+      await chamarFuncao('admin-usuarios', { acao: 'atualizar', id, nome, role, empresa_id });
+      msg.textContent = 'Salvo.';
+    } else {
+      const email = document.getElementById('uEmail').value.trim();
+      const r = await chamarFuncao('admin-usuarios', { acao: 'criar', nome, email, role, empresa_id, enviar_email: document.getElementById('uConvite').checked });
+      msg.innerHTML = r.modo === 'link'
+        ? 'Usuário criado. Repasse este link de definição de senha (uso único): <input type="text" readonly style="width:100%" value="' + esc(r.link_definir_senha) + '">'
+        : 'Usuário criado. O convite foi enviado por e-mail.';
+    }
+    const meu = adminState.seq;
+    const r2 = await chamarFuncao('admin-usuarios', { acao: 'listar' });
+    if (meu === adminState.seq) { adminState.usuarios = r2.usuarios || []; const keep = msg.innerHTML; renderUsuarios(); document.getElementById('usrForm').innerHTML = '<div class="roNotice">' + keep + '</div>'; }
+  } catch (e) { msg.textContent = 'Não foi possível salvar: ' + e.message; btn.disabled = false; }
+}
+
+async function alternarAtivo(id, ativar){
+  if (!exigirPermissao('admin_painel')) return;
+  const u = (adminState.usuarios || []).find(x => x.id === id); if (!u) return;
+  if (!confirm((ativar ? 'Reativar ' : 'Desativar ') + (u.nome || u.email) + '?' + (ativar ? '' : ' Ele perde o acesso imediatamente.'))) return;
+  try { await chamarFuncao('admin-usuarios', { acao: 'atualizar', id, ativo: ativar }); await adminUsuarios(); }
+  catch (e) { alert('Não foi possível alterar: ' + e.message); }
+}
+
+async function recuperarSenha(id, porEmail){
+  if (!exigirPermissao('admin_painel')) return;
+  const msg = document.getElementById('uMsg');
+  try {
+    const r = await chamarFuncao('admin-usuarios', { acao: 'recuperar_senha', id, enviar_email: porEmail });
+    msg.innerHTML = r.modo === 'link'
+      ? 'Link de redefinição (uso único): <input type="text" readonly style="width:100%" value="' + esc(r.link_definir_senha) + '">'
+      : 'E-mail de redefinição enviado.';
+  } catch (e) { msg.textContent = 'Não foi possível: ' + e.message; }
+}
+
+// ---------------------------------------------------------------------------
+// ADMIN > EMPRESAS (somente leitura nesta fase)
+// ---------------------------------------------------------------------------
+async function adminEmpresas(){
+  const body = document.getElementById('adminBody'); const meu = adminState.seq;
+  body.innerHTML = '<div class="empty">Carregando empresas…</div>';
+  try {
+    const hoje = diaSP(); const de = hoje.slice(0, 7) + '-01';
+    const [rc, rm, ru] = await Promise.all([
+      sb.from('empresa_api_config').select('empresa_id, ativo, usa_credencial_global, modelo_padrao, limite_mensal_usd'),
+      sb.rpc('consumo_resumo', { p_de: inicioSP(de), p_ate: fimSP(hoje) }),
+      adminState.usuarios ? Promise.resolve({ usuarios: adminState.usuarios }) : chamarFuncao('admin-usuarios', { acao: 'listar' }).catch(() => ({ usuarios: [] })),
+    ]);
+    if (meu !== adminState.seq) return;
+    adminState.usuarios = ru.usuarios || adminState.usuarios;
+    const cfg = {}; (rc.data || []).forEach(c => { cfg[c.empresa_id] = c; });
+    const cons = {}; (rm.data || []).forEach(c => { cons[c.empresa_id] = c; });
+    const linhas = adminState.empresas.map(e => {
+      const c = cfg[e.id], k = cons[e.id];
+      const nUsers = (adminState.usuarios || []).filter(u => u.empresa_id === e.id).length;
+      return `<tr>
+        <td><strong>${esc(e.nome)}</strong><div class="sub">${esc(e.slug)}</div></td>
+        <td><span class="statusTag ${e.ativa ? 'st-publicado' : 'st-descartado'}">${e.ativa ? 'Ativa' : 'Inativa'}</span></td>
+        <td>${c ? (c.ativo ? 'API ativa' : 'API pausada') + '<div class="sub">' + (c.usa_credencial_global ? 'credencial global' : 'credencial própria') + (c.modelo_padrao ? ' · ' + esc(c.modelo_padrao) : '') + '</div>' : '<span class="sub">não configurada</span>'}</td>
+        <td>${nUsers}</td>
+        <td>${k ? fmtUsd(k.custo_usd) + '<div class="sub">' + fmtNum(k.chamadas) + ' chamadas</div>' : '<span class="sub">—</span>'}</td>
+        <td><button class="smallBtn" data-adm="operar" data-id="${esc(e.id)}"${e.id === adminState.empresaId ? ' disabled' : ''}>${e.id === adminState.empresaId ? 'Empresa ativa' : 'Operar esta empresa'}</button></td></tr>`;
+    }).join('');
+    body.innerHTML = `<div class="sub" style="margin-bottom:10px">Criação e edição de empresas não fazem parte desta fase (a tabela empresas ainda não tem policy de escrita).</div>
+      <div style="overflow-x:auto"><table class="miniTable" style="min-width:760px"><thead><tr><th>Empresa</th><th>Status</th><th>API</th><th>Usuários</th><th>Consumo no mês</th><th></th></tr></thead><tbody>${linhas}</tbody></table></div>`;
+    body.onclick = ev => {
+      const b = ev.target.closest('[data-adm="operar"]'); if (!b || !pode('admin_painel')) return;
+      adminState.empresaId = b.dataset.id; document.getElementById('adminEmpresaSel').value = b.dataset.id; renderAdminSub();
+    };
+  } catch (e) { if (meu === adminState.seq) body.innerHTML = '<div class="empty">Não consegui carregar: ' + esc(e.message) + '</div>'; }
+}
+
+// ---------------------------------------------------------------------------
+// ADMIN > API
+// ---------------------------------------------------------------------------
+async function adminApi(){
+  const body = document.getElementById('adminBody'); const meu = adminState.seq; const empresaId = adminState.empresaId;
+  if (!empresaId) { body.innerHTML = '<div class="empty">Escolha a empresa ativa.</div>'; return; }
+  body.innerHTML = '<div class="empty">Carregando configuração…</div>';
+  let r;
+  try { r = await chamarFuncao('admin-api', { acao: 'obter_config', empresa_id: empresaId }); }
+  catch (e) { if (meu === adminState.seq) body.innerHTML = '<div class="empty">Não consegui carregar a configuração: ' + esc(e.message) + '</div>'; return; }
+  if (meu !== adminState.seq || empresaId !== adminState.empresaId) return;
+  const c = r.config || { ativo: false, usa_credencial_global: true, secret_ref: '', modelo_padrao: '', limite_mensal_usd: null, limite_diario_usd: null, limite_mensal_tokens: null };
+  const precos = r.precos || [];
+  const modelos = [...new Set(precos.filter(p => p.ativo !== false).map(p => p.modelo).concat(c.modelo_padrao ? [c.modelo_padrao] : []))].sort();
+  const vl = v => (v === null || v === undefined ? '' : String(v));
+  body.innerHTML = `
+    <div class="card"><strong>API — ${esc(nomeEmpresaPorId(empresaId))}</strong>
+      ${r.config ? '' : '<div class="sub">Ainda não há configuração para esta empresa: ela começa pausada.</div>'}
+      <div class="row3" style="margin-top:10px">
+        <div class="field"><label>Provider</label><input type="text" value="OpenAI" disabled></div>
+        <div class="field"><label>Status</label><select id="apiAtivo"><option value="true"${c.ativo ? ' selected' : ''}>Ativa</option><option value="false"${c.ativo ? '' : ' selected'}>Pausada</option></select></div>
+        <div class="field"><label>Modelo padrão</label><select id="apiModelo"><option value="">— selecione —</option>${modelos.map(m => `<option${m === c.modelo_padrao ? ' selected' : ''}>${esc(m)}</option>`).join('')}</select></div>
+      </div>
+      <div class="row3">
+        <div class="field"><label>Credencial</label><select id="apiCred"><option value="global"${c.usa_credencial_global ? ' selected' : ''}>Global compartilhada</option><option value="propria"${c.usa_credencial_global ? '' : ' selected'}>Específica da empresa</option></select></div>
+        <div class="field" id="apiRefBox"><label>Nome do secret (não a chave)</label><input type="text" id="apiRef" placeholder="OPENAI_API_KEY_MINERA" value="${esc(c.secret_ref || '')}"></div>
+        <div class="field"><label>Credencial no backend</label><div class="sub" id="apiCredEstado">${r.credencial_presente ? 'Presente (' + esc(r.segredo_nome) + ')' : 'Ausente' + (r.segredo_nome ? ' — configure o secret ' + esc(r.segredo_nome) + ' no Supabase' : '')}</div></div>
+      </div>
+      <fieldset><legend>Limites (vazio = sem limite; 0 = bloqueado)</legend>
+        <div class="row3">
+          <div class="field"><label>Limite mensal (USD)</label><input type="text" id="apiLimMes" value="${esc(vl(c.limite_mensal_usd))}"></div>
+          <div class="field"><label>Limite diário (USD)</label><input type="text" id="apiLimDia" value="${esc(vl(c.limite_diario_usd))}"></div>
+          <div class="field"><label>Limite mensal (tokens)</label><input type="text" id="apiLimTok" value="${esc(vl(c.limite_mensal_tokens))}"></div>
+        </div></fieldset>
+      <div id="apiMsg" class="sub"></div>
+      <div class="saveBar"><button class="smallBtn" id="apiTestar">Testar conexão</button><button class="smallBtn" id="apiExecutar">Executar teste</button><button id="apiSalvar">Salvar configuração</button></div>
+      <div class="field"><label>Prompt para "Executar teste" (até 2000 caracteres)</label><textarea id="apiPrompt" maxlength="2000" placeholder="Ex.: Resuma em uma frase o que é o Radar."></textarea></div>
+      <div id="apiResultado"></div>
+    </div>
+    <div class="card"><strong>Preços dos modelos (USD por 1 milhão de tokens)</strong>
+      <div class="sub">O custo de cada chamada usa a versão de preço vigente na hora. Confira os valores na página oficial de preços do provedor antes de cadastrar.</div>
+      <div style="overflow-x:auto"><table class="miniTable" style="min-width:560px"><thead><tr><th>Modelo</th><th>Vigente desde</th><th>Entrada</th><th>Entrada em cache</th><th>Saída</th></tr></thead><tbody>
+        ${precos.map(p => `<tr><td>${esc(p.modelo)}</td><td>${esc(formatarEntradaSistema(p.vigente_desde))}</td><td>${esc(p.input_usd_por_milhao)}</td><td>${esc(p.cached_input_usd_por_milhao ?? '—')}</td><td>${esc(p.output_usd_por_milhao)}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">Nenhum preço cadastrado — sem preço, o modelo não pode ser usado.</td></tr>'}
+      </tbody></table></div>
+      <div class="row3" style="margin-top:10px">
+        <div class="field"><label>Modelo</label><input type="text" id="prcModelo"></div>
+        <div class="field"><label>Entrada</label><input type="text" id="prcIn"></div>
+        <div class="field"><label>Saída</label><input type="text" id="prcOut"></div>
+      </div>
+      <div class="row3"><div class="field"><label>Entrada em cache (opcional)</label><input type="text" id="prcCache"></div></div>
+      <div id="prcMsg" class="sub"></div>
+      <div class="saveBar"><button id="prcSalvar">Cadastrar preço</button></div>
+    </div>`;
+  const cred = document.getElementById('apiCred');
+  const ajusta = () => { document.getElementById('apiRefBox').hidden = cred.value !== 'propria'; };
+  cred.addEventListener('change', ajusta); ajusta();
+  document.getElementById('apiSalvar').onclick = () => apiSalvar(empresaId);
+  document.getElementById('apiTestar').onclick = () => apiRodar(empresaId, 'testar_conexao');
+  document.getElementById('apiExecutar').onclick = () => apiRodar(empresaId, 'executar_teste');
+  document.getElementById('prcSalvar').onclick = () => apiPreco();
+}
+
+async function apiSalvar(empresaId){
+  if (!exigirPermissao('admin_painel')) return;
+  const msg = document.getElementById('apiMsg');
+  const lim = ['apiLimMes', 'apiLimDia', 'apiLimTok'].map(id => numOuNullUI(document.getElementById(id).value));
+  if (lim.some(n => Number.isNaN(n) || (n !== null && n < 0))) { msg.textContent = 'Limites devem ser números maiores ou iguais a zero (ou vazios).'; return; }
+  const propria = document.getElementById('apiCred').value === 'propria';
+  const corpo = {
+    acao: 'salvar_config', empresa_id: empresaId, ativo: document.getElementById('apiAtivo').value === 'true',
+    usa_credencial_global: !propria, secret_ref: propria ? document.getElementById('apiRef').value.trim() : null,
+    modelo_padrao: document.getElementById('apiModelo').value || null,
+    limite_mensal_usd: lim[0], limite_diario_usd: lim[1], limite_mensal_tokens: lim[2],
+  };
+  msg.textContent = 'Salvando…';
+  try { await chamarFuncao('admin-api', corpo); msg.textContent = 'Configuração salva.'; }
+  catch (e) { msg.textContent = 'Não foi possível salvar: ' + e.message; }
+}
+
+async function apiRodar(empresaId, acao){
+  if (!exigirPermissao('admin_painel')) return;
+  const out = document.getElementById('apiResultado'); out.innerHTML = '<div class="sub">Executando…</div>';
+  const corpo = { acao, empresa_id: empresaId };
+  if (acao === 'executar_teste') { corpo.prompt = document.getElementById('apiPrompt').value.trim(); if (!corpo.prompt) { out.innerHTML = '<div class="sub">Escreva um prompt.</div>'; return; } }
+  try {
+    const r = await chamarFuncao('admin-api', corpo);
+    const u = r.uso || {};
+    out.innerHTML = `<div class="roNotice"><strong>${acao === 'testar_conexao' ? (r.resposta_ok ? 'Conexão OK' : 'Respondeu, mas fora do esperado') : 'Execução concluída'}</strong><br>
+      Provider: ${esc(r.provider)} · Modelo: ${esc(r.modelo)} · Latência: ${esc(r.latencia_ms)} ms<br>
+      Tokens: entrada ${fmtNum(u.input_tokens)} (cache ${fmtNum(u.cached_input_tokens)}) · saída ${fmtNum(u.output_tokens)} · total ${fmtNum(u.total_tokens)}<br>
+      Custo estimado: ${fmtUsd(r.custo_estimado_usd)} · Request ID: ${esc(r.request_id_provider || '—')} · Execução: ${esc(r.execucao_id)}
+      ${acao === 'executar_teste' ? '<pre style="white-space:pre-wrap;margin:8px 0 0">' + esc(r.texto) + '</pre>' : ''}</div>`;
+  } catch (e) {
+    out.innerHTML = `<div class="authMsg erro">${esc(e.message)}${e.code ? ' <span class="sub">(' + esc(e.code) + ')</span>' : ''}</div>`;
+  }
+}
+
+async function apiPreco(){
+  if (!exigirPermissao('admin_painel')) return;
+  const msg = document.getElementById('prcMsg');
+  const modelo = document.getElementById('prcModelo').value.trim();
+  const inp = numOuNullUI(document.getElementById('prcIn').value), out = numOuNullUI(document.getElementById('prcOut').value), cache = numOuNullUI(document.getElementById('prcCache').value);
+  if (!modelo || inp === null || out === null || Number.isNaN(inp) || Number.isNaN(out) || Number.isNaN(cache)) { msg.textContent = 'Informe modelo, entrada e saída (números).'; return; }
+  try {
+    await chamarFuncao('admin-api', { acao: 'salvar_preco', modelo, input_usd_por_milhao: inp, output_usd_por_milhao: out, cached_input_usd_por_milhao: cache });
+    msg.textContent = 'Preço cadastrado.'; adminApi();
+  } catch (e) { msg.textContent = 'Não foi possível cadastrar: ' + e.message; }
+}
+
+// ---------------------------------------------------------------------------
+// CONSUMO — usado em ADMIN > CONSUMO (master, todas as empresas) e na aba
+// "Consumo" do admin_empresa (travado na própria empresa, sem escolha de empresa).
+// ---------------------------------------------------------------------------
+const diaSP = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(d || new Date());   // YYYY-MM-DD
+const inicioSP = dia => new Date(dia + 'T00:00:00-03:00').toISOString();
+const fimSP = dia => new Date(new Date(dia + 'T00:00:00-03:00').getTime() + 86400000).toISOString();   // exclusivo (dia seguinte)
+
+function montarConsumo(root, opt){
+  const meu = ++consumoSeq;
+  const modoMaster = opt.modo === 'master' && pode('admin_painel');
+  if (!modoMaster && !pode('consumo_ver')) { root.innerHTML = '<div class="empty">Sem permissão.</div>'; return; }
+  const hoje = diaSP();
+  const fixa = modoMaster ? null : (authState.perfil && authState.perfil.empresa_id);   // admin_empresa: SEMPRE a própria
+  root.innerHTML = `
+    <div class="filtersPanel"><div class="filtersGrid">
+      ${modoMaster ? `<div class="filterField"><label>Empresa</label><select id="cEmpresa"><option value="">Todas</option>${adminState.empresas.map(e => `<option value="${esc(e.id)}"${e.id === adminState.empresaId ? ' selected' : ''}>${esc(e.nome)}</option>`).join('')}</select></div>` : ''}
+      <div class="filterField"><label>De</label><input type="date" id="cDe" value="${hoje.slice(0, 7)}-01"></div>
+      <div class="filterField"><label>Até</label><input type="date" id="cAte" value="${hoje}"></div>
+      <div class="filterField"><label>Modelo</label><select id="cModelo"><option value="">Todos</option></select></div>
+      <div class="filterField"><label>Módulo</label><select id="cModulo"><option value="">Todos</option></select></div>
+      ${modoMaster ? '<div class="filterField"><label>Usuário</label><select id="cUsuario"><option value="">Todos</option></select></div>' : ''}
+      <div class="filterField"><label>Status</label><select id="cStatus"><option value="">Todos</option><option>sucesso</option><option>erro</option><option>bloqueado_limite</option><option>bloqueado_config</option><option>pendente</option></select></div>
+      <div class="filterField"><label>Operação</label><select id="cOperacao"><option value="">Todas</option></select></div>
+      <div class="filterField"><label>Métrica do gráfico</label><select id="cMetrica"><option value="custo">Custo (USD)</option><option value="tokens">Tokens</option></select></div>
+    </div><div class="filterActions"><span class="filterSummary" id="cResumoFiltro"></span><button id="cAtualizar">↻ Atualizar</button></div></div>
+    <div id="cKpis" class="kpis"></div>
+    <div id="cGrafico" class="card"></div>
+    <div id="cTabela"></div>
+    <div id="cDrill"></div>`;
+  const $ = id => root.querySelector('#' + id);
+  const filtros = () => ({
+    empresa: modoMaster ? ($('cEmpresa').value || null) : fixa,
+    de: $('cDe').value, ate: $('cAte').value,
+    modelo: $('cModelo').value || null, modulo: $('cModulo').value || null,
+    usuario: modoMaster ? ($('cUsuario').value || null) : null,
+    status: $('cStatus').value || null, operacao: $('cOperacao').value || null,
+  });
+  const args = (f, de, ate) => ({ p_de: inicioSP(de), p_ate: fimSP(ate), p_empresa_id: f.empresa, p_modelo: f.modelo, p_modulo: f.modulo,
+    p_usuario_id: f.usuario, p_status: f.status, p_operacao: f.operacao });
+  const soma = rows => (rows || []).reduce((a, r) => ({ chamadas: a.chamadas + Number(r.chamadas), erros: a.erros + Number(r.erros), tokens: a.tokens + Number(r.total_tokens), custo: a.custo + Number(r.custo_usd) }), { chamadas: 0, erros: 0, tokens: 0, custo: 0 });
+  const nomeUsuario = id => { const u = (adminState.usuarios || []).find(x => x.id === id); return u ? (u.nome || u.email) : (id ? String(id).slice(0, 8) + '…' : '—'); };
+  let opcoesCarregadas = false;
+
+  async function carregar(){
+    const f = filtros();
+    if (!f.de || !f.ate || f.de > f.ate) { $('cKpis').innerHTML = '<div class="empty">Período inválido.</div>'; return; }
+    if (!modoMaster && !fixa) { $('cKpis').innerHTML = '<div class="empty">Seu usuário não tem empresa.</div>'; return; }
+    $('cKpis').innerHTML = '<div class="empty">Carregando…</div>';
+    try {
+      const mesIni = hoje.slice(0, 7) + '-01';
+      const [rHoje, rMes, rPer, rDia, rLista] = await Promise.all([
+        sb.rpc('consumo_resumo', args(f, hoje, hoje)),
+        sb.rpc('consumo_resumo', args(f, mesIni, hoje)),
+        sb.rpc('consumo_resumo', args(f, f.de, f.ate)),
+        sb.rpc('consumo_por_dia', args(f, f.de, f.ate)),
+        // lista base só para montar as opções dos filtros (empresa + período)
+        (() => { let q = sb.from('api_execucoes').select('modelo, modulo, operacao, usuario_id').gte('data_inicio', inicioSP(f.de)).lt('data_inicio', fimSP(f.ate)).limit(1000); if (f.empresa) q = q.eq('empresa_id', f.empresa); return q; })(),
+      ]);
+      if (meu !== consumoSeq) return;   // trocou de empresa/aba no meio: descarta
+      const erro = [rHoje, rMes, rPer, rDia, rLista].find(r => r.error);
+      if (erro) throw erro.error;
+      if (!opcoesCarregadas) {
+        opcoesCarregadas = true;
+        const uniq = k => [...new Set((rLista.data || []).map(x => x[k]).filter(Boolean))].sort();
+        const fill = (id, vals, rot) => { $(id).innerHTML = `<option value="">${rot}</option>` + vals.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join(''); };
+        fill('cModelo', uniq('modelo'), 'Todos'); fill('cModulo', uniq('modulo'), 'Todos'); fill('cOperacao', uniq('operacao'), 'Todas');
+        if (modoMaster) {
+          const ids = uniq('usuario_id');
+          $('cUsuario').innerHTML = '<option value="">Todos</option>' + ids.map(i => `<option value="${esc(i)}">${esc(nomeUsuario(i))}</option>`).join('');
+        }
+      }
+      const sH = soma(rHoje.data), sM = soma(rMes.data), sP = soma(rPer.data);
+      const kpi = (t, v, s) => `<div class="kpi"><div class="kpiT">${t}</div><div class="kpiV">${v}</div>${s ? `<div class="sub">${s}</div>` : ''}</div>`;
+      $('cKpis').innerHTML = kpi('Custo hoje', fmtUsd(sH.custo)) + kpi('Custo no mês', fmtUsd(sM.custo)) + kpi('Tokens no mês', fmtNum(sM.tokens))
+        + kpi('Chamadas (período)', fmtNum(sP.chamadas)) + kpi('Custo médio / chamada', sP.chamadas ? fmtUsd(sP.custo / sP.chamadas) : '—')
+        + kpi('Chamadas com erro', fmtNum(sP.erros), sP.chamadas ? Math.round(100 * sP.erros / sP.chamadas) + '% do período' : '');
+      $('cResumoFiltro').textContent = (rLista.data && rLista.data.length >= 1000) ? 'Opções de filtro baseadas nas 1000 chamadas mais recentes do período.' : '';
+      desenharGrafico(rDia.data || [], $('cMetrica').value);
+      desenharTabela(rPer.data || []);
+      $('cDrill').innerHTML = '';
+    } catch (e) {
+      if (meu === consumoSeq) $('cKpis').innerHTML = '<div class="empty">Não consegui carregar o consumo: ' + esc(e.message || String(e)) + '</div>';
+    }
+  }
+
+  function desenharGrafico(linhas, metrica){
+    const porDia = {};
+    linhas.forEach(r => { const d = r.dia; porDia[d] = (porDia[d] || 0) + Number(metrica === 'tokens' ? r.total_tokens : r.custo_usd); });
+    const dias = Object.keys(porDia).sort();
+    const box = $('cGrafico');
+    if (!dias.length) { box.innerHTML = '<div class="empty">Sem consumo no período.</div>'; return; }
+    const max = Math.max(...dias.map(d => porDia[d])) || 1, W = 640, H = 150, bw = Math.max(4, Math.min(34, (W - 20) / dias.length - 4));
+    const barras = dias.map((d, i) => {
+      const h = Math.max(1, Math.round((porDia[d] / max) * (H - 30))), x = 10 + i * ((W - 20) / dias.length);
+      const val = metrica === 'tokens' ? fmtNum(porDia[d]) + ' tokens' : fmtUsd(porDia[d]);
+      return `<rect x="${x.toFixed(1)}" y="${H - 18 - h}" width="${bw}" height="${h}" rx="2" fill="var(--accent)"><title>${esc(d)}: ${esc(val)}</title></rect>`;
+    }).join('');
+    box.innerHTML = `<strong>Consumo por dia — ${metrica === 'tokens' ? 'tokens' : 'custo estimado (USD)'}</strong>
+      <svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Gráfico de consumo por dia">${barras}
+      <text x="10" y="${H - 3}" font-size="10" fill="var(--muted)">${esc(dias[0])}</text><text x="${W - 10}" y="${H - 3}" font-size="10" text-anchor="end" fill="var(--muted)">${esc(dias[dias.length - 1])}</text></svg>`;
+  }
+
+  function desenharTabela(linhas){
+    const linhasHtml = linhas.slice().sort((a, b) => Number(b.custo_usd) - Number(a.custo_usd)).map(r => `
+      <tr data-emp="${esc(r.empresa_id)}" style="cursor:pointer" title="Ver execuções desta empresa">
+        <td><strong>${esc(modoMaster ? nomeEmpresaPorId(r.empresa_id) : (nomeEmpresaPorId(r.empresa_id) || 'Empresa'))}</strong></td>
+        <td>${fmtNum(r.chamadas)}</td><td>${fmtNum(r.input_tokens)}</td><td>${fmtNum(r.output_tokens)}</td><td>${fmtNum(r.total_tokens)}</td><td>${fmtUsd(r.custo_usd)}</td></tr>`).join('');
+    $('cTabela').innerHTML = `<div style="overflow-x:auto"><table class="miniTable" style="min-width:640px"><thead><tr><th>Empresa</th><th>Chamadas</th><th>Input</th><th>Output</th><th>Total tokens</th><th>Custo estimado</th></tr></thead>
+      <tbody>${linhasHtml || '<tr><td colspan="6" class="empty">Nenhuma chamada no período.</td></tr>'}</tbody></table></div>`;
+    $('cTabela').onclick = ev => { const tr = ev.target.closest('tr[data-emp]'); if (tr) drill(tr.dataset.emp); };
+  }
+
+  async function drill(empresaId){
+    const f = filtros();
+    $('cDrill').innerHTML = '<div class="empty">Carregando execuções…</div>';
+    try {
+      let q = sb.from('api_execucoes').select('id, data_inicio, usuario_id, modelo, operacao, modulo, status, input_tokens, output_tokens, total_tokens, custo_estimado_usd, erro, request_id_provider')
+        .eq('empresa_id', empresaId).gte('data_inicio', inicioSP(f.de)).lt('data_inicio', fimSP(f.ate)).order('data_inicio', { ascending: false }).limit(200);
+      if (f.modelo) q = q.eq('modelo', f.modelo); if (f.modulo) q = q.eq('modulo', f.modulo); if (f.usuario) q = q.eq('usuario_id', f.usuario);
+      if (f.status) q = q.eq('status', f.status); if (f.operacao) q = q.eq('operacao', f.operacao);
+      const { data, error } = await q;
+      if (meu !== consumoSeq) return;
+      if (error) throw error;
+      $('cDrill').innerHTML = `<div class="groupHeader"><h2>Execuções — ${esc(nomeEmpresaPorId(empresaId))}</h2><span class="count">${(data || []).length} mais recentes (máx. 200)</span></div>
+        <div style="overflow-x:auto"><table class="miniTable" style="min-width:900px"><thead><tr><th>Quando</th>${modoMaster ? '<th>Usuário</th>' : ''}<th>Modelo</th><th>Operação</th><th>Módulo</th><th>Status</th><th>Tokens</th><th>Custo</th><th>Detalhe</th></tr></thead><tbody>
+        ${(data || []).map(x => `<tr><td>${esc(formatarEntradaSistema(x.data_inicio))}</td>${modoMaster ? `<td>${esc(nomeUsuario(x.usuario_id))}</td>` : ''}<td>${esc(x.modelo || '—')}</td><td>${esc(x.operacao)}</td><td>${esc(x.modulo || '—')}</td>
+          <td><span class="statusTag ${x.status === 'sucesso' ? 'st-publicado' : (x.status === 'pendente' ? 'st-novo' : 'st-descartado')}">${esc(x.status)}</span></td>
+          <td>${fmtNum(x.total_tokens)}</td><td>${x.custo_estimado_usd === null ? '—' : fmtUsd(x.custo_estimado_usd)}</td><td class="sub">${esc(x.erro || x.request_id_provider || '')}</td></tr>`).join('') || '<tr><td colspan="9" class="empty">Nenhuma execução.</td></tr>'}
+        </tbody></table></div>`;
+    } catch (e) { $('cDrill').innerHTML = '<div class="empty">Não consegui carregar as execuções: ' + esc(e.message || String(e)) + '</div>'; }
+  }
+
+  root.querySelectorAll('select,input').forEach(el => el.addEventListener('change', () => { if (el.id === 'cEmpresa' || el.id === 'cDe' || el.id === 'cAte') opcoesCarregadas = false; carregar(); }));
+  $('cAtualizar').onclick = () => { opcoesCarregadas = false; carregar(); };
+  (async () => {
+    if (modoMaster && !adminState.usuarios) { try { const r = await chamarFuncao('admin-usuarios', { acao: 'listar' }); adminState.usuarios = r.usuarios || []; } catch (_) {} }
+    if (meu === consumoSeq) carregar();
+  })();
+}
+
+function abrirConsumoEmpresa(){
+  if (!pode('consumo_ver') || pode('admin_painel')) return;
+  montarConsumo(document.getElementById('consumoBodyEmpresa'), { modo: 'empresa' });
 }
 
 // ---------------------------------------------------------------------------
