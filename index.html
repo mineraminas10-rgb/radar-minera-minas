@@ -2258,6 +2258,8 @@ async function adminApi(){
   catch (e) { if (meu === adminState.seq) body.innerHTML = '<div class="empty">Não consegui carregar a configuração: ' + esc(e.message) + '</div>'; return; }
   if (meu !== adminState.seq || empresaId !== adminState.empresaId) return;
   const c = r.config || { ativo: false, usa_credencial_global: true, secret_ref: '', modelo_padrao: '', limite_mensal_usd: null, limite_diario_usd: null, limite_mensal_tokens: null };
+  // ao salvar uma chave a página é redesenhada; mantém a credencial que estava escolhida na tela (ainda não salva)
+  if (adminState.credEscolhida) { c.usa_credencial_global = adminState.credEscolhida === 'global'; adminState.credEscolhida = null; }
   const precos = r.precos || [];
   const modelos = [...new Set(precos.filter(p => p.ativo !== false).map(p => p.modelo).concat(c.modelo_padrao ? [c.modelo_padrao] : []))].sort();
   const vl = v => (v === null || v === undefined ? '' : String(v));
@@ -2285,7 +2287,7 @@ async function adminApi(){
       <div class="row3">
         <div class="field"><label>Credencial</label><select id="apiCred"><option value="global"${c.usa_credencial_global ? ' selected' : ''}>Global compartilhada</option><option value="propria"${c.usa_credencial_global ? '' : ' selected'}>Específica da empresa</option></select>
           <div class="sub" id="apiCredEstado">${r.credencial_presente ? 'Cadastrada' + (r.segredo_nome === 'OPENAI_API_KEY_GLOBAL' ? ' (global)' : ' (específica)') + ' — chave em uso' : 'Falta cadastrar a chave ' + (c.usa_credencial_global ? 'global (quadro acima)' : 'específica desta empresa (campo ao lado)')}</div></div>
-        <div class="field" style="grid-column:span 2"><label>Chave ESPECÍFICA de ${esc(nomeEmpresaPorId(empresaId))} (só desta empresa — usada quando a credencial for "Específica da empresa")</label>
+        <div class="field" id="chvEmpBox" style="grid-column:span 2"${c.usa_credencial_global ? ' hidden' : ''}><label>Chave ESPECÍFICA de ${esc(nomeEmpresaPorId(empresaId))} (só desta empresa — usada quando a credencial for "Específica da empresa")</label>
           <div class="sub">${estadoChave(ch.empresa)}</div>
           <div class="chaveLinha"><input type="password" id="chvEmp" autocomplete="new-password" spellcheck="false" placeholder="Cole aqui a chave (sk-...)"><button class="smallBtn" id="chvEmpSalvar">Salvar chave da empresa</button></div>
           <div class="sub" id="chvEmpMsg"></div></div>
@@ -2317,6 +2319,9 @@ async function adminApi(){
     </div>`;
   document.getElementById('chvGlobalSalvar').onclick = () => apiSalvarChave('global', empresaId);
   document.getElementById('chvEmpSalvar').onclick = () => apiSalvarChave('empresa', empresaId);
+  // o campo da chave específica só aparece quando a credencial escolhida é "Específica da empresa"
+  const mostrarChaveEmpresa = () => { document.getElementById('chvEmpBox').hidden = document.getElementById('apiCred').value !== 'propria'; };
+  document.getElementById('apiCred').onchange = mostrarChaveEmpresa;
   document.getElementById('apiSalvar').onclick = () => apiSalvar(empresaId);
   document.getElementById('apiTestar').onclick = () => apiRodar(empresaId, 'testar_conexao');
   document.getElementById('apiExecutar').onclick = () => apiRodar(empresaId, 'executar_teste');
@@ -2354,6 +2359,7 @@ async function apiSalvarChave(escopo, empresaId){
   campo.value = '';
   try {
     const r = await chamarFuncao('admin-api', corpo);
+    adminState.credEscolhida = document.getElementById('apiCred').value;
     await adminApi();
     const m2 = document.getElementById(escopo === 'global' ? 'chvGlobalMsg' : 'chvEmpMsg');
     if (m2) m2.textContent = 'Chave salva (termina em …' + (r.ultimos4 || '') + '). Use "Testar conexão" para conferir.';
