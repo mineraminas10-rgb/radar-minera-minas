@@ -1,0 +1,5 @@
+# Módulo 9A — coletor de Movimentações dos Processos Minerários da ANM
+requests==2.32.3
+pandas==2.2.3
+supabase==2.32.0         # aceita chaves novas sb_secret_ (a 2.9.1 recusa: "Invalid API key")
+python-dateutil==2.9.0.post0
