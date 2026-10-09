@@ -4,10 +4,8 @@ name: Coletor M8 - Acidentes SEMAD
 # dias úteis". Horários abaixo são 09h e 15h no horário de Brasília
 # (UTC-3) -> 12:00 e 18:00 UTC, segunda a sexta. Ajustar se a Rapha
 # preferir outro horário.
+# SEM AGENDAMENTO: só roda quando alguém clica em "Run workflow" (decisão da Rapha, 09/10/2026).
 on:
-  schedule:
-    - cron: '0 12 * * 1-5'
-    - cron: '0 18 * * 1-5'
   workflow_dispatch:
     inputs:
       ambiente:
