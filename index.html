@@ -2266,19 +2266,13 @@ async function adminApi(){
     ? `<span class="chaveOk">Cadastrada${k.ultimos4 ? ' — termina em <b>…' + esc(k.ultimos4) + '</b>' : ' (secret do Supabase)'}</span>`
     : '<span class="chaveFalta">Não cadastrada</span>';
   body.innerHTML = `
-    <div class="card"><strong>Chaves da OpenAI</strong>
-      <div class="sub">A chave é guardada criptografada no cofre do Supabase. Depois de salva ela <b>não aparece mais</b> em lugar nenhum — só os 4 últimos caracteres, para você reconhecer. Para trocar, cole a nova chave por cima.</div>
+    <div class="card"><strong>Chave global da OpenAI</strong>
+      <div class="sub">A chave é guardada criptografada no cofre do Supabase. Depois de salva ela <b>não aparece mais</b> em lugar nenhum — só os 4 últimos caracteres, para você reconhecer. Para trocar, cole a nova chave por cima. A chave específica de cada empresa é cadastrada logo abaixo, ao lado da credencial.</div>
       <div class="row3" style="margin-top:10px">
         <div class="field" style="grid-column:span 3"><label>Chave GLOBAL (compartilhada — usada pelas empresas que estiverem em "Global compartilhada")</label>
           <div class="sub">${estadoChave(ch.global)}</div>
           <div class="chaveLinha"><input type="password" id="chvGlobal" autocomplete="new-password" spellcheck="false" placeholder="Cole aqui a chave (sk-...)"><button class="smallBtn" id="chvGlobalSalvar">Salvar chave global</button></div>
           <div class="sub" id="chvGlobalMsg"></div></div>
-      </div>
-      <div class="row3">
-        <div class="field" style="grid-column:span 3"><label>Chave ESPECÍFICA de ${esc(nomeEmpresaPorId(empresaId))} (só desta empresa — usada quando a credencial abaixo for "Específica da empresa")</label>
-          <div class="sub">${estadoChave(ch.empresa)}</div>
-          <div class="chaveLinha"><input type="password" id="chvEmp" autocomplete="new-password" spellcheck="false" placeholder="Cole aqui a chave (sk-...)"><button class="smallBtn" id="chvEmpSalvar">Salvar chave da empresa</button></div>
-          <div class="sub" id="chvEmpMsg"></div></div>
       </div>
     </div>
     <div class="card"><strong>API — ${esc(nomeEmpresaPorId(empresaId))}</strong>
@@ -2289,8 +2283,12 @@ async function adminApi(){
         <div class="field"><label>Modelo padrão</label><select id="apiModelo"><option value="">— selecione —</option>${modelos.map(m => `<option${m === c.modelo_padrao ? ' selected' : ''}>${esc(m)}</option>`).join('')}</select></div>
       </div>
       <div class="row3">
-        <div class="field"><label>Credencial</label><select id="apiCred"><option value="global"${c.usa_credencial_global ? ' selected' : ''}>Global compartilhada</option><option value="propria"${c.usa_credencial_global ? '' : ' selected'}>Específica da empresa</option></select></div>
-        <div class="field" style="grid-column:span 2"><label>Chave em uso por esta empresa</label><div class="sub" id="apiCredEstado">${r.credencial_presente ? 'Cadastrada' + (r.segredo_nome === 'OPENAI_API_KEY_GLOBAL' ? ' (global)' : ' (específica)') : 'Falta cadastrar a chave ' + (c.usa_credencial_global ? 'global' : 'específica desta empresa') + ' no quadro acima'}</div></div>
+        <div class="field"><label>Credencial</label><select id="apiCred"><option value="global"${c.usa_credencial_global ? ' selected' : ''}>Global compartilhada</option><option value="propria"${c.usa_credencial_global ? '' : ' selected'}>Específica da empresa</option></select>
+          <div class="sub" id="apiCredEstado">${r.credencial_presente ? 'Cadastrada' + (r.segredo_nome === 'OPENAI_API_KEY_GLOBAL' ? ' (global)' : ' (específica)') + ' — chave em uso' : 'Falta cadastrar a chave ' + (c.usa_credencial_global ? 'global (quadro acima)' : 'específica desta empresa (campo ao lado)')}</div></div>
+        <div class="field" style="grid-column:span 2"><label>Chave ESPECÍFICA de ${esc(nomeEmpresaPorId(empresaId))} (só desta empresa — usada quando a credencial for "Específica da empresa")</label>
+          <div class="sub">${estadoChave(ch.empresa)}</div>
+          <div class="chaveLinha"><input type="password" id="chvEmp" autocomplete="new-password" spellcheck="false" placeholder="Cole aqui a chave (sk-...)"><button class="smallBtn" id="chvEmpSalvar">Salvar chave da empresa</button></div>
+          <div class="sub" id="chvEmpMsg"></div></div>
       </div>
       <fieldset><legend>Limites (vazio = sem limite; 0 = bloqueado)</legend>
         <div class="row3">
