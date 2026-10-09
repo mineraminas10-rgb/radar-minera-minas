@@ -5,9 +5,8 @@ name: Coletor M9A - Movimentacoes ANM
 # uma frequência como a do M8). Comecei com diário à noite (horário de
 # menor tráfego) — CONFIRMAR com a Rapha se ela prefere outra cadência
 # (ex.: semanal, já que o SCM não deve atualizar todo dia).
+# SEM AGENDAMENTO: só roda quando alguém clica em "Run workflow" (decisão da Rapha, 09/10/2026).
 on:
-  schedule:
-    - cron: '0 3 * * *'   # 00h em Brasília (UTC-3), todos os dias
   workflow_dispatch:
     inputs:
       ambiente:
