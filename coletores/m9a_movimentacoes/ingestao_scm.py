@@ -182,7 +182,7 @@ def _enriquecer(evento: pd.DataFrame, t: TabelasAuxiliares) -> pd.DataFrame:
         df["DSPublicacaoDOU"].notna() & (df["DSPublicacaoDOU"].astype(str).str.strip() != ""),
         df["OBEvento"],
     )
-    df["area_ha"] = df["QTAreaHA"].astype(str).str.replace(",", ".", regex=False)
+    df["area_ha"] = df["QTAreaHA"].astype("string").str.replace(",", ".", regex=False)  # ausente fica NA (antes virava o texto "nan")
 
     return pd.DataFrame({
         "processo": df["DSProcesso"],
