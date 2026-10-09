@@ -46,12 +46,22 @@ jobs:
           python -m unittest test_signals.py -v
           python -m unittest test_checklist_editorial.py -v
           python -m unittest test_identidade_evento.py -v
+          python -m unittest test_main_run.py -v
+
+      - name: Rodar testes comuns (rotas de fontes, acesso/barreiras, diagnóstico, pré-IA)
+        working-directory: coletores/comum
+        run: |
+          python -m unittest test_acesso.py test_diagnostico.py test_pre_ia.py -v
 
       - name: Rodar coletor
         working-directory: coletores/m8_acidentes
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          # Escopo da coleta (isolamento por empresa). Definir em Settings > Variables > Actions.
+          # Sem RADAR_EMPRESA_ID a coleta só roda se a fonte existir em UMA única empresa.
+          RADAR_EMPRESA_ID: ${{ vars.RADAR_EMPRESA_ID }}
+          RADAR_CARTEIRA_ID: ${{ vars.RADAR_CARTEIRA_ID }}
         run: |
           ARGS="--ambiente ${{ github.event.inputs.ambiente || 'piloto' }}"
           if [ -n "${{ github.event.inputs.limite }}" ]; then

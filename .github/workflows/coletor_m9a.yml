@@ -18,6 +18,10 @@ on:
         description: 'Processar só os N primeiros casos consolidados (deixar vazio para todos)'
         required: false
         default: ''
+      max_linhas_evento:
+        description: 'Modo amostra: ler só as N primeiras linhas de ProcessoEvento.txt (ex.: 200000)'
+        required: false
+        default: ''
 
 jobs:
   coletar:
@@ -33,7 +37,7 @@ jobs:
       - name: Instalar dependências
         run: pip install -r coletores/m9a_movimentacoes/requirements.txt
 
-      - name: Rodar testes (não pode divergir da carta nem da regra de classificação SCM)
+      - name: Rodar testes (carta, classificação SCM, leitura em blocos, download seguro, rodada completa)
         working-directory: coletores/m9a_movimentacoes
         run: |
           python -m unittest test_scoring.py -v
@@ -41,45 +45,40 @@ jobs:
           python -m unittest test_classificacao_scm.py -v
           python -m unittest test_signals.py -v
           python -m unittest test_checklist_editorial.py -v
+          python -m unittest test_ingestao_blocos.py -v
+          python -m unittest test_baixar_scm.py -v
+          python -m unittest test_main_run.py -v
 
-      - name: Baixar e descompactar microdados SCM
+      - name: Rodar testes comuns (rotas de fontes, acesso/barreiras, diagnóstico, pré-IA)
+        working-directory: coletores/comum
+        run: |
+          python -m unittest test_acesso.py test_diagnostico.py test_pre_ia.py -v
+
+      - name: Baixar e validar microdados SCM (rota oficial, barreiras não contornadas)
         working-directory: coletores/m9a_movimentacoes
         run: |
-          # URL confirmada em 01/10/2026 (Rapha): dump relacional oficial
-          # da ANM, ~198MB compactado, ~28 arquivos .txt ';'-delimitados em
-          # ISO-8859-1 (ver docstring de ingestao_scm.py para o detalhe de
-          # cada tabela e o que já foi confirmado contra uma amostra real).
-          curl -sSL -o microdados-scm.zip https://dadosabertos.anm.gov.br/SCM/microdados/microdados-scm.zip
-          mkdir -p microdados-scm
-          unzip -q microdados-scm.zip -d microdados-scm
-
-          # O zip pode extrair os .txt direto na raiz da pasta ou dentro de
-          # uma subpasta própria — localiza o diretório real que contém
-          # Processo.txt em vez de assumir um caminho fixo.
-          CAMINHO_PROCESSO=$(find microdados-scm -iname 'Processo.txt' -print -quit)
-          if [ -z "$CAMINHO_PROCESSO" ]; then
-            echo "Processo.txt não encontrado depois de descompactar — o formato do zip oficial mudou desde 28/09/2026, revisar ingestao_scm.py."
-            exit 1
-          fi
-          DIR_MICRODADOS=$(dirname "$CAMINHO_PROCESSO")
-          echo "Diretório de microdados: $DIR_MICRODADOS"
-          echo "DIR_MICRODADOS=$DIR_MICRODADOS" >> "$GITHUB_ENV"
+          # Substitui o antigo `curl | unzip`: valida rota, status, MIME, tamanho, assinatura PK, integridade,
+          # SHA-256, extrai só os 9 arquivos usados e confere os cabeçalhos. Cada etapa tem nome no log.
+          python baixar_scm.py --destino ../../.scm_dump --registro-saida ../../.scm_dump/registro_download.json
 
       - name: Rodar coletor
         working-directory: coletores/m9a_movimentacoes
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          # Escopo da coleta (isolamento por empresa). Definir em Settings > Variables > Actions.
+          # Sem RADAR_EMPRESA_ID a coleta só roda se a fonte existir em UMA única empresa.
+          RADAR_EMPRESA_ID: ${{ vars.RADAR_EMPRESA_ID }}
+          RADAR_CARTEIRA_ID: ${{ vars.RADAR_CARTEIRA_ID }}
         run: |
-          # AVISO (01/10/2026, não bloqueante): ProcessoEvento.txt sozinho
-          # descompacta para ~1GB e carregar_microdados_scm() ainda não faz
-          # streaming — carregar o dump completo de uma vez em pandas pode
-          # ser lento ou pesado demais para o runner padrão do GitHub
-          # Actions. Rodar a primeira execução real com --limite-casos
-          # pequeno (via workflow_dispatch) antes de confiar no cron
-          # noturno sem supervisão. Ver aviso igual em ingestao_scm.py.
-          ARGS="--microdados $DIR_MICRODADOS --ambiente ${{ github.event.inputs.ambiente || 'piloto' }}"
+          # Leitura em BLOCOS (ProcessoEvento.txt ~1 GB não cabe inteiro em memória no runner padrão).
+          # PRIMEIRA execução real: usar workflow_dispatch com amostra pequena (max_linhas_evento) e
+          # limite_casos; só depois liberar o cron noturno. Este coletor NÃO chama IA.
+          ARGS="--microdados ../../.scm_dump/microdados --registro-download ../../.scm_dump/registro_download.json --ambiente ${{ github.event.inputs.ambiente || 'piloto' }}"
           if [ -n "${{ github.event.inputs.limite_casos }}" ]; then
             ARGS="$ARGS --limite-casos ${{ github.event.inputs.limite_casos }}"
+          fi
+          if [ -n "${{ github.event.inputs.max_linhas_evento }}" ]; then
+            ARGS="$ARGS --max-linhas-evento ${{ github.event.inputs.max_linhas_evento }}"
           fi
           python main.py $ARGS
