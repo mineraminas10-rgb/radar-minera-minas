@@ -132,6 +132,9 @@ class _Tabela:
         return _Query(self.store, self.nome, "upsert", payload=payload, on_conflict=on_conflict)
 
 
+EMPRESA_TESTE = "00000000-0000-0000-0000-00000000e001"
+
+
 class FakeSupabase:
     def __init__(self):
         self.store = {}
@@ -231,18 +234,18 @@ class TestLoteHomologacaoM6(unittest.TestCase):
         self.source_id = "fonte-igam-teste"
 
     def test_a02_seis_atos_individuais(self):
-        resultado = main.run(self.sb, self.atos, self.execucao_id, self.source_id)
+        resultado = main.run(self.sb, self.atos, self.execucao_id, self.source_id, empresa_id=EMPRESA_TESTE)
         self.assertEqual(len(resultado["resultados"]), 6)
         self.assertEqual(len(self.sb.store.get("events", [])), 6)
 
     def test_a03_nenhum_ato_classificado_como_cancelamento(self):
-        resultado = main.run(self.sb, self.atos, self.execucao_id, self.source_id)
+        resultado = main.run(self.sb, self.atos, self.execucao_id, self.source_id, empresa_id=EMPRESA_TESTE)
         for r in resultado["resultados"]:
             tipo = r.get("tipo_evento", "")
             self.assertNotIn("cancelamento", tipo)
 
     def test_a04_rima_manutencao_indeferimento_score_57_prioridade_c(self):
-        resultado = main.run(self.sb, self.atos, self.execucao_id, self.source_id)
+        resultado = main.run(self.sb, self.atos, self.execucao_id, self.source_id, empresa_id=EMPRESA_TESTE)
         r_rima = next(r for r in resultado["resultados"] if r["processo_ou_portaria"] == "00429")
         self.assertEqual(r_rima["tipo_evento"], "manutencao_indeferimento")
         self.assertEqual(r_rima["score"], 57)
@@ -261,13 +264,13 @@ class TestLoteHomologacaoM6(unittest.TestCase):
         self.assertEqual(score_rima["estagio"], "preliminar")
 
     def test_a06_os_outros_cinco_atos_nao_sao_promovidos_por_nome_ou_municipio(self):
-        resultado = main.run(self.sb, self.atos, self.execucao_id, self.source_id)
+        resultado = main.run(self.sb, self.atos, self.execucao_id, self.source_id, empresa_id=EMPRESA_TESTE)
         nao_rima = [r for r in resultado["resultados"] if r["processo_ou_portaria"] != "00429"]
         for r in nao_rima:
             self.assertNotIn(r.get("faixa"), ("A", "B"))
 
     def test_a07_codemig_fica_em_apuracao_sem_score_positivo_e_sem_promocao(self):
-        resultado = main.run(self.sb, self.atos, self.execucao_id, self.source_id)
+        resultado = main.run(self.sb, self.atos, self.execucao_id, self.source_id, empresa_id=EMPRESA_TESTE)
         r_codemig = next(r for r in resultado["resultados"] if r["processo_ou_portaria"] == "00722/2025")
         # Vínculo indeterminado (nome é sinal, não prova) -> fica em
         # apuração, não "descartado" (diferença da Plascar/Unimed).
@@ -275,7 +278,7 @@ class TestLoteHomologacaoM6(unittest.TestCase):
         self.assertNotIn("score", r_codemig)  # nenhum score foi calculado/gravado para este ato
 
     def test_a08_quatro_atos_nao_minerais_descartados_antes_de_qualquer_score(self):
-        resultado = main.run(self.sb, self.atos, self.execucao_id, self.source_id)
+        resultado = main.run(self.sb, self.atos, self.execucao_id, self.source_id, empresa_id=EMPRESA_TESTE)
         descartados = {r["processo_ou_portaria"] for r in resultado["resultados"] if r["acao"] == "descartado"}
         self.assertEqual(descartados, {
             "plascar-23-09-2026", "alan-alves-pedroza-23-09-2026",
@@ -285,15 +288,30 @@ class TestLoteHomologacaoM6(unittest.TestCase):
             if r["acao"] == "descartado":
                 self.assertNotIn("score", r)
 
+    def test_isolamento_mesmo_ato_em_duas_empresas_gera_dois_eventos_independentes(self):
+        """Chave lógica do evento = (empresa_id, id_evento): a mesma portaria numa 2a empresa NÃO reaproveita
+        nem altera o evento da 1a (estado editorial independente por empresa)."""
+        main.run(self.sb, self.atos, "exec-A", self.source_id, empresa_id="EMPRESA-A")
+        n_a = [e for e in self.sb.store["events"] if e["empresa_id"] == "EMPRESA-A"]
+        main.run(self.sb, self.atos, "exec-B", self.source_id, empresa_id="EMPRESA-B")
+        n_b = [e for e in self.sb.store["events"] if e["empresa_id"] == "EMPRESA-B"]
+        self.assertTrue(n_a); self.assertEqual(len(n_a), len(n_b))
+        self.assertEqual({e["id"] for e in n_a} & {e["id"] for e in n_b}, set())
+        self.assertEqual({e["id_evento"] for e in n_a}, {e["id_evento"] for e in n_b})
+
+    def test_sem_empresa_id_a_escrita_e_recusada(self):
+        with self.assertRaises(RuntimeError):
+            main.run(self.sb, self.atos, "exec-X", self.source_id)
+
     def test_a09_segunda_execucao_produz_seis_identicos_zero_novos_zero_duplicados(self):
-        resultado_1 = main.run(self.sb, self.atos, "exec-1", self.source_id)
+        resultado_1 = main.run(self.sb, self.atos, "exec-1", self.source_id, empresa_id=EMPRESA_TESTE)
         # Dos 6 atos, só a Rima é "processado" (mineral confirmado) na 1a
         # rodada -> 1 novo. Os outros 5 (4 descartados + Codemig em
         # apuração) não entram em "novos" porque nenhum deles roda score.
         self.assertEqual(resultado_1["resumo"]["novos"], 1)
         total_eventos_apos_1a = len(self.sb.store["events"])
 
-        resultado_2 = main.run(self.sb, self.atos, "exec-2", self.source_id)
+        resultado_2 = main.run(self.sb, self.atos, "exec-2", self.source_id, empresa_id=EMPRESA_TESTE)
         total_eventos_apos_2a = len(self.sb.store["events"])
 
         # Nenhum evento novo criado na segunda execução.

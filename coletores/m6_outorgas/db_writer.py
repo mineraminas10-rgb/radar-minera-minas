@@ -36,6 +36,15 @@ VERSAO_SCORE = "SCORE-M6-V1"
 
 OBSERVACAO_PADRAO_NAO_LOCALIZADO = "Procurado no documento/fonte disponível e não localizado nesta rodada."
 
+def _escopo():
+    """Importa comum/escopo.py (o db_writer também roda fora do main, nos testes locais)."""
+    import sys
+    pasta = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "comum")
+    if pasta not in sys.path:
+        sys.path.insert(0, pasta)
+    import escopo
+    return escopo
+
 
 def get_client() -> Client:
     url = os.environ["SUPABASE_URL"]
@@ -43,21 +52,20 @@ def get_client() -> Client:
     return create_client(url, key)
 
 
-def buscar_fonte_id(sb: Client, url_base: str) -> dict:
-    """Retorna {'id':..., 'empresa_id':...} da linha em `sources` com
-    este url_base (ex.: o índice de publicações de portarias do IGAM,
-    M6F01 na carta §44.2). Levanta erro claro se a fonte ainda não foi
-    cadastrada — não inventa um id."""
-    r = sb.table("sources").select("id, empresa_id").eq("url_base", url_base).limit(1).execute()
-    if not r.data:
-        raise RuntimeError(
-            f"Fonte do M6 ({url_base}) não encontrada em sources — cadastrar antes de rodar o coletor."
-        )
-    return r.data[0]
+def buscar_fonte_id(sb: Client, url_base: str, empresa_id: Optional[str] = None, carteira_id: Optional[str] = None) -> dict:
+    """Retorna {'id', 'empresa_id', 'carteira_id'}: fonte (M6F01, carta §44.2) + escopo da coleta.
+    Mesma regra de M8/M9A (comum/escopo.py): empresa explícita se a fonte existe em várias, carteira
+    da mesma empresa, falha clara em vez de adivinhar."""
+    return _escopo().resolver_escopo(
+        sb, url_base, empresa_id=empresa_id or os.environ.get("RADAR_EMPRESA_ID"),
+        carteira_id=carteira_id or os.environ.get("RADAR_CARTEIRA_ID"), rotulo="M6")
 
 
 def criar_execucao(sb: Client, id_execucao: str, ambiente: str = "piloto",
-                    empresa_id: Optional[str] = None) -> str:
+                    empresa_id: Optional[str] = None, carteira_id: Optional[str] = None) -> str:
+    # Isolamento por empresa: toda execução nasce com empresa_id E carteira_id (o banco também exige).
+    if not empresa_id or not carteira_id:
+        raise RuntimeError("Execução sem empresa_id/carteira_id: o escopo da coleta precisa estar definido (veja comum/escopo.py).")
     r = sb.table("execucoes").insert({
         "id_execucao": id_execucao,
         "inicio": datetime.now(timezone.utc).isoformat(),
@@ -66,6 +74,7 @@ def criar_execucao(sb: Client, id_execucao: str, ambiente: str = "piloto",
         "versao_score": {"m6": VERSAO_SCORE},
         "status_final": "parcial",
         "empresa_id": empresa_id,
+        "carteira_id": carteira_id,
     }).execute()
     return r.data[0]["id"]
 
@@ -93,8 +102,12 @@ def registrar_log_coleta(sb: Client, execucao_id: str, source_id: str, contagens
     }).execute()
 
 
-def buscar_evento_por_id_evento(sb: Client, id_evento: str) -> Optional[dict]:
-    r = sb.table("events").select("*").eq("id_evento", id_evento).limit(1).execute()
+def buscar_evento_por_id_evento(sb: Client, id_evento: str, empresa_id: str) -> Optional[dict]:
+    """A chave lógica do evento é (empresa_id, id_evento): a mesma ocorrência pode existir em
+    empresas diferentes, cada uma com seu estado editorial. Nunca buscar só por id_evento."""
+    if not empresa_id:
+        raise RuntimeError("buscar_evento_por_id_evento exige empresa_id (isolamento por empresa).")
+    r = sb.table("events").select("*").eq("empresa_id", empresa_id).eq("id_evento", id_evento).limit(1).execute()
     return r.data[0] if r.data else None
 
 
@@ -105,7 +118,7 @@ def upsert_evento(sb: Client, id_evento: str, campos: dict, execucao_id: str,
     processo, portaria, CNPJ, empreendimento, município [...]' — quem
     monta `id_evento` (main.py) decide qual combinação usar; esta função
     só faz o upsert e registra diffs, igual ao M8."""
-    existente = buscar_evento_por_id_evento(sb, id_evento)
+    existente = buscar_evento_por_id_evento(sb, id_evento, empresa_id)
     if existente is None:
         payload = {
             "id_evento": id_evento, "modulo": MODULO,
