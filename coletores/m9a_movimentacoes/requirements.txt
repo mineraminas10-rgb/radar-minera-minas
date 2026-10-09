@@ -1,5 +1,7 @@
 # Módulo 9A — coletor de Movimentações dos Processos Minerários da ANM
 requests==2.32.3
+beautifulsoup4==4.12.3   # usado por coletores/comum/acesso.py (inventário de links) e pelos testes comuns
+lxml==5.3.0              # parser usado pelo BeautifulSoup em acesso.py
 pandas==2.2.3
 supabase==2.32.0         # aceita chaves novas sb_secret_ (a 2.9.1 recusa: "Invalid API key")
 python-dateutil==2.9.0.post0
