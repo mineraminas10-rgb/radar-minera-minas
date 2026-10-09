@@ -228,6 +228,19 @@ def _flags_caso(atos_do_caso, processo_ja_conhecido: bool = False) -> dict:
     return pre_ia.flags_m9a(ato_generico_nao_material=not material, ja_enriquecido=processo_ja_conhecido)
 
 
+def _limpo(v):
+    """Valor de célula do SCM -> None quando ausente (NaN/NA/None/vazio/'nan'); senão o próprio valor."""
+    try:
+        import pandas as pd
+        if v is None or pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(v, str) and v.strip().lower() in ("", "nan", "none", "<na>"):
+        return None
+    return v
+
+
 def run(caminho_microdados: str, ambiente: str = "piloto", limite_casos: int = None,
         max_linhas_evento: int = None, tamanho_bloco: int = 500_000, registro_download: dict = None,
         sb=None, env=None, empresa_id: str = None, carteira_id: str = None):
@@ -286,17 +299,24 @@ def run(caminho_microdados: str, ambiente: str = "piloto", limite_casos: int = N
         with etapas.etapa("consolidacao"):
             # ACHADO/correção de 28/09/2026: `descricao` vem de `descricao_tipo_evento` (DSEvento) e a
             # narrativa vira `texto_narrativo` (só evidência). `row.get` porque colunas opcionais podem faltar.
-            atos = [
-                consolidacao.Ato(
-                    processo=row["processo"], descricao=row.get("descricao_tipo_evento") or row["evento_tipo"],
-                    data_evento=row["data_evento"], empresa=row.get("titular"),
-                    substancia=row.get("substancia"), municipio=row.get("municipio"),
-                    id_tipo_evento=row.get("id_tipo_evento"),
-                    texto_narrativo=row.get("evento_tipo"),
-                    area_ha=row.get("area_ha"),
-                )
-                for _, row in df_recorte.iterrows()
-            ]
+            atos, descartados = [], 0
+            for _, row in df_recorte.iterrows():
+                processo, data_evento = _limpo(row.get("processo")), _limpo(row.get("data_evento"))
+                if not processo or not data_evento:     # sem processo/data não há como identificar o ato
+                    descartados += 1
+                    continue
+                atos.append(consolidacao.Ato(
+                    processo=processo,
+                    # Valor ausente no SCM chega do pandas como NaN (float, e NaN é "verdadeiro" em Python):
+                    # `nan or x` devolvia NaN e quebrava a normalização de texto. `_limpo` troca por None.
+                    descricao=_limpo(row.get("descricao_tipo_evento")) or _limpo(row.get("evento_tipo")) or "",
+                    data_evento=data_evento, empresa=_limpo(row.get("titular")),
+                    substancia=_limpo(row.get("substancia")), municipio=_limpo(row.get("municipio")),
+                    id_tipo_evento=_limpo(row.get("id_tipo_evento")),
+                    texto_narrativo=_limpo(row.get("evento_tipo")),
+                    area_ha=_limpo(row.get("area_ha")),
+                ))
+            resumo["atos_descartados_sem_chave"] = descartados
             casos = consolidacao.consolidar_atos(atos)
             resumo["casos_consolidados"] = len(casos)
             itens = list(casos.values())
