@@ -54,6 +54,28 @@ class TestRodadaM9A(unittest.TestCase):
         self.assertEqual([e["ok"] for e in res["diagnostico_etapas"]], [True] * len(res["diagnostico_etapas"]))
         self.assertEqual(len([1 for t, _ in sb.ins if t == "log_busca"]), 1)   # registro do download
 
+    def test_valores_ausentes_do_scm_nao_quebram_a_consolidacao(self):
+        """Regressão da execução real de 09/10/2026: IDEvento fora do dicionário (DSEvento ausente) e
+        evento sem texto chegavam como NaN (float) e quebravam a normalização ('expected string ... got float')."""
+        import pandas as pd
+        for v in (float("nan"), pd.NA, None, "", "  ", "nan"):
+            self.assertIsNone(m._limpo(v), repr(v))
+        self.assertEqual(m._limpo("Guia"), "Guia")
+        self.assertEqual(m._limpo(5), 5)
+        with tempfile.TemporaryDirectory() as d:
+            dump_sintetico(d)
+            with open(os.path.join(d, "ProcessoEvento.txt"), "a", encoding="latin-1", newline="") as f:
+                f.write("831.000/2020;99;2026-05-10;;\n")          # evento 99 não existe em Evento.txt, sem OBEvento/DOU
+                f.write("831.000/2020;99;2026-05-11;;\n")
+                f.write("831.000/2020;2;2026-05-13;;\n")           # evento conhecido, mas sem OBEvento nem DOU: texto_narrativo ausente (caso do log real)
+                f.write(";2;2026-05-12;obs sem processo;\n")       # sem processo: descartado, não derruba a rodada
+            r = m.run(d, sb=SB(), env=ENV_OK, tamanho_bloco=50,
+                      registro_download={"url_original": "https://dadosabertos.anm.gov.br/SCM/microdados/microdados-scm.zip",
+                                         "status_http": 200, "resultado": "ok", "hash": "h", "metodo_acesso": "m9a_scm_zip"})
+        self.assertEqual(self.final["status"], "concluída")
+        self.assertEqual([e["ok"] for e in r["resumo"]["diagnostico_etapas"]], [True] * len(r["resumo"]["diagnostico_etapas"]))
+        self.assertGreaterEqual(r["resumo"]["atos_descartados_sem_chave"], 0)
+
     def test_limite_casos_e_amostra(self):
         with tempfile.TemporaryDirectory() as d:
             dump_sintetico(d)
