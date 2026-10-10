@@ -64,6 +64,12 @@ _REGRAS_VERBO = [
     (r"\bcassa\b|\bcassa[cç][aã]o\b", "cassacao"),
     (r"\bindefer", "indeferimento_original"),
     (r"\barquiv", "arquivamento_original"),
+    # Particípios e infinitivos que aparecem nas publicações reais do IGAM (10/10/2026). Ficam NO FIM da lista:
+    # nenhuma classificação já homologada acima muda; só deixam de cair em 'indeterminado' verbos escritos assim.
+    (r"\banulad[oa]\b", "anulacao"),
+    (r"\brevogad[oa]\b", "revogacao"),
+    (r"\bcassad[oa]\b", "cassacao"),
+    (r"\bautorizar\b|\bdeferid[oa]\b", "concessao_outorga"),
 ]
 
 
@@ -148,7 +154,9 @@ def tem_vinculo_mineral(sinais: SinaisVinculoMineral) -> tuple:
         sinais.finalidade_uso, sinais.atividade_associada, sinais.texto_livre
     ]))
 
-    if any(termo in corpo for termo in _TERMOS_MINERAL):
+    # "mina" só vale como palavra inteira: como pedaço de palavra casaria com "determina", "Minas Gerais",
+    # "mineiro" e daria vínculo mineral por acidente (a carta exige evidência de finalidade/atividade).
+    if any(re.search(r"\bmina\b", corpo) if termo == "mina" else termo in corpo for termo in _TERMOS_MINERAL):
         return VINCULO_CONFIRMADO, "finalidade/atividade documentada contém termo de vínculo mineral"
 
     if any(termo in corpo for termo in _TERMOS_NAO_MINERAL_EXPLICITO):
