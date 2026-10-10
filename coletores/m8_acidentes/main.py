@@ -416,16 +416,38 @@ def run(ambiente: str = "piloto", limite: int = None, reverificar: bool = False,
             resp = acessador.get(discovery.URL_PAGINA_ANUAL, metodo_acesso="m8_descoberta")
             print(f"[M8] página anual: status={resp.status} mime={resp.content_type} bytes={len(resp.corpo)} url_final={resp.url_final}")
             inventario = discovery.parse_inventario(resp.texto, base_url=resp.url_final)
-            resumo["brutos"] = len(inventario)
             if not inventario:
                 trecho = " ".join(resp.texto[:600].split())[:200]
                 raise diagnostico.ErroEtapa(
-                    "descoberta", "a página foi aberta mas nenhum comunicado com protocolo/link foi reconhecido",
-                    f"os seletores de discovery.py precisam ser validados contra o HTML real. Início da página: {trecho!r}")
+                    "descoberta", "a página foi aberta mas nenhum comunicado (cartão com protocolo/link) foi reconhecido",
+                    f"a estrutura da página mudou ou a resposta não é a lista; discovery.py precisa ser revisto. Início da página: {trecho!r}")
+            total = discovery.total_informado(resp.texto)
+            outras = discovery.urls_outras_paginas(resp.texto, base_url=resp.url_final)
+            print(f"[M8] página 1: {len(inventario)} comunicados; a SEMAD informa {total} no total; {len(outras)} outras páginas")
+            # Com `limite` (piloto) não percorre a lista inteira: abre mais páginas só enquanto faltarem itens
+            # ainda não processados para completar o limite. Sem limite, percorre todas (a lista é pequena).
+            processados_previos = set() if reverificar else carregar_processados(sb, empresa_id)
+            def pendentes(inv):
+                return sum(1 for it in inv if (it.protocolo, it.ano) not in processados_previos)
+            vistos_chaves = {(it.protocolo, it.ano) for it in inventario}
+            for url_p in outras:
+                if limite and pendentes(inventario) >= limite:
+                    break
+                try:
+                    rp = acessador.get(url_p, metodo_acesso="m8_descoberta")
+                except Exception as e:
+                    print(f"[M8] aviso: página da lista não abriu ({e}); sigo com o que já foi lido")
+                    break
+                novos_p = [it for it in discovery.parse_inventario(rp.texto, base_url=rp.url_final)
+                           if (it.protocolo, it.ano) not in vistos_chaves]
+                vistos_chaves.update((it.protocolo, it.ano) for it in novos_p)
+                inventario.extend(novos_p)
+            resumo["brutos"] = len(inventario)
+            print(f"[M8] inventário: {len(inventario)} comunicados lidos ({pendentes(inventario)} ainda não processados)")
 
         with etapas.etapa("comparacao_e_deduplicacao"):
             comparacao = discovery.comparar_com_inventario_anterior(inventario, {})
-            processados = set() if reverificar else carregar_processados(sb, empresa_id)
+            processados = processados_previos
             a_proc, conhecidos = separar_conhecidos(comparacao["novos"] + comparacao["alterados"], processados)
             for _ in conhecidos:
                 contador.registrar(pre_ia.flags_m8(extracao_falhou=False, faixa_vinculo="provavel", hash_documento=None,
