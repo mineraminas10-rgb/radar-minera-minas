@@ -140,6 +140,36 @@ def buscar_evento_por_id_evento(sb: Client, id_evento: str, empresa_id: str) -> 
     return r.data[0] if r.data else None
 
 
+def resolver_protocolo_provisorio(sb: Client, empresa_id: str, protocolo_provisorio: str, protocolo_real: str,
+                                   ano: int, id_arquivo: Optional[str], id_evento_provisorio: str,
+                                   id_evento_real: str, execucao_id: Optional[str] = None) -> str:
+    """O protocolo real (lido do texto do comunicado) substitui o provisório `arq<id>` SEM duplicar o evento.
+    Retorna: 'conflito' (o protocolo real já pertence a OUTRO arquivo: mantém o provisório, nada é alterado),
+    'adotado' (não há nada a renomear: usa o protocolo real), 'migrado' (o registro provisório foi renomeado).
+    Nunca apaga linhas; só renomeia identificadores e registra a troca em auditoria_correcoes."""
+    if not empresa_id:
+        raise RuntimeError("resolver_protocolo_provisorio exige empresa_id (isolamento por empresa).")
+    destino = (sb.table("m8_acidentes_detalhe").select("url_detalhe, event_id")
+               .eq("empresa_id", empresa_id).eq("protocolo_semad", protocolo_real).eq("ano", ano).execute().data or [])
+    if destino:
+        mesmo = bool(id_arquivo) and any(f"view_file/{id_arquivo}" in (x.get("url_detalhe") or "") for x in destino)
+        return "adotado" if mesmo else "conflito"
+    provisorio = buscar_evento_por_id_evento(sb, id_evento_provisorio, empresa_id)
+    if provisorio is None:
+        return "adotado"
+    if buscar_evento_por_id_evento(sb, id_evento_real, empresa_id) is not None:
+        return "conflito"
+    sb.table("events").update({"id_evento": id_evento_real}).eq("id", provisorio["id"]).eq("empresa_id", empresa_id).execute()
+    sb.table("m8_acidentes_detalhe").update({"protocolo_semad": protocolo_real}).eq("empresa_id", empresa_id) \
+        .eq("protocolo_semad", protocolo_provisorio).eq("ano", ano).execute()
+    sb.table("auditoria_correcoes").insert({
+        "event_id": provisorio["id"], "campo_alterado": "id_evento",
+        "valor_anterior": id_evento_provisorio, "valor_novo": id_evento_real,
+        "metodo_extracao": "protocolo_lido_do_texto_do_comunicado", "versao_regra": "SCORE-M8-V1.0",
+    }).execute()
+    return "migrado"
+
+
 def upsert_evento(sb: Client, id_evento: str, campos: dict, execucao_id: str,
                    empresa_id: Optional[str] = None) -> tuple:
     """Retorna (event_id, criado: bool). Se o evento já existe, registra
