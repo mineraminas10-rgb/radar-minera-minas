@@ -15,6 +15,10 @@ on:
         description: 'Ler só os N documentos novos mais recentes (deixar vazio para todos — no primeiro uso, use 3)'
         required: false
         default: '3'
+      reverificar:
+        description: 'Reabrir também documentos já processados (true | false) — só depois de corrigir a leitura'
+        required: false
+        default: 'false'
 
 jobs:
   coletar:
@@ -62,5 +66,8 @@ jobs:
           ARGS="--ambiente ${{ github.event.inputs.ambiente || 'piloto' }}"
           if [ -n "${{ github.event.inputs.limite }}" ]; then
             ARGS="$ARGS --limite ${{ github.event.inputs.limite }}"
+          fi
+          if [ "${{ github.event.inputs.reverificar }}" = "true" ]; then
+            ARGS="$ARGS --reverificar"
           fi
           python main.py $ARGS
