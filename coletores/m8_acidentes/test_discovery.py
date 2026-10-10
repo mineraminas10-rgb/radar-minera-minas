@@ -137,5 +137,121 @@ class TestExtratorComImagem(unittest.TestCase):
                              "https://meioambiente.mg.gov.br/documents/1/2/b.png"])
 
 
+class _Tab:
+    def __init__(self, db, nome):
+        self.db, self.nome, self.f, self.op, self.val = db, nome, [], "select", None
+
+    def select(self, *_): self.op = "select"; return self
+    def eq(self, c, v): self.f.append((c, v)); return self
+    def limit(self, _): return self
+    def update(self, v): self.op, self.val = "update", v; return self
+    def insert(self, v): self.op, self.val = "insert", v; return self
+
+    def execute(self):
+        class R: pass
+        r = R(); linhas = self.db.t.setdefault(self.nome, [])
+        alvo = [x for x in linhas if all(x.get(c) == v for c, v in self.f)]
+        if self.op == "insert":
+            linhas.append(dict(self.val)); r.data = [self.val]
+        elif self.op == "update":
+            for x in alvo: x.update(self.val)
+            r.data = alvo
+        else:
+            r.data = [dict(x) for x in alvo]
+        return r
+
+
+class _DB:
+    def __init__(self, t): self.t = t
+    def table(self, n): return _Tab(self, n)
+
+
+TEXTO_OCR = ("COMUNICADO DE ACIDENTE AMBIENTAL\nNº Protocolo: 204/2026\nMODALIDADE DO ACIDENTE: Transporte Rodoviário\n"
+             "MUNICIPIO: Caeté/MG\nDATA DA OCORRÊNCIA: 03/10/2026")
+
+
+class TestProtocoloLidoDoComunicado(unittest.TestCase):
+
+    def test_le_protocolo_do_texto(self):
+        self.assertEqual(discovery.extrair_protocolo_do_comunicado(TEXTO_OCR, 2026), ("204", 2026))
+        self.assertEqual(discovery.extrair_protocolo_do_comunicado("N° Protocolo : 0195 / 2026", 2026), ("195", 2026))
+
+    def test_ano_diferente_ou_sem_rotulo_nao_vale(self):
+        self.assertIsNone(discovery.extrair_protocolo_do_comunicado("Protocolo: 204/2025", 2026))
+        self.assertIsNone(discovery.extrair_protocolo_do_comunicado("data 03/10/2026 sem rotulo", 2026))
+        self.assertIsNone(discovery.extrair_protocolo_do_comunicado("", 2026))
+
+    def _item(self):
+        return discovery.ItemInventario("arq10236593", 2026, "t", "Caeté", "04/10/2026",
+                                        "https://meioambiente.mg.gov.br/x/view_file/10236593?a=1", "h",
+                                        id_arquivo="10236593", protocolo_origem="id_do_arquivo")
+
+    def _db_com_provisorio(self):
+        return _DB({"events": [{"id": "E1", "empresa_id": "EMP", "id_evento": "semad-m8-arq10236593"}],
+                    "m8_acidentes_detalhe": [{"empresa_id": "EMP", "protocolo_semad": "arq10236593", "ano": 2026,
+                                               "event_id": "E1", "url_detalhe": "https://x/view_file/10236593?a=1"}],
+                    "auditoria_correcoes": []})
+
+    def test_renomeia_o_registro_provisorio_sem_duplicar(self):
+        import main as m
+        db = self._db_com_provisorio()
+        novo = m.resolver_protocolo(db, self._item(), TEXTO_OCR, "EMP")
+        self.assertEqual((novo.protocolo, novo.ano, novo.protocolo_origem), ("204", 2026, "texto_do_comunicado"))
+        self.assertEqual(db.t["events"][0]["id_evento"], "semad-m8-204")
+        self.assertEqual(len(db.t["events"]), 1)
+        self.assertEqual(db.t["m8_acidentes_detalhe"][0]["protocolo_semad"], "204")
+        self.assertEqual(db.t["auditoria_correcoes"][0]["valor_anterior"], "semad-m8-arq10236593")
+
+    def test_primeira_vez_sem_registro_provisorio_adota_o_protocolo(self):
+        import main as m
+        db = _DB({"events": [], "m8_acidentes_detalhe": [], "auditoria_correcoes": []})
+        self.assertEqual(m.resolver_protocolo(db, self._item(), TEXTO_OCR, "EMP").protocolo, "204")
+        self.assertEqual(db.t["auditoria_correcoes"], [])
+
+    def test_reprocessar_depois_de_migrado_reconhece_o_mesmo_arquivo(self):
+        import main as m
+        db = self._db_com_provisorio()
+        m.resolver_protocolo(db, self._item(), TEXTO_OCR, "EMP")
+        novo = m.resolver_protocolo(db, self._item(), TEXTO_OCR, "EMP")   # a lista continua dando arq<id>
+        self.assertEqual(novo.protocolo, "204")
+        self.assertEqual(len(db.t["events"]), 1)
+
+    def test_protocolo_que_pertence_a_outro_arquivo_mantem_o_provisorio(self):
+        import main as m
+        db = self._db_com_provisorio()
+        db.t["m8_acidentes_detalhe"].append({"empresa_id": "EMP", "protocolo_semad": "204", "ano": 2026,
+                                              "event_id": "E9", "url_detalhe": "https://x/view_file/99999?a=1"})
+        novo = m.resolver_protocolo(db, self._item(), TEXTO_OCR, "EMP")
+        self.assertEqual(novo.protocolo, "arq10236593")
+        self.assertEqual(db.t["events"][0]["id_evento"], "semad-m8-arq10236593")   # nada foi alterado
+
+    def test_texto_sem_protocolo_mantem_o_provisorio_e_nao_toca_no_banco(self):
+        import main as m
+        db = self._db_com_provisorio()
+        self.assertEqual(m.resolver_protocolo(db, self._item(), "texto ilegível", "EMP").protocolo, "arq10236593")
+        self.assertEqual(db.t["events"][0]["id_evento"], "semad-m8-arq10236593")
+
+    def test_item_com_protocolo_da_imagem_nao_e_reinterpretado(self):
+        import main as m
+        item = self._item(); item.protocolo, item.protocolo_origem = "204", "nome_da_imagem"
+        self.assertIs(m.resolver_protocolo(_DB({}), item, "Protocolo: 999/2026", "EMP"), item)
+
+    def test_registro_com_protocolo_provisorio_volta_para_a_fila(self):
+        import main as m
+        db = _DB({"m8_acidentes_detalhe": [{"empresa_id": "EMP", "protocolo_semad": "arq10236593", "ano": 2026,
+                                             "status_processamento": "processado", "hash_documento": "h",
+                                             "url_detalhe": "https://x/view_file/10236593?a=1"}]})
+        self.assertEqual(m.carregar_processados(db, "EMP"), set())
+
+    def test_ja_processado_com_provisorio_continua_reconhecido_apos_migrar(self):
+        import main as m
+        db = _DB({"m8_acidentes_detalhe": [{"empresa_id": "EMP", "protocolo_semad": "204", "ano": 2026,
+                                             "status_processamento": "processado", "hash_documento": "h",
+                                             "url_detalhe": "https://x/view_file/10236593?a=1"}]})
+        proc = m.carregar_processados(db, "EMP")
+        self.assertIn(("204", 2026), proc)
+        self.assertIn(("arq10236593", 2026), proc)
+
+
 if __name__ == "__main__":
     unittest.main()
