@@ -8,9 +8,17 @@ import db_writer
 LISTA = "https://meioambiente.mg.gov.br/comunicados-de-acidentes-ambientais-2026"
 PAGINA = ("<html><body><h1>Comunicado 179/2026</h1><p>" + "Vazamento de rejeito em barragem de mineração no município de Itabira, "
           "atingindo curso d'água. Empresa informou medidas de contenção. " * 5 + "</p></body></html>")
-HTML_LISTA = """<table><tr><td>179/2026</td><td><a href="/comunicados/179-2026">Itabira</a></td></tr>
-<tr><td>180/2026</td><td><a href="/comunicados/180-2026">Mariana</a></td></tr>
-<tr><td>cabecalho sem protocolo</td><td><a href="/x">x</a></td></tr></table>"""
+def cartao(protocolo, href, municipio="Itabira", data="01/10/2026", id_arq="1"):
+    """Cartão no formato REAL da página da SEMAD (Liferay): protocolo no nome da imagem, município/data no título."""
+    titulo = f"Comunicado de Acidente - {municipio}/MG - {data}"
+    return (f'<dd class=" card-page-item card-page-item-asset " data-qa-id="row" data-title="{titulo}">'
+            f'<input type="checkbox" value="{id_arq}"><img alt="" src="./pagina_files/Emergência ambiental {protocolo}_2026.png">'
+            f'<a class="card-title" href="{href}" title="{titulo}">{titulo}</a></dd>')
+
+
+HTML_LISTA = ("<dl>" + cartao("179", "/comunicados/179-2026", "Itabira", "01/10/2026", "11")
+              + cartao("180", "/comunicados/180-2026", "Mariana", "02/10/2026", "12")
+              + '<dd class="x"><a href="/x">cabecalho sem protocolo</a></dd></dl>')
 ENV_OK = {"SUPABASE_URL": "https://abc.supabase.co", "SUPABASE_SERVICE_ROLE_KEY": "sb_secret_teste"}
 
 
@@ -166,6 +174,24 @@ class TestRodadaM8(unittest.TestCase):
         self.assertEqual(out["resumo"]["pre_ia_por_motivo"]["bloqueado_por_falta_de_documento"], 1)
         self.assertEqual(len(out["resumo"]["barreiras_de_acesso"]), 1)
 
+    def test_paginacao_so_abre_mais_paginas_quando_falta_item_para_o_limite(self):
+        pag2 = "https://meioambiente.mg.gov.br/comunicados-de-acidentes-ambientais-2026/-/document_library/vcfq/view/9?curEntry=2"
+        lista1 = HTML_LISTA.replace("</dl>", "</dl>") + (
+            f'<ul class="pagination"><li><a class="page-link" href="{pag2}">2</a></li></ul>')
+        lista2 = "<dl>" + cartao("178", "/comunicados/178-2026", "Betim", "30/09/2026", "10") + "</dl>"
+        base = {LISTA: Resp(body=lista1), pag2: Resp(body=lista2),
+                "https://meioambiente.mg.gov.br/comunicados/179-2026": Resp(body=PAGINA),
+                "https://meioambiente.mg.gov.br/comunicados/180-2026": Resp(body=PAGINA),
+                "https://meioambiente.mg.gov.br/comunicados/178-2026": Resp(body=PAGINA)}
+        out, s, sb, err = self.rodar(dict(base), limite=2)
+        self.assertIsNone(err)
+        self.assertNotIn(pag2, s.chamadas)              # 2 itens da página 1 bastam para o limite
+        self.assertEqual(out["resumo"]["brutos"], 2)
+        out, s, sb, err = self.rodar(dict(base))         # sem limite: percorre tudo
+        self.assertIsNone(err)
+        self.assertIn(pag2, s.chamadas)
+        self.assertEqual(out["resumo"]["brutos"], 3)
+
     def test_ambiente_sem_secrets_falha_na_etapa_ambiente(self):
         out, s, sb, err = self.rodar({}, env={})
         self.assertIn("ambiente", str(err))
@@ -173,7 +199,7 @@ class TestRodadaM8(unittest.TestCase):
         self.assertEqual(s.chamadas, [])
 
     def test_link_para_fora_das_fontes_oficiais_nao_e_aberto(self):
-        html = '<table><tr><td>181/2026</td><td><a href="https://noticias.exemplo.com/acidente">x</a></td></tr></table>'
+        html = "<dl>" + cartao("181", "https://noticias.exemplo.com/acidente", id_arq="13") + "</dl>"
         out, s, sb, err = self.rodar({LISTA: Resp(body=html)})
         self.assertEqual(s.chamadas, [LISTA])
         self.assertEqual(out["resultados"][0]["acao"], "falha_extracao")
