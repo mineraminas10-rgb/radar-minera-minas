@@ -20,6 +20,13 @@ class SB:
     def table(self, n): return Tab(self, n)
 
 
+def confere_regra_do_banco(teste, logs):
+    """Mesma regra do CHECK chk_analisados_soma do banco: analisados = identicos+atualizados+novos+duplicatas+descartados."""
+    for c in logs:
+        soma = sum(c.get(k) or 0 for k in ("identicos", "atualizados", "novos", "duplicatas_bloqueadas", "descartados"))
+        teste.assertEqual(c["analisados"], soma, f"log_coleta violaria chk_analisados_soma: {c}")
+
+
 class TestRodadaM9A(unittest.TestCase):
     def setUp(self):
         self.o = {k: getattr(db_writer, k) for k in ("buscar_fonte", "criar_execucao", "finalizar_execucao", "registrar_log_coleta")}
@@ -27,7 +34,8 @@ class TestRodadaM9A(unittest.TestCase):
         db_writer.buscar_fonte = lambda sb, empresa_id=None, carteira_id=None: {"id": "SRC", "empresa_id": "EMP", "carteira_id": "CART"}
         db_writer.criar_execucao = lambda sb, i, ambiente="piloto", empresa_id=None, carteira_id=None: "EXEC"
         db_writer.finalizar_execucao = lambda sb, e, totais, status_final="concluída": self.final.update(totais=totais, status=status_final)
-        db_writer.registrar_log_coleta = lambda *a, **k: None
+        self.logs = []
+        db_writer.registrar_log_coleta = lambda sb, e, src, c, empresa_id=None: self.logs.append(c)
         self.op = m.processar_caso
         self.chamados = []
         m.processar_caso = lambda sb, ex, atos, **k: (self.chamados.append(atos) or {"criado": True, "processos": [atos[0].processo]})
@@ -35,6 +43,7 @@ class TestRodadaM9A(unittest.TestCase):
     def tearDown(self):
         for k, v in self.o.items(): setattr(db_writer, k, v)
         m.processar_caso = self.op
+        confere_regra_do_banco(self, self.logs)
 
     def test_rodada_em_blocos_sem_ia_e_com_metricas(self):
         with tempfile.TemporaryDirectory() as d:
@@ -75,6 +84,18 @@ class TestRodadaM9A(unittest.TestCase):
         self.assertEqual(self.final["status"], "concluída")
         self.assertEqual([e["ok"] for e in r["resumo"]["diagnostico_etapas"]], [True] * len(r["resumo"]["diagnostico_etapas"]))
         self.assertGreaterEqual(r["resumo"]["atos_descartados_sem_chave"], 0)
+
+    def test_log_coleta_conta_so_os_casos_processados_com_limite(self):
+        """Regressão da execução real de 09/10/2026: analisados=24892 (consolidados) com só 5 processados violava o banco."""
+        with tempfile.TemporaryDirectory() as d:
+            dump_sintetico(d)
+            r = m.run(d, sb=SB(), env=ENV_OK, tamanho_bloco=50, limite_casos=2,
+                      registro_download={"url_original": "https://dadosabertos.anm.gov.br/SCM/microdados/microdados-scm.zip",
+                                         "status_http": 200, "resultado": "ok", "hash": "h", "metodo_acesso": "m9a_scm_zip"})
+        self.assertGreater(r["resumo"]["casos_consolidados"], 2)
+        self.assertEqual(len(self.logs), 1)
+        self.assertEqual(self.logs[0]["analisados"], 2)
+        self.assertEqual(self.logs[0]["novos"] + self.logs[0]["atualizados"], 2)
 
     def test_limite_casos_e_amostra(self):
         with tempfile.TemporaryDirectory() as d:
