@@ -66,9 +66,13 @@ def extrair_texto_nativo(pdf_bytes: bytes) -> Optional[str]:
 def extrair_texto_ocr(pdf_bytes: bytes, idioma: str = "por") -> tuple:
     """Retorna (texto, qualidade_ocr, paginas_processadas)."""
     from pdf2image import convert_from_bytes
-    import pytesseract
-
     imagens = convert_from_bytes(pdf_bytes, dpi=300)
+    return _ocr_de_imagens(imagens, idioma)
+
+
+def _ocr_de_imagens(imagens, idioma: str = "por") -> tuple:
+    """OCR sobre uma lista de imagens PIL. Retorna (texto, qualidade_ocr, quantidade)."""
+    import pytesseract
     textos = []
     confiancas = []
     for img in imagens:
@@ -131,6 +135,66 @@ def _processar_pdf(conteudo: bytes) -> ResultadoExtracao:
     )
 
 
+def _processar_imagem(conteudo: bytes) -> ResultadoExtracao:
+    """Os comunicados da SEMAD são publicados como imagem (PNG/JPG): não há texto nativo, vai direto para OCR."""
+    hash_doc = hash_bytes(conteudo)
+    try:
+        import io
+        from PIL import Image
+        img = Image.open(io.BytesIO(conteudo))
+        img.load()
+        texto, qualidade, n = _ocr_de_imagens([img.convert("RGB")])
+    except Exception as e:
+        return ResultadoExtracao(texto="", metodo_extracao="ocr", qualidade_ocr=None, paginas_processadas=0,
+                                 hash_documento=hash_doc, status_processamento="falha_extracao",
+                                 motivo_falha=f"OCR da imagem falhou: {e}")
+    if not texto.strip():
+        return ResultadoExtracao(texto="", metodo_extracao="ocr", qualidade_ocr="ruim", paginas_processadas=n,
+                                 hash_documento=hash_doc, status_processamento="pendente_revisao_manual",
+                                 motivo_falha="OCR não produziu texto legível")
+    return ResultadoExtracao(texto=texto, metodo_extracao="ocr", qualidade_ocr=qualidade, paginas_processadas=n,
+                             hash_documento=hash_doc,
+                             status_processamento="processado" if qualidade != "ruim" else "pendente_revisao_manual")
+
+
+def _processar_conteudo(conteudo: bytes, content_type: str) -> ResultadoExtracao:
+    """Roteia pelo tipo real do arquivo baixado: imagem -> OCR; demais -> fluxo de PDF."""
+    if (content_type or "").lower().startswith("image/"):
+        return _processar_imagem(conteudo)
+    return _processar_pdf(conteudo)
+
+
+EXTENSOES_IMAGEM = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp")
+
+
+def candidatos_documento(html: str, base_url: str, limite: int = 5) -> list:
+    """Documentos do comunicado numa página individual: anexos (.pdf) e imagens/arquivos servidos pela
+    biblioteca de documentos (`/documents/...`). Exclui o que é do tema/menu do site (`/o/`). Reprodutível:
+    ordem de aparição, sem repetir, só URLs dentro das fontes oficiais."""
+    from urllib.parse import urljoin, urlparse
+    from bs4 import BeautifulSoup
+    import rotas
+    soup = BeautifulSoup(html, "lxml")
+    vistos, saida = set(), []
+    for tag, attr in (("a", "href"), ("img", "src")):
+        for el in soup.select(f"{tag}[{attr}]"):
+            ref = (el.get(attr) or "").strip()
+            if not ref or ref.startswith(("#", "javascript:", "mailto:", "tel:", "data:")):
+                continue
+            url = urljoin(base_url, ref).split("#")[0]
+            caminho = urlparse(url).path.lower()
+            if caminho.startswith("/o/"):      # recursos do tema/menu do site (logos, ícones, scripts)
+                continue
+            eh_doc = caminho.endswith(".pdf") or caminho.endswith(EXTENSOES_IMAGEM) or caminho.startswith("/documents/")
+            if not eh_doc or url in vistos:
+                continue
+            ok, _ = rotas.url_permitida(url)
+            if ok:
+                vistos.add(url)
+                saida.append(url)
+    return saida[:limite]
+
+
 MAX_DOCUMENTOS_POR_COMUNICADO = 5
 MIN_CARACTERES_PAGINA = 200
 
@@ -172,28 +236,33 @@ def extrair(url_documento: str, session: Optional[requests.Session] = None, aces
         return _falha(f"documento não abriu: {e}")
 
     if not (ctype.startswith("text/html") or ctype == "application/xhtml+xml"):
-        return _processar_pdf(conteudo)
+        return _processar_conteudo(conteudo, ctype)
 
     # ---- página individual (HTML): texto da página + anexos ----
-    from acesso import inventariar_links, BarreiraDeAcesso, AcessoInterrompido, sha256
+    from acesso import BarreiraDeAcesso, AcessoInterrompido, sha256
     texto_pagina = _html_para_texto(conteudo)
     hash_pagina = sha256(conteudo)
     base = resposta.url_final if resposta is not None else url_documento
-    anexos = [l for l in inventariar_links(conteudo.decode("utf-8", "replace"), base)
-              if l["extensao"] == ".pdf"][:MAX_DOCUMENTOS_POR_COMUNICADO]
+    # Página de visualização da biblioteca de documentos (Liferay `view_file`): o texto da página é só
+    # menu/rodapé do site — o conteúdo do comunicado está no arquivo (imagem/PDF). Não usar o texto da página.
+    pagina_de_visualizacao = "/view_file/" in base
+    anexos = candidatos_documento(conteudo.decode("utf-8", "replace"), base, MAX_DOCUMENTOS_POR_COMUNICADO)
     textos, hashes, paginas, metodo, qualidade, status = [], [hash_pagina], 0, "nativo", None, "processado"
     falhas = []
-    for l in anexos:
+    for url_anexo in anexos:
         try:
-            r = acessador.get(l["url"], metodo_acesso="m8_anexo") if acessador is not None else None
+            r = acessador.get(url_anexo, metodo_acesso="m8_anexo") if acessador is not None else None
             if r is None:
                 break
-            res = _processar_pdf(r.corpo)
+            if (r.content_type or "").startswith("text/html"):
+                falhas.append(f"anexo_era_pagina_html@{url_anexo}")
+                continue
+            res = _processar_conteudo(r.corpo, r.content_type)
         except BarreiraDeAcesso as e:
-            falhas.append(f"barreira_de_acesso:{e.motivo}@{l['url']}")
+            falhas.append(f"barreira_de_acesso:{e.motivo}@{url_anexo}")
             continue
         except AcessoInterrompido as e:
-            falhas.append(f"{e.resultado}:{e.motivo}@{l['url']}")
+            falhas.append(f"{e.resultado}:{e.motivo}@{url_anexo}")
             continue
         if res.texto:
             textos.append(res.texto)
@@ -203,10 +272,11 @@ def extrair(url_documento: str, session: Optional[requests.Session] = None, aces
             metodo, qualidade = "ocr", res.qualidade_ocr
         if res.status_processamento != "processado":
             status = "pendente_revisao_manual"
-    if not textos and len(texto_pagina) < MIN_CARACTERES_PAGINA:
+    if not textos and (pagina_de_visualizacao or len(texto_pagina) < MIN_CARACTERES_PAGINA):
+        achados = f"; documentos encontrados na página: {len(anexos)}" if pagina_de_visualizacao else ""
         return _falha("página individual sem texto suficiente e sem documento associado legível"
-                      + (f" ({'; '.join(falhas)})" if falhas else ""))
-    texto = "\n\n".join([texto_pagina] + textos).strip()
+                      + (f" ({'; '.join(falhas)})" if falhas else "") + achados)
+    texto = "\n\n".join(([] if pagina_de_visualizacao else [texto_pagina]) + textos).strip()
     return ResultadoExtracao(
         texto=texto, metodo_extracao=metodo, qualidade_ocr=qualidade,
         paginas_processadas=paginas or 1, hash_documento=sha256("|".join(hashes).encode()),
