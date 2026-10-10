@@ -46,7 +46,7 @@ class ItemInventario:
     url_detalhe: str
     hash_linha: str  # hash do conteúdo textual do cartão, para detectar alteração sem reabrir o link
     id_arquivo: Optional[str] = None       # id do arquivo no Liferay (fileEntryId)
-    protocolo_origem: str = "nome_da_imagem"   # 'nome_da_imagem' | 'id_do_arquivo' (fallback)
+    protocolo_origem: str = "nome_da_imagem"   # 'nome_da_imagem' | 'texto_do_comunicado' | 'id_do_arquivo' (provisório)
 
 
 _RE_PROTOCOLO = re.compile(r"(\d{1,4})\s*/\s*(20\d{2})")
@@ -65,6 +65,23 @@ def extrair_protocolo_ano(texto: str) -> Optional[tuple]:
     if not m:
         return None
     return m.group(1), int(m.group(2))
+
+
+# "Nº Protocolo: 195/2026" no cabeçalho do comunicado. O OCR erra "Nº"/"N°"/":" com frequência, então só o
+# rótulo "Protocolo" (tolerando 1-2 letras trocadas no fim) + número/ano é aceito — nunca um "n/2026" solto.
+_RE_PROTOCOLO_TEXTO = re.compile(r"Protoc[o0]l[o0]?\s*[:;.\-]?\s*(\d{1,4})\s*/\s*(20\d{2})", re.IGNORECASE)
+
+
+def extrair_protocolo_do_comunicado(texto: str, ano_esperado: int = None) -> Optional[tuple]:
+    """Protocolo lido do TEXTO (OCR) do comunicado. Devolve (protocolo:str, ano:int) ou None.
+    Só vale se o ano lido for o ano da página (ano_esperado) — ano diferente indica leitura errada."""
+    m = _RE_PROTOCOLO_TEXTO.search((texto or "")[:1500])
+    if not m:
+        return None
+    protocolo, ano = str(int(m.group(1))), int(m.group(2))
+    if ano_esperado and ano != ano_esperado:
+        return None
+    return protocolo, ano
 
 
 def interpretar_titulo(titulo: str) -> dict:
