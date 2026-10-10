@@ -18,9 +18,11 @@ IMPORTANTE — leia antes de rodar contra a fonte real:
 """
 import argparse
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
+from dataclasses import replace
 from typing import Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "comum"))
@@ -65,6 +67,27 @@ def _parse_data_segura(texto: str):
         return dateutil_parser.parse(texto, dayfirst=True, fuzzy=True).date().isoformat()
     except (ValueError, OverflowError, TypeError):
         return None
+
+
+def resolver_protocolo(sb, item, texto: str, empresa_id: str, execucao_id=None):
+    """O protocolo oficial está no texto do comunicado ("Nº Protocolo: 204/2026"). Quando a lista só deu o
+    identificador provisório `arq<id>`, troca pelo protocolo lido do texto — sem duplicar eventos já criados
+    com o provisório. Leitura ausente/duvidosa ou protocolo de outro arquivo: mantém o provisório (nunca chuta)."""
+    if item.protocolo_origem != "id_do_arquivo":
+        return item
+    achado = discovery.extrair_protocolo_do_comunicado(texto, item.ano)
+    if not achado:
+        print(f"[M8] aviso: protocolo não lido no texto de {item.protocolo}; mantido o identificador provisório")
+        return item
+    protocolo, ano = achado
+    situacao = db_writer.resolver_protocolo_provisorio(
+        sb, empresa_id, item.protocolo, protocolo, ano, item.id_arquivo,
+        construir_id_evento(item.protocolo), construir_id_evento(protocolo), execucao_id)
+    if situacao == "conflito":
+        print(f"[M8] aviso: protocolo {protocolo}/{ano} lido em {item.protocolo} já pertence a outro arquivo; mantido o provisório")
+        return item
+    print(f"[M8] protocolo {item.protocolo} -> {protocolo}/{ano} ({situacao})")
+    return replace(item, protocolo=protocolo, ano=ano, protocolo_origem="texto_do_comunicado")
 
 
 def processar_item(sb, execucao_id: str, source_id: str, item: discovery.ItemInventario,
@@ -122,6 +145,9 @@ def processar_item(sb, execucao_id: str, source_id: str, item: discovery.ItemInv
         )
         return {"protocolo": item.protocolo, "acao": "falha_extracao", "criado": criado,
                 "paginas_ocr": resultado_extracao.paginas_processadas or 0}
+
+    item = resolver_protocolo(sb, item, resultado_extracao.texto, empresa_id, execucao_id)
+    id_evento = construir_id_evento(item.protocolo)
 
     sig_vinculo = signals.extrair_signais_vinculo(resultado_extracao.texto, item.municipio or "")
     score_v, faixa_v, justificativa_v = scoring.score_vinculo(sig_vinculo)
@@ -318,9 +344,19 @@ def carregar_processados(sb, empresa_id: str) -> set:
     """(protocolo, ano) já processados com documento e hash gravados. Esses itens NÃO são baixados nem
     reanalisados de novo (zero requisição, zero OCR, zero IA) — só falhas/pendências voltam à fila."""
     # só o que foi processado PARA ESTA EMPRESA conta: o que outra empresa já processou não dispensa a coleta daqui
-    r = sb.table("m8_acidentes_detalhe").select("protocolo_semad, ano, status_processamento, hash_documento").eq("empresa_id", empresa_id).execute()
-    return {(x["protocolo_semad"], x["ano"]) for x in (r.data or [])
-            if x.get("status_processamento") in PROCESSADOS_FINAIS and x.get("hash_documento")}
+    r = sb.table("m8_acidentes_detalhe").select("protocolo_semad, ano, status_processamento, hash_documento, url_detalhe").eq("empresa_id", empresa_id).execute()
+    saida = set()
+    for x in (r.data or []):
+        if str(x.get("protocolo_semad") or "").startswith("arq"):
+            continue    # protocolo ainda provisório: volta à fila para o protocolo real ser lido do texto
+        if x.get("status_processamento") in PROCESSADOS_FINAIS and x.get("hash_documento"):
+            saida.add((x["protocolo_semad"], x["ano"]))
+            # a lista pode continuar oferecendo o comunicado só pelo id do arquivo (identificador provisório):
+            # o id está na url_detalhe, então o item continua reconhecido como já processado
+            m_id = re.search(r"view_file/(\d+)", x.get("url_detalhe") or "")
+            if m_id:
+                saida.add((f"arq{m_id.group(1)}", x["ano"]))
+    return saida
 
 
 def separar_conhecidos(itens, processados: set):
