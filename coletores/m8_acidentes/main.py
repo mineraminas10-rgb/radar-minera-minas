@@ -1,270 +1,392 @@
 """
-Módulo 9A — orquestrador do coletor (Carta M9A §16 ordem de implementação).
-Pensado para rodar via GitHub Actions (ver .github/workflows/coletor_m9a.yml).
+Módulo 8 — orquestrador do coletor (Carta M8 §5 fluxo técnico obrigatório
+completo). Pensado para rodar via GitHub Actions (ver
+.github/workflows/coletor_m8.yml), nunca no ambiente do Claude.
 
 IMPORTANTE — leia antes de rodar contra a fonte real:
-1. ingestao_scm.py (nomes de coluna do SCM) e signals.py (mapeamento
-   evento_tipo -> sinais) NÃO foram validados contra um arquivo real do
-   SCM (sandbox sem acesso de rede). scoring.py e consolidacao.py estão
-   testados e corretos contra a lógica da carta.
-2. Todo caso criado/atualizado entra com revisao_humana='Pendente' — nada
-   é publicado automaticamente. estado_editorial em
-   m9a_movimentacao_estado é um dos três estados da carta §9, nunca
-   'Liberado para pré-release' automaticamente sem que
-   empreendimento_confirmado passe por enriquecimento (que este coletor
-   não faz sozinho — carta §8 é uma etapa separada, de enriquecimento
-   obrigatório, não coberta neste primeiro pacote).
-3. Rodar primeiro em ambiente='piloto' contra um recorte pequeno (ex.: só
-   os 5 casos de controle, se a Rapha conseguir isolar essas linhas no
-   arquivo real) antes de apontar para produção de verdade.
+1. discovery.py (seletores HTML) e signals.py (heurística de palavras-chave)
+   NÃO foram validados contra a página/documento reais (sandbox sem acesso
+   de rede — ver avisos nos dois arquivos). scoring.py está testado e
+   correto; db_writer.py segue os padrões já usados no resto do Radar.
+2. Por segurança, TODO evento criado ou atualizado por este coletor entra
+   com revisao_humana='Pendente' e status_editorial='em_apuracao' —
+   mesmo os classificados como faixa_vinculo='confirmado'. Nada é
+   publicado automaticamente (carta §14 já exige isso; aqui é reforçado
+   no código, não só na regra).
+3. Rodar primeiro em ambiente='piloto' contra uma amostra pequena e revisar
+   manualmente antes de apontar para produção de verdade.
 """
 import argparse
-import json
 import os
 import sys
 import time
-from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "comum"))
 
+import acesso
 import diagnostico
 import log_busca
 import pre_ia
 import rotas
-import ingestao_scm
-import consolidacao
+import discovery
+import extractor
 import signals
 import scoring
 import checklist_editorial
 import db_writer
 
-
-def gerar_id_evento(chave_caso: str) -> str:
-    return f"anm-m9a-{chave_caso[:16]}"
+from dateutil import parser as dateutil_parser
 
 
-def processar_caso(sb, execucao_id: str, atos: list, empresa_id=None, fonte_id=None,
-                    universo_atos: Optional[list] = None) -> dict:
+def construir_id_evento(protocolo: str) -> str:
+    """Chave de negócio do evento M8 — SEMPRE pelo protocolo do comunicado
+    (carta §3: 'identificado prioritariamente por protocolo e endereço
+    permanente do documento'), nunca por empresa+data+município.
+
+    Isso não é só estilo: é a trava que impede reproduzir o erro do caso
+    Vale apontado pela Carta de Revisão/Calibração de Scores M8/M9A (score
+    87 indevidamente combinando dois acidentes distintos do mesmo dia —
+    Mina de Fábrica e Mina de Viga, mesma empresa, mesma data, estruturas e
+    consequências diferentes). Como cada comunicado da SEMAD tem seu
+    próprio protocolo, dois acidentes nunca colapsam no mesmo id_evento
+    só por coincidirem em empresa/data/município — ver
+    test_identidade_evento.py."""
+    return f"semad-m8-{protocolo.replace('/', '-')}"
+
+
+def _parse_data_segura(texto: str):
+    """Tenta interpretar `texto` (data crua de fonte HTML, formato não
+    garantido) como data real. Retorna None em vez de arriscar gravar uma
+    data errada — nunca deduz "atraso" ou datas a partir de texto ambíguo
+    (mesma régua de "não atribuir sem prova" usada no resto do projeto)."""
+    try:
+        return dateutil_parser.parse(texto, dayfirst=True, fuzzy=True).date().isoformat()
+    except (ValueError, OverflowError, TypeError):
+        return None
+
+
+def processar_item(sb, execucao_id: str, source_id: str, item: discovery.ItemInventario,
+                    empresa_id: Optional[str] = None, acessador=None) -> dict:
+    """Processa um item novo/alterado do inventário. Retorna um resumo da
+    ação tomada para o relatório de execução."""
     t0 = time.monotonic()
-    primeiro = atos[0]
-    contagem_municipios = len({a.municipio for a in atos if a.municipio})
+    resultado_extracao = extractor.extrair(item.url_detalhe, acessador=acessador)
 
-    # sinais agregados do caso: OR entre os atos (se qualquer ato do caso
-    # dispara um sinal, o caso todo carrega esse sinal — ex.: um dos dois
-    # processos Kinross ter 'dimensao_objetiva' vale para o caso inteiro)
-    sig_agregado = scoring.SignaisM9A()
-    # Uma lista de evidências POR ato (não uma lista achatada única) —
-    # achado/correção de 28/09/2026: quando um caso agrupa mais de um ato
-    # (ex.: emissão 2023 + prorrogação 2026 da mesma guia, ver regra 4b em
-    # consolidacao.py), cada marco de timeline precisa apontar para a
-    # evidência DO SEU PRÓPRIO ato, não para uma evidência genérica do
-    # primeiro ato do caso — senão o ato histórico (2023) ficaria só com o
-    # trecho_literal do ato central (2026) como "prova", o que seria
-    # fundir os fatos, exatamente o que não queríamos.
-    evidencias_por_ato = []
-    for ato in atos:
-        # ACHADO/correção de 28/09/2026: `evento_tipo` (narrativa livre,
-        # OBEvento/DSPublicacaoDOU) só entra aqui como evidência/trecho
-        # literal. Classificação (signals.py) usa `descricao_tipo_evento`
-        # (nome do dicionário Evento.txt = ato.descricao, desde a correção
-        # em consolidacao.py) + `id_tipo_evento` — nunca a narrativa. Ver
-        # classificacao_scm.py.
-        linha = {
-            "processo": ato.processo,
-            "evento_tipo": ato.texto_narrativo or ato.descricao,
-            "descricao_tipo_evento": ato.descricao,
-            "id_tipo_evento": ato.id_tipo_evento,
-            "substancia": ato.substancia,
-            "titular": ato.empresa,
-            "municipio": ato.municipio,
-            "data_evento": ato.data_evento,
-            "area_ha": ato.area_ha,
-        }
-        sig_ato = signals.extrair_signais_m9a(linha, contagem_municipios_processo=contagem_municipios)
-        for campo in sig_agregado.__dataclass_fields__:
-            if getattr(sig_ato, campo):
-                setattr(sig_agregado, campo, True)
-        evidencias_por_ato.append(signals.extrair_evidencias_campo(linha))
-    evidencias_caso = [ev for grupo in evidencias_por_ato for ev in grupo]
+    if acessador is None:
+        # caminho legado (sem Acessador): registro mínimo. Com Acessador, cada requisição já foi
+        # registrada por completo em log_busca (status, MIME, tamanho, hash, URL final, resultado).
+        db_writer.registrar_log_busca(
+            sb, execucao_id, source_id, item.url_detalhe,
+            codigo_http=200 if resultado_extracao.status_processamento != "falha_extracao" else None,
+            hash_conteudo=resultado_extracao.hash_documento,
+            erro=resultado_extracao.motivo_falha,
+            empresa_id=empresa_id,
+        )
 
-    score, faixa, justificativa = scoring.score_m9a(sig_agregado)
-    prioridade = faixa  # já é A/B/C/D
+    id_evento = construir_id_evento(item.protocolo)
 
-    chave_caso = consolidacao.chave_caso_editorial(primeiro)
-    id_evento = gerar_id_evento(chave_caso)
+    if resultado_extracao.status_processamento == "falha_extracao":
+        # Carta §16: documento não abre -> preservar alerta básico, não
+        # descartar o evento, encaminhar à fila manual.
+        event_id, criado = db_writer.upsert_evento(sb, id_evento, {
+            "titulo_fato": item.titulo_fonte,
+            "municipio": item.municipio,
+            "status_editorial": "em_apuracao",
+            "revisao_humana": "Pendente",
+            "status_enriquecimento": f"[falha de extração] {resultado_extracao.motivo_falha}",
+        }, execucao_id, empresa_id=empresa_id)
+        db_writer.upsert_m8_detalhe(sb, event_id, item.protocolo, item.ano, {
+            "url_lista": discovery.URL_PAGINA_ANUAL,
+            "url_detalhe": item.url_detalhe,
+            "status_processamento": "falha_extracao",
+            "motivo_descarte": resultado_extracao.motivo_falha,
+            "score_vinculo": 0,
+            "faixa_vinculo": "contextual",
+        }, empresa_id=empresa_id)
+        # Checklist: documento não abriu -> as 12 perguntas ficam todas
+        # 'requer_apuracao_humana' (nunca "não localizado" — não chegamos
+        # nem a procurar no texto; checklist §Regra central). Nenhuma é
+        # 'confirmado'/'nao_localizado', então não precisa de evidencia_id/
+        # observacao aqui.
+        respostas = checklist_editorial.derivar_checklist_m8(extracao_falhou=True, faixa_vinculo="contextual")
+        db_writer.gravar_checklist_editorial(sb, event_id, respostas, empresa_id=empresa_id)
+        # grau_completude explícito: 'Baixa' sempre que a extração falhou —
+        # não pode nascer do tamanho do texto (não há texto nenhum aqui).
+        db_writer.upsert_evento(sb, id_evento, {"grau_completude": "Baixa"}, execucao_id, empresa_id=empresa_id)
+        db_writer.gravar_job_enriquecimento(
+            sb, event_id, hash_entrada=item.hash_linha, status="pendente_revisao",
+            tempo_gasto_segundos=time.monotonic() - t0,
+            erro=resultado_extracao.motivo_falha, empresa_id=empresa_id,
+        )
+        return {"protocolo": item.protocolo, "acao": "falha_extracao", "criado": criado,
+                "paginas_ocr": resultado_extracao.paginas_processadas or 0}
 
-    # "movimentacao_scm_anm" é um tipo_evento genérico do módulo — ver
-    # docstring de buscar_regra_evento em db_writer.py sobre por que não
-    # há um valor único natural por ato aqui ainda.
-    regra = db_writer.buscar_regra_evento(sb, fonte_id, "movimentacao_scm_anm") if fonte_id else None
+    sig_vinculo = signals.extrair_signais_vinculo(resultado_extracao.texto, item.municipio or "")
+    score_v, faixa_v, justificativa_v = scoring.score_vinculo(sig_vinculo)
 
-    processos_envolvidos = sorted({a.processo for a in atos})
+    # Regra utilizada (proveniência) — só leitura, não decide o score:
+    # se já existir uma regras_evento cadastrada para esta fonte+tipo de
+    # evento, event_scores registra qual foi usada. Tipo de evento deste
+    # módulo é sempre "comunicado_acidente_ambiental" (não varia por item,
+    # diferente do M9A onde cada ato tem seu próprio tipo textual do SCM).
+    regra = db_writer.buscar_regra_evento(sb, source_id, "comunicado_acidente_ambiental")
+
     campos_evento = {
-        "processo": "; ".join(processos_envolvidos),
-        "titulo_fato": primeiro.texto_narrativo or primeiro.descricao,
-        "empresa": primeiro.empresa,
-        "municipio": "; ".join(sorted({a.municipio for a in atos if a.municipio})),
+        "titulo_fato": item.titulo_fonte,
+        "municipio": item.municipio,
         "status_editorial": "em_apuracao",
-        "revisao_humana": "Pendente",
-        "tipo_evento": "movimentacao_scm_anm",
+        "revisao_humana": "Pendente",  # nunca automático — carta §14, reforçado aqui
+        "url_oficial": item.url_detalhe,
+        "hash_versao": resultado_extracao.hash_documento,
+        "tipo_evento": "comunicado_acidente_ambiental",
     }
 
-    event_id, criado = db_writer.upsert_caso_editorial(sb, id_evento, campos_evento, execucao_id,
-                                                         empresa_id=empresa_id)
-
-    # Checklist Completo de Enriquecimento — evidências por campo (achado
-    # de 28/09/2026: passam a usar campo_sustentado e retornar os ids
-    # gravados, para linkar evidencia_id específica na timeline e no
-    # checklist, mesma extensão feita no M8).
-    evidencias_gravadas = db_writer.gravar_evidencias_caso(sb, event_id, evidencias_caso, empresa_id=empresa_id)
-    evidencia_padrao_id = evidencias_gravadas[0]["id"] if evidencias_gravadas else None
-
-    # Reconstituir, por ato, o id da evidência de 'evento_tipo' (narrativa)
-    # que pertence especificamente a ELE — gravar_evidencias_caso devolve
-    # na mesma ordem em que evidencias_caso foi montado (achatamento de
-    # evidencias_por_ato), então dá para recortar por offset.
-    evidencia_id_por_ato = []
-    _offset = 0
-    for grupo in evidencias_por_ato:
-        fatia = evidencias_gravadas[_offset:_offset + len(grupo)]
-        _offset += len(grupo)
-        ev_evento_tipo = next((e["id"] for e in fatia if e["campo"] == "evento_tipo"), None)
-        evidencia_id_por_ato.append(ev_evento_tipo or evidencia_padrao_id)
-
-    for ato, evidencia_id_ato in zip(atos, evidencia_id_por_ato):
-        tipo_marco = db_writer.mapear_tipo_marco(ato.descricao, ato.id_tipo_evento)
-        db_writer.gravar_ato_na_timeline(
-            sb, event_id, tipo_marco=tipo_marco, data_marco=ato.data_evento,
-            trecho_literal=ato.texto_narrativo or ato.descricao,
-            evidencia_id=evidencia_id_ato, empresa_id=empresa_id,
-        )
-
-    # Carta §9: por padrão o caso fica travado para documento até
-    # enriquecimento confirmar empreendimento/vínculo geográfico — este
-    # coletor não faz o enriquecimento (etapa separada, carta §8), então
-    # o estado inicial conservador é sempre 'Travado para documento',
-    # nunca 'Liberado para pré-release' automaticamente.
-    efeito_operacional = None  # carta §10 — só vira comprovado/não comprovado no enriquecimento §8
-    db_writer.upsert_m9a_estado(sb, event_id, familia_chave=chave_caso, estado={
-        "estado_editorial": "Travado para documento",
-        "efeito_operacional": efeito_operacional,
-        "pendencia_apuracao": "Enriquecimento obrigatório da carta §8 ainda não executado por este coletor.",
+    detalhe_m8 = {
+        "url_lista": discovery.URL_PAGINA_ANUAL,
+        "url_detalhe": item.url_detalhe,
+        "hash_documento": resultado_extracao.hash_documento,
+        "score_vinculo": score_v,
+        "faixa_vinculo": faixa_v,
+        "justificativa_vinculo": "; ".join(justificativa_v),
+        "metodo_extracao": resultado_extracao.metodo_extracao,
+        "qualidade_ocr": resultado_extracao.qualidade_ocr,
+        "status_processamento": "processado" if faixa_v != "descartado" else "descartado",
         "versao_regra_score": scoring.VERSAO_REGRA_SCORE,
-    })
+        "data_ultima_verificacao": datetime.now(timezone.utc).isoformat(),
+    }
 
-    memoria = scoring.montar_memoria_calculo(sig_agregado, justificativa)
-    db_writer.gravar_score(
-        sb, event_id, score_bruto=score, prioridade=prioridade,
-        componentes={"score_m9a": score, "faixa": faixa, "justificativa": justificativa,
-                     "processos": processos_envolvidos},
-        empresa_id=empresa_id,
-        score_normalizado=scoring.calcular_score_normalizado(score),
-        regra_evento_id=regra["id"] if regra else None,
-        regra_evento_versao=regra["versao"] if regra else None,
-        gatilhos_aplicados=memoria["gatilhos_aplicados"],
-        redutores_aplicados=memoria["redutores_aplicados"],
-        piso_aplicado=memoria["piso_aplicado"],
-        teto_aplicado=memoria["teto_aplicado"],
-    )
-
-    # Pergunta 11 do checklist ('histórico relevante') — achado/correção de
-    # 28/09/2026: busca em DUAS camadas, não só na tabela `events` (que só
-    # tem o que já foi processado e publicado antes). Registrada com
-    # critério distinto por camada, para o `eventos_relacionados` deixar
-    # claro qual busca achou o quê.
-    antecedentes_editorial = db_writer.buscar_antecedentes_m9a(sb, id_evento, titular=primeiro.empresa)
-    if antecedentes_editorial:
-        db_writer.gravar_eventos_relacionados(sb, event_id, antecedentes_editorial,
-                                               criterio_vinculo="mesma_empresa_editorial", empresa_id=empresa_id)
-
-    processos_antecedentes_universo = []
-    if universo_atos:
-        processos_antecedentes_universo = consolidacao.buscar_processos_por_titular_no_universo(
-            universo_atos, titular=primeiro.empresa, processo_atual=primeiro.processo,
+    # Checklist §Inventário de documentos: um `documentos` por comunicado,
+    # com proveniência própria (URL, hash, páginas) — não só o hash solto
+    # dentro do detalhe do M8. Só dá pra gravar depois que o evento existe
+    # (documentos.event_id referencia events.id), por isso vira uma função
+    # chamada depois de cada upsert_evento abaixo, não uma linha solta aqui.
+    def _finalizar_evidencias_e_checklist(event_id: str) -> str:
+        """Grava documento + evidências, escreve a timeline (achado da
+        auditoria: M8 nunca gravava timeline_processual) e devolve o id da
+        evidência "geral" (descricao_literal) para o checklist poder
+        satisfazer chk_confirmado_exige_evidencia sem inventar vínculo por
+        campo específico (ver docstring de gravar_checklist_editorial)."""
+        documento_id = db_writer.gravar_documento(
+            sb, event_id, url=item.url_detalhe, hash_documento=resultado_extracao.hash_documento,
+            status="processado", paginas_ocr=resultado_extracao.paginas_processadas,
+            empresa_id=empresa_id,
         )
-        # gravar_eventos_relacionados espera IDs de `events`, e um processo
-        # do universo pode ainda não ter virado evento — aqui só contamos
-        # para o checklist (teve_antecedentes) e deixamos registrado; ligar
-        # em eventos_relacionados só é possível para os que já têm event_id.
-    antecedentes = antecedentes_editorial or processos_antecedentes_universo
+        evidencias = signals.extrair_evidencias_vinculo(resultado_extracao.texto, item.municipio or "")
+        if faixa_v in ("provavel", "confirmado"):
+            evidencias += signals.extrair_evidencias_gravidade(resultado_extracao.texto)
+        if resultado_extracao.texto:
+            evidencias.append({
+                "campo": "descricao_literal",
+                "trecho_literal": resultado_extracao.texto[:800],
+                "palavra_gatilho": None,
+            })
+        gravadas = db_writer.gravar_evidencias_campo(sb, event_id, documento_id, evidencias,
+                                                       metodo_extracao=resultado_extracao.metodo_extracao,
+                                                       empresa_id=empresa_id)
+        evidencia_geral = next((g for g in gravadas if g["campo"] == "descricao_literal"), None)
+        evidencia_padrao_id = evidencia_geral["id"] if evidencia_geral else (
+            gravadas[0]["id"] if gravadas else None
+        )
 
-    respostas = checklist_editorial.derivar_checklist_m9a(
-        titular=primeiro.empresa, municipio=primeiro.municipio, data_evento=primeiro.data_evento,
-        descricao=primeiro.descricao, efeito_operacional=efeito_operacional,
-        quantidade_processos_no_caso=len(processos_envolvidos), teve_antecedentes=bool(antecedentes),
+        # Timeline (marco 'documento' — ver TIPOS_MARCO_TIMELINE em
+        # db_writer.py). item.data_publicada é texto cru "como aparece na
+        # página" (discovery.py), não garantidamente um formato de data
+        # parseável — nunca grava um valor que não conseguimos interpretar
+        # com confiança como data real (evita `date` inválido silencioso
+        # no banco).
+        if item.data_publicada:
+            data_marco = _parse_data_segura(item.data_publicada)
+            if data_marco:
+                db_writer.gravar_marco_timeline(
+                    sb, event_id, tipo_marco="documento", data_marco=data_marco,
+                    trecho_literal=(resultado_extracao.texto[:500] if resultado_extracao.texto else None),
+                    evidencia_id=evidencia_padrao_id, empresa_id=empresa_id,
+                )
+
+        return evidencia_padrao_id
+
+    if faixa_v == "descartado":
+        detalhe_m8["motivo_descarte"] = "; ".join(justificativa_v) or "score de vínculo abaixo de 2"
+        event_id, criado = db_writer.upsert_evento(sb, id_evento, campos_evento, execucao_id, empresa_id=empresa_id)
+        db_writer.upsert_m8_detalhe(sb, event_id, item.protocolo, item.ano, detalhe_m8, empresa_id=empresa_id)
+        evidencia_padrao_id = _finalizar_evidencias_e_checklist(event_id)
+        respostas = checklist_editorial.derivar_checklist_m8(
+            extracao_falhou=False, faixa_vinculo=faixa_v,
+            empresa_citada=None, local_descrito=item.municipio, municipio=item.municipio,
+            descricao_literal=(resultado_extracao.texto or None),
+        )
+        db_writer.gravar_checklist_editorial(sb, event_id, respostas, empresa_id=empresa_id,
+                                              evidencia_padrao_id=evidencia_padrao_id)
+        db_writer.upsert_evento(sb, id_evento, {
+            "grau_completude": checklist_editorial.calcular_grau_completude(respostas),
+        }, execucao_id, empresa_id=empresa_id)
+        db_writer.gravar_job_enriquecimento(
+            sb, event_id, hash_entrada=resultado_extracao.hash_documento, status="concluido",
+            tempo_gasto_segundos=time.monotonic() - t0, empresa_id=empresa_id,
+        )
+        return {"protocolo": item.protocolo, "acao": "descartado", "faixa": faixa_v, "criado": criado,
+                "paginas_ocr": resultado_extracao.paginas_processadas or 0}
+
+    # faixa 'contextual' fica no histórico sem alerta automático (carta §8);
+    # 'provavel'/'confirmado' seguem para score de gravidade (carta §5 passo 9).
+    if faixa_v in ("provavel", "confirmado"):
+        sig_gravidade = signals.extrair_signais_gravidade(resultado_extracao.texto)
+        score_g, nivel_g = scoring.score_gravidade(sig_gravidade)
+        detalhe_m8["score_gravidade"] = score_g
+        detalhe_m8["nivel_gravidade"] = nivel_g
+
+        prioridade = {"alerta_imediato": "A", "pauta_apuracao": "B",
+                       "registro_acompanhamento": "C", "arquivo_contextual": "D"}[nivel_g]
+
+        event_id, criado = db_writer.upsert_evento(sb, id_evento, campos_evento, execucao_id, empresa_id=empresa_id)
+        db_writer.upsert_m8_detalhe(sb, event_id, item.protocolo, item.ano, detalhe_m8, empresa_id=empresa_id)
+
+        memoria_vinculo = scoring.montar_memoria_calculo_vinculo(sig_vinculo, justificativa_v)
+        memoria_gravidade = scoring.montar_memoria_calculo_gravidade(sig_gravidade)
+        db_writer.gravar_score(
+            sb, event_id, score_bruto=score_g, prioridade=prioridade,
+            componentes={"score_vinculo": score_v, "faixa_vinculo": faixa_v,
+                         "score_gravidade": score_g, "nivel_gravidade": nivel_g},
+            empresa_id=empresa_id,
+            score_normalizado=scoring.calcular_score_normalizado(score_g),
+            regra_evento_id=regra["id"] if regra else None,
+            regra_evento_versao=regra["versao"] if regra else None,
+            # gatilhos/redutores/piso/teto: gravidade não tem redutor/piso/teto
+            # próprio (Carta §9), então combino os dois blocos de memória —
+            # gatilhos_aplicados junta vínculo+gravidade (as duas pontuações
+            # que compõem esta decisão), o resto vem só de gravidade.
+            gatilhos_aplicados={**memoria_vinculo["gatilhos_aplicados"], **memoria_gravidade["gatilhos_aplicados"]},
+            redutores_aplicados=memoria_vinculo["redutores_aplicados"],
+            piso_aplicado=memoria_vinculo["piso_aplicado"],
+            teto_aplicado=memoria_vinculo["teto_aplicado"],
+        )
+        evidencia_padrao_id = _finalizar_evidencias_e_checklist(event_id)
+
+        antecedentes = db_writer.buscar_antecedentes_m8(
+            sb, event_id, empresa_citada=None, mina_unidade=None,
+        )  # TODO: empresa_citada/mina_unidade ainda não vêm de discovery/signals — ver aviso no topo de discovery.py
+        if antecedentes:
+            db_writer.gravar_eventos_relacionados(sb, event_id, antecedentes, empresa_id=empresa_id)
+
+        respostas = checklist_editorial.derivar_checklist_m8(
+            extracao_falhou=False, faixa_vinculo=faixa_v,
+            empresa_citada=None, local_descrito=item.municipio, municipio=item.municipio,
+            descricao_literal=(resultado_extracao.texto or None),
+            score_gravidade_calculado=True, teve_antecedentes=bool(antecedentes),
+        )
+        db_writer.gravar_checklist_editorial(sb, event_id, respostas, prioridade=prioridade, empresa_id=empresa_id,
+                                              evidencia_padrao_id=evidencia_padrao_id)
+        db_writer.upsert_evento(sb, id_evento, {
+            "grau_completude": checklist_editorial.calcular_grau_completude(respostas),
+        }, execucao_id, empresa_id=empresa_id)
+        db_writer.gravar_job_enriquecimento(
+            sb, event_id, hash_entrada=resultado_extracao.hash_documento, status="concluido",
+            tempo_gasto_segundos=time.monotonic() - t0, empresa_id=empresa_id,
+        )
+        return {"protocolo": item.protocolo, "acao": "processado", "faixa": faixa_v,
+                "prioridade": prioridade, "criado": criado,
+                "paginas_ocr": resultado_extracao.paginas_processadas or 0}
+
+    # contextual
+    event_id, criado = db_writer.upsert_evento(sb, id_evento, campos_evento, execucao_id, empresa_id=empresa_id)
+    db_writer.upsert_m8_detalhe(sb, event_id, item.protocolo, item.ano, detalhe_m8, empresa_id=empresa_id)
+    evidencia_padrao_id = _finalizar_evidencias_e_checklist(event_id)
+    respostas = checklist_editorial.derivar_checklist_m8(
+        extracao_falhou=False, faixa_vinculo=faixa_v,
+        empresa_citada=None, local_descrito=item.municipio, municipio=item.municipio,
+        descricao_literal=(resultado_extracao.texto or None),
     )
-    respostas_finais = db_writer.gravar_checklist_editorial(
-        sb, event_id, respostas, prioridade=prioridade, empresa_id=empresa_id,
-        evidencia_padrao_id=evidencia_padrao_id,
-    )
-
-    grau = checklist_editorial.calcular_grau_completude(respostas)
-    db_writer.upsert_caso_editorial(sb, id_evento, {"grau_completude": grau}, execucao_id, empresa_id=empresa_id)
-
-    hash_entrada = consolidacao.chave_caso_editorial(primeiro)  # muda só quando o caso muda de identidade
+    db_writer.gravar_checklist_editorial(sb, event_id, respostas, empresa_id=empresa_id,
+                                          evidencia_padrao_id=evidencia_padrao_id)
+    db_writer.upsert_evento(sb, id_evento, {
+        "grau_completude": checklist_editorial.calcular_grau_completude(respostas),
+    }, execucao_id, empresa_id=empresa_id)
     db_writer.gravar_job_enriquecimento(
-        sb, event_id, hash_entrada=hash_entrada, status="concluido",
+        sb, event_id, hash_entrada=resultado_extracao.hash_documento, status="concluido",
         tempo_gasto_segundos=time.monotonic() - t0, empresa_id=empresa_id,
     )
-
-    return {"id_evento": id_evento, "processos": processos_envolvidos, "score": score,
-            "faixa": faixa, "criado": criado, "grau_completude": grau,
-            "checklist_respostas_finais": respostas_finais}
+    return {"protocolo": item.protocolo, "acao": "contextual", "faixa": faixa_v, "criado": criado,
+            "paginas_ocr": resultado_extracao.paginas_processadas or 0}
 
 
-def _flags_caso(atos_do_caso, processo_ja_conhecido: bool = False) -> dict:
-    """Pré-IA do M9A: a classificação por dicionário (classificacao_scm) já decide sem IA. Aqui só se marca
-    o que SERIA dispensado de qualquer chamada futura: ato genérico/não material sem delta."""
-    import classificacao_scm as clsf
-    from signals import EVENTOS_MUDANCA_MATERIAL, EVENTOS_AUTORIZACAO_EXTRACAO, EVENTOS_AVANCO_PESQUISA_APROVADO
-    material = False
-    for a in atos_do_caso:
-        t = clsf.classificar(a.id_tipo_evento, a.descricao)
-        if t.contem(*EVENTOS_MUDANCA_MATERIAL, *EVENTOS_AUTORIZACAO_EXTRACAO, *EVENTOS_AVANCO_PESQUISA_APROVADO):
-            material = True
-            break
-    return pre_ia.flags_m9a(ato_generico_nao_material=not material, ja_enriquecido=processo_ja_conhecido)
+PROCESSADOS_FINAIS = ("processado", "descartado")
 
 
-def _limpo(v):
-    """Valor de célula do SCM -> None quando ausente (NaN/NA/None/vazio/'nan'); senão o próprio valor."""
-    try:
-        import pandas as pd
-        if v is None or pd.isna(v):
-            return None
-    except (TypeError, ValueError):
-        pass
-    if isinstance(v, str) and v.strip().lower() in ("", "nan", "none", "<na>"):
-        return None
-    return v
+def carregar_processados(sb, empresa_id: str) -> set:
+    """(protocolo, ano) já processados com documento e hash gravados. Esses itens NÃO são baixados nem
+    reanalisados de novo (zero requisição, zero OCR, zero IA) — só falhas/pendências voltam à fila."""
+    # só o que foi processado PARA ESTA EMPRESA conta: o que outra empresa já processou não dispensa a coleta daqui
+    r = sb.table("m8_acidentes_detalhe").select("protocolo_semad, ano, status_processamento, hash_documento").eq("empresa_id", empresa_id).execute()
+    return {(x["protocolo_semad"], x["ano"]) for x in (r.data or [])
+            if x.get("status_processamento") in PROCESSADOS_FINAIS and x.get("hash_documento")}
 
 
-def run(caminho_microdados: str, ambiente: str = "piloto", limite_casos: int = None,
-        max_linhas_evento: int = None, tamanho_bloco: int = 500_000, registro_download: dict = None,
-        sb=None, env=None, empresa_id: str = None, carteira_id: str = None):
-    etapas = diagnostico.Etapas("M9A")
+def separar_conhecidos(itens, processados: set):
+    novos, conhecidos = [], []
+    for it in itens:
+        (conhecidos if (it.protocolo, it.ano) in processados else novos).append(it)
+    return novos, conhecidos
+
+
+def _flags_do_resultado(r: dict) -> dict:
+    return pre_ia.flags_m8(extracao_falhou=(r["acao"] == "falha_extracao"), faixa_vinculo=r.get("faixa") or "contextual",
+                           hash_documento=None, hash_documento_anterior=None)
+
+
+def contagens_log_coleta(resumo: dict, resultados: list, filtrados: int) -> dict:
+    """Linha do log_coleta. O banco exige (chk_analisados_soma): analisados = identicos + atualizados + novos
+    + duplicatas + descartados. Por isso os baldes são DISJUNTOS, calculados do resultado de cada item
+    (falha/erro ficam só em `erros`, fora de `analisados`; `resumo["novos"]/["atualizados"]` não servem
+    porque também contam descartados e falhas de extração)."""
+    novos = atualizados = descartados = 0
+    for r in resultados:
+        acao = r.get("acao")
+        if acao in ("falha_extracao", "erro") or "erro" in r:
+            continue
+        if acao == "descartado":
+            descartados += 1
+        elif r.get("criado"):
+            novos += 1
+        else:
+            atualizados += 1
+    identicos = resumo["identicos"]
+    return {"brutos": resumo["brutos"], "filtrados": filtrados,
+            "analisados": identicos + atualizados + novos + descartados,
+            "novos": novos, "atualizados": atualizados, "identicos": identicos,
+            "descartados": descartados, "erros": resumo["erros"]}
+
+
+def run(ambiente: str = "piloto", limite: int = None, reverificar: bool = False, sb=None,
+        sessao_http=None, env=None, empresa_id: str = None, carteira_id: str = None):
+    etapas = diagnostico.Etapas("M8")
     contador = pre_ia.ContadorPreIa()
-    resumo = {"brutos": 0, "dentro_recorte": 0, "casos_consolidados": 0,
-              "novos": 0, "atualizados": 0, "erros": 0,
+    resumo = {"brutos": 0, "novos": 0, "atualizados": 0, "identicos": 0,
+              "descartados": 0, "erros": 0, "processados": 0,
+              # Custo/processamento — este coletor não chama IA (classificação por sinais/regex);
+              # os contadores pre_ia_* dizem quantos registros SERIAM elegíveis e por que os demais foram dispensados.
+              "documentos_processados": 0, "paginas_ocr_total": 0,
               "chamadas_ia": 0, "tokens_ia": 0, "custo_estimado_reais": 0.0}
     resultados = []
     execucao_id = None
+    acessador = None
 
     def finalizar(status):
+        nonlocal execucao_id
         resumo.update(contador.resumo())
         resumo["diagnostico_etapas"] = etapas.registro
+        resumo["barreiras_de_acesso"] = acessador.barreiras if acessador is not None else []
         if execucao_id:
             try:
                 db_writer.finalizar_execucao(sb, execucao_id, totais=resumo, status_final=status)
-            except Exception as e:
-                print(f"[M9A] aviso: não consegui finalizar a execução: {e}")
+            except Exception as e:   # não esconde a causa original
+                print(f"[M8] aviso: não consegui finalizar a execução: {e}")
         etapas.gravar_resumo_job()
 
     try:
         with etapas.etapa("ambiente"):
-            print("[M9A] ambiente:", diagnostico.checar_ambiente(env))
+            print("[M8] ambiente:", diagnostico.checar_ambiente(env))
         with etapas.etapa("conexao_supabase"):
             if sb is None:
                 try:
@@ -275,107 +397,91 @@ def run(caminho_microdados: str, ambiente: str = "piloto", limite_casos: int = N
         with etapas.etapa("cadastro_de_fontes"):
             fonte = db_writer.buscar_fonte(sb, empresa_id=empresa_id, carteira_id=carteira_id)
             source_id, empresa_id, carteira_id = fonte["id"], fonte["empresa_id"], fonte["carteira_id"]
-            print(f"[M9A] escopo: empresa={empresa_id} carteira={carteira_id}")
-            print("[M9A] rota:", rotas.descricao_da_rota("M9A"))
+            print(f"[M8] escopo: empresa={empresa_id} carteira={carteira_id}")
+            print("[M8] rota:", rotas.descricao_da_rota("M8"))
         with etapas.etapa("criar_execucao"):
-            id_execucao = f"M9A-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+            id_execucao = f"M8-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
             execucao_id = db_writer.criar_execucao(sb, id_execucao, ambiente=ambiente, empresa_id=empresa_id, carteira_id=carteira_id)
-        if registro_download:
-            registro_download["versao_rotas"] = rotas.VERSAO_ROTAS
+
+        def sink(reg):
+            reg["versao_rotas"] = rotas.VERSAO_ROTAS
             try:
-                log_busca.gravar(sb, registro_download, execucao_id, source_id, empresa_id)
+                log_busca.gravar(sb, reg, execucao_id, source_id, empresa_id)
             except Exception as e:
-                print(f"[M9A] aviso: log_busca do download não gravado ({e})")
+                print(f"[M8] aviso: log_busca não gravado ({e})")
 
-        with etapas.etapa("leitura_em_blocos_e_recorte"):
-            df_recorte, est = ingestao_scm.carregar_recorte_m9a_em_blocos(
-                caminho_microdados, tamanho_bloco=tamanho_bloco, max_linhas_evento=max_linhas_evento)
-            resumo["brutos"], resumo["dentro_recorte"] = est["brutos"], est["dentro_recorte"]
-            resumo["ingestao"] = est
-            print(f"[M9A] eventos lidos={est['brutos']} fora de MG={est['fora_de_mg']} "
-                  f"família fora do escopo={est['fora_por_familia']} no recorte={est['dentro_recorte']}"
-                  + (" (AMOSTRA)" if est["amostra"] else ""))
+        acessador = acesso.Acessador("M8", source_id=source_id, sink=sink, session=sessao_http)
 
-        with etapas.etapa("consolidacao"):
-            # ACHADO/correção de 28/09/2026: `descricao` vem de `descricao_tipo_evento` (DSEvento) e a
-            # narrativa vira `texto_narrativo` (só evidência). `row.get` porque colunas opcionais podem faltar.
-            atos, descartados = [], 0
-            for _, row in df_recorte.iterrows():
-                processo, data_evento = _limpo(row.get("processo")), _limpo(row.get("data_evento"))
-                if not processo or not data_evento:     # sem processo/data não há como identificar o ato
-                    descartados += 1
-                    continue
-                atos.append(consolidacao.Ato(
-                    processo=processo,
-                    # Valor ausente no SCM chega do pandas como NaN (float, e NaN é "verdadeiro" em Python):
-                    # `nan or x` devolvia NaN e quebrava a normalização de texto. `_limpo` troca por None.
-                    descricao=_limpo(row.get("descricao_tipo_evento")) or _limpo(row.get("evento_tipo")) or "",
-                    data_evento=data_evento, empresa=_limpo(row.get("titular")),
-                    substancia=_limpo(row.get("substancia")), municipio=_limpo(row.get("municipio")),
-                    id_tipo_evento=_limpo(row.get("id_tipo_evento")),
-                    texto_narrativo=_limpo(row.get("evento_tipo")),
-                    area_ha=_limpo(row.get("area_ha")),
-                ))
-            resumo["atos_descartados_sem_chave"] = descartados
-            casos = consolidacao.consolidar_atos(atos)
-            resumo["casos_consolidados"] = len(casos)
-            itens = list(casos.values())
-            if limite_casos:
-                itens = itens[:limite_casos]
+        with etapas.etapa("descoberta"):
+            resp = acessador.get(discovery.URL_PAGINA_ANUAL, metodo_acesso="m8_descoberta")
+            print(f"[M8] página anual: status={resp.status} mime={resp.content_type} bytes={len(resp.corpo)} url_final={resp.url_final}")
+            inventario = discovery.parse_inventario(resp.texto, base_url=resp.url_final)
+            resumo["brutos"] = len(inventario)
+            if not inventario:
+                trecho = " ".join(resp.texto[:600].split())[:200]
+                raise diagnostico.ErroEtapa(
+                    "descoberta", "a página foi aberta mas nenhum comunicado com protocolo/link foi reconhecido",
+                    f"os seletores de discovery.py precisam ser validados contra o HTML real. Início da página: {trecho!r}")
+
+        with etapas.etapa("comparacao_e_deduplicacao"):
+            comparacao = discovery.comparar_com_inventario_anterior(inventario, {})
+            processados = set() if reverificar else carregar_processados(sb, empresa_id)
+            a_proc, conhecidos = separar_conhecidos(comparacao["novos"] + comparacao["alterados"], processados)
+            for _ in conhecidos:
+                contador.registrar(pre_ia.flags_m8(extracao_falhou=False, faixa_vinculo="provavel", hash_documento=None,
+                                                   hash_documento_anterior=None, ja_processado=True))
+            itens_a_processar = a_proc[:limite] if limite else a_proc
+            resumo["identicos"] = len(comparacao["identicos"]) + len(conhecidos)
 
         with etapas.etapa("processamento"):
-            for atos_do_caso in itens:
-                contador.registrar(_flags_caso(atos_do_caso))
+            for item in itens_a_processar:
                 try:
-                    r = processar_caso(sb, execucao_id, atos_do_caso, empresa_id=empresa_id, fonte_id=source_id,
-                                        universo_atos=atos)
+                    r = processar_item(sb, execucao_id, source_id, item, empresa_id=empresa_id, acessador=acessador)
                     resultados.append(r)
+                    contador.registrar(_flags_do_resultado(r))
+                    if r["acao"] == "falha_extracao":
+                        resumo["erros"] += 1
+                    elif r["acao"] == "descartado":
+                        resumo["descartados"] += 1
+                    else:
+                        resumo["processados"] += 1
                     resumo["novos" if r.get("criado") else "atualizados"] += 1
+                    resumo["documentos_processados"] += 1
+                    if r.get("paginas_ocr"):
+                        resumo["paginas_ocr_total"] += r["paginas_ocr"]
                 except Exception as e:
                     resumo["erros"] += 1
-                    resultados.append({"erro": str(e)})
+                    resultados.append({"protocolo": item.protocolo, "acao": "erro", "erro": str(e)})
+                if acessador.barreiras and acessador.barreiras[-1]["status_http"] in (401, 403, 429):
+                    # barreira em requisição desta rodada: não insistir nos demais itens da mesma fonte
+                    print("[M8] barreira de acesso detectada; interrompendo a rodada sem contornar")
+                    break
 
         with etapas.etapa("registro_final"):
-            db_writer.registrar_log_coleta(sb, execucao_id, source_id, {
-                "brutos": resumo["brutos"], "filtrados": resumo["dentro_recorte"],
-                # Regra do banco (chk_analisados_soma): analisados = identicos + atualizados + novos + duplicatas
-                # + descartados. Aqui só contam os casos EFETIVAMENTE processados (com --limite-casos são menos que
-                # os consolidados; o total consolidado fica em `execucoes.totais.casos_consolidados`). Erros ficam à parte.
-                "analisados": resumo["novos"] + resumo["atualizados"], "novos": resumo["novos"],
-                "atualizados": resumo["atualizados"], "erros": resumo["erros"],
-            }, empresa_id=empresa_id)
+            db_writer.registrar_log_coleta(sb, execucao_id, source_id,
+                                           contagens_log_coleta(resumo, resultados, len(itens_a_processar)),
+                                           empresa_id=empresa_id)
         finalizar("concluída")
 
     except Exception as e:
         resumo["falha"] = str(e)
         finalizar("falha")
-        print(f"[M9A] FALHA: {e}")
+        print(f"[M8] FALHA: {e}")
         raise
 
     return {"id_execucao": id_execucao, "resumo": resumo, "resultados": resultados}
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Coletor M9A — Movimentações ANM")
-    parser.add_argument("--microdados", required=True,
-                         help="diretório com os .txt do dump relacional do SCM já descompactado "
-                              "(Processo.txt, ProcessoEvento.txt, Evento.txt etc. — ver ingestao_scm.py)")
+    parser = argparse.ArgumentParser(description="Coletor M8 — Acidentes SEMAD")
     parser.add_argument("--ambiente", default="piloto", choices=["piloto", "homologacao", "producao"])
-    parser.add_argument("--limite-casos", type=int, default=None)
-    parser.add_argument("--max-linhas-evento", type=int, default=None,
-                         help="modo amostra: lê só as N primeiras linhas de ProcessoEvento.txt (primeiro teste pequeno)")
-    parser.add_argument("--tamanho-bloco", type=int, default=500_000)
-    parser.add_argument("--registro-download", default=None, help="JSON do baixar_scm.py (vai para o log_busca)")
+    parser.add_argument("--limite", type=int, default=None, help="processar só os N primeiros itens novos/alterados (teste)")
+    parser.add_argument("--reverificar", action="store_true", help="reabrir também os comunicados já processados")
     parser.add_argument("--empresa-id", default=os.environ.get("RADAR_EMPRESA_ID"), help="empresa dona desta coleta (obrigatório se a fonte existir em mais de uma)")
     parser.add_argument("--carteira-id", default=os.environ.get("RADAR_CARTEIRA_ID"), help="carteira da empresa (padrão: a única que usa a fonte)")
     args = parser.parse_args()
 
-    reg = None
-    if args.registro_download and os.path.exists(args.registro_download):
-        with open(args.registro_download) as f:
-            reg = json.load(f)
-    resultado = run(args.microdados, ambiente=args.ambiente, limite_casos=args.limite_casos,
-                    max_linhas_evento=args.max_linhas_evento, tamanho_bloco=args.tamanho_bloco, registro_download=reg,
+    resultado = run(ambiente=args.ambiente, limite=args.limite, reverificar=args.reverificar,
                     empresa_id=args.empresa_id, carteira_id=args.carteira_id)
     print(f"Execução {resultado['id_execucao']}: {resultado['resumo']}")
     for r in resultado["resultados"]:
