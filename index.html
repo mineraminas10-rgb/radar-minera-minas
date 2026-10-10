@@ -387,6 +387,7 @@
       <button type="button" data-sub="empresas" class="active">Empresas</button>
       <button type="button" data-sub="usuarios">Usuários</button>
       <button type="button" data-sub="api">API</button>
+      <button type="button" data-sub="piloto">Piloto IA</button>
       <button type="button" data-sub="consumo">Consumo</button>
       <button type="button" data-sub="auditoria">Auditoria</button>
     </div>
@@ -2109,6 +2110,7 @@ function renderAdminSub(){
   if (adminState.sub === 'usuarios') adminUsuarios();
   else if (adminState.sub === 'empresas') adminEmpresas();
   else if (adminState.sub === 'api') adminApi();
+  else if (adminState.sub === 'piloto') adminPiloto();
   else if (adminState.sub === 'consumo') montarConsumo(body);
   else if (adminState.sub === 'auditoria') adminAuditoria();
 }
@@ -2440,6 +2442,218 @@ async function apiPreco(){
     await chamarFuncao('admin-api', { acao: 'salvar_preco', modelo, input_usd_por_milhao: inp, output_usd_por_milhao: out, cached_input_usd_por_milhao: cache });
     msg.textContent = 'Preço cadastrado.'; adminApi();
   } catch (e) { msg.textContent = 'Não foi possível cadastrar: ' + e.message; }
+}
+
+// ---------------------------------------------------------------------------
+// ADMIN > PILOTO IA — primeira consulta real de IA, só master, caso a caso, com confirmação explícita.
+// Não altera eventos, scores nem pré-release e não publica nada: cada chamada só grava em api_execucoes
+// (com origem "piloto_primeira_consulta"). A API precisa estar Ativa (ADMIN > API) e deve ser pausada de novo depois.
+// ---------------------------------------------------------------------------
+const PILOTO_CASOS = [
+  { id_evento: 'semad-m8-204', modulo: 'm8', rotulo: 'M8 · Caeté — protocolo 204/2026 (mineração)' },
+  { id_evento: 'semad-m8-200', modulo: 'm8', rotulo: 'M8 · Monte Alegre de Minas — protocolo 200/2026 (rodoviário)' },
+  { id_evento: 'semad-m8-201', modulo: 'm8', rotulo: 'M8 · Serra do Salitre — protocolo 201/2026 (rodoviário)' },
+  { id_evento: 'igam-m6-portaria-150100505522026', modulo: 'm6', rotulo: 'M6 · GSM Mineração — anulação de portaria' },
+  { id_evento: 'igam-m6-processo-08148-2025', modulo: 'm6', rotulo: 'M6 · Paracatu — arquivamento do processo 08148/2025' },
+];
+// operação/prompt/teto espelham supabase/functions/_shared/operacoes.ts e prompts.ts (o servidor é quem manda)
+const PILOTO_ETAPAS = {
+  m8:  [{ prompt: 'M8_CLASSIFICACAO_V1', operacao: 'classificacao', max: 150, nome: 'Classificação do vínculo minerário' },
+        { prompt: 'M8_EXTRACAO_V1', operacao: 'extracao_estruturada', max: 350, nome: 'Extração estruturada' }],
+  m6:  [{ prompt: 'M6_ENRIQUECIMENTO_V1', operacao: 'avaliacao_editorial', max: 400, nome: 'Resumo factual do ato e lacunas' }],
+  m9a: [{ prompt: 'M9A_CLASSIFICACAO_V1', operacao: 'classificacao', max: 150, nome: 'Natureza do ato' }],
+};
+const PILOTO_ROTULO_M9A = { evento_tipo: 'Movimentação', descricao_tipo_evento: 'Tipo do evento', processo: 'Processo', titular: 'Titular', substancia: 'Substância', municipio: 'Município', data_evento: 'Data do evento', area_ha: 'Área (ha)' };
+const PILOTO_FATAIS = ['api_pausada', 'api_nao_configurada', 'credencial_ausente', 'modelo_nao_definido', 'modelo_sem_preco', 'limite_atingido', 'sem_permissao', 'nao_autenticado', 'trocar_senha'];
+const PILOTO_OVERHEAD_PROMPT = 700;   // caracteres aproximados das instruções do prompt (para a estimativa)
+const pilotoState = { sel: null, etapasOff: new Set(), m9a: '', plano: null, rodando: false };
+
+const pilotoNorm = s => String(s || '').replace(/\s+/g, ' ').trim();
+
+// Monta o texto que vai para a IA SÓ com trechos literais já gravados em evidencias (sem rótulos internos que induzam a resposta).
+function pilotoTexto(ev, modulo){
+  const evs = (ev.evidencias || []).filter(x => !x.superseded && x.trecho_literal);
+  if (modulo === 'm9a') {
+    const vistos = new Set(), linhas = [];
+    for (const x of evs) {
+      const rot = PILOTO_ROTULO_M9A[x.campo_sustentado]; if (!rot) continue;
+      const l = rot + ': ' + pilotoNorm(x.trecho_literal);
+      if (!vistos.has(l)) { vistos.add(l); linhas.push(l); }
+    }
+    return 'Movimentação de processo minerário (ANM/SCM) — campos literais da planilha:\n' + linhas.join('\n');
+  }
+  const trechos = [];
+  const add = t => { const n = pilotoNorm(t); if (n && !trechos.some(o => pilotoNorm(o).includes(n))) trechos.push(t.trim()); };
+  const desc = evs.find(x => x.campo_sustentado === 'descricao_literal');
+  if (desc) add(desc.trecho_literal);
+  evs.filter(x => x !== desc && x.campo_sustentado !== 'descricao_literal').sort((a, b) => b.trecho_literal.length - a.trecho_literal.length).forEach(x => add(x.trecho_literal));
+  const cab = modulo === 'm8' ? 'Comunicado de Acidente Ambiental (SEMAD/MG) — trechos literais extraídos do documento:\n' : 'Ato publicado pelo IGAM — trecho literal:\n';
+  return (cab + trechos.join('\n---\n')).slice(0, 8000);
+}
+
+async function adminPiloto(){
+  const body = document.getElementById('adminBody'); const meu = adminState.seq; const empresaId = adminState.empresaId;
+  if (!empresaId) { body.innerHTML = '<div class="empty">Escolha a empresa ativa.</div>'; return; }
+  if (pilotoState.dados && pilotoState.dados.empresaId !== empresaId) { pilotoState.plano = null; pilotoState.m9a = ''; pilotoState.carteira = ''; pilotoState.sel = null; }
+  body.innerHTML = '<div class="empty">Carregando casos do piloto…</div>';
+  try {
+    const ids = PILOTO_CASOS.map(c => c.id_evento);
+    const [cfgR, evR, m9R, carR] = await Promise.all([
+      chamarFuncao('admin-api', { acao: 'obter_config', empresa_id: empresaId }),
+      sb.from('events').select('id, id_evento, titulo_fato, municipio, tipo_evento, status_editorial, execucao_criacao_id, carteira_id, regra_evento_versao, evidencias(campo_sustentado, trecho_literal, superseded)').eq('empresa_id', empresaId).in('id_evento', ids),
+      sb.from('events').select('id, id_evento, titulo_fato, municipio, tipo_evento, status_editorial, execucao_criacao_id, carteira_id, regra_evento_versao, evidencias(campo_sustentado, trecho_literal, superseded)').eq('empresa_id', empresaId).eq('modulo', 'M9A_anm_movimentacoes').eq('tipo_evento', 'movimentacao_scm_anm').order('created_at', { ascending: false }).limit(12),
+      sb.from('carteiras').select('id, nome, ativa').eq('empresa_id', empresaId),
+    ]);
+    if (meu !== adminState.seq || empresaId !== adminState.empresaId) return;
+    if (evR.error) throw evR.error; if (m9R.error) throw m9R.error; if (carR.error) throw carR.error;
+    const cfg = cfgR.config || null;
+    const porId = {}; (evR.data || []).forEach(e => { porId[e.id_evento] = e; });
+    const m9a = m9R.data || [];
+    const carteiras = (carR.data || []).filter(c => c.ativa !== false);
+    const preco = cfg ? (cfgR.precos || []).filter(p => p.modelo === cfg.modelo_padrao && p.ativo !== false).sort((a, b) => String(b.vigente_desde).localeCompare(String(a.vigente_desde)))[0] : null;
+    pilotoState.dados = { empresaId, cfg, preco, porId, m9a, carteiras };
+    if (!pilotoState.sel) pilotoState.sel = new Set(PILOTO_CASOS.map(c => c.id_evento));
+    if (!pilotoState.carteira) pilotoState.carteira = carteiras.length === 1 ? carteiras[0].id : '';
+    const pronta = !!(cfg && cfg.ativo && cfg.modelo_padrao && preco);
+    const linhaCaso = c => {
+      const ev = porId[c.id_evento];
+      const etapas = PILOTO_ETAPAS[c.modulo].map(et => `<label style="display:block;margin-left:22px"><input type="checkbox" data-etapa="${esc(c.id_evento + '|' + et.prompt)}"${pilotoState.etapasOff.has(c.id_evento + '|' + et.prompt) ? '' : ' checked'}> ${esc(et.nome)} <span class="sub">(${esc(et.prompt)})</span></label>`).join('');
+      return `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
+        <label><input type="checkbox" data-caso="${esc(c.id_evento)}"${ev && pilotoState.sel.has(c.id_evento) ? ' checked' : ''}${ev ? '' : ' disabled'}> <b>${esc(c.rotulo)}</b></label>
+        ${ev ? '' : '<div class="sub" style="margin-left:22px">Evento não encontrado nesta empresa.</div>'}${ev ? etapas : ''}</div>`;
+    };
+    const m9aEtapa = PILOTO_ETAPAS.m9a[0];
+    body.innerHTML = `
+      <div class="card"><strong>Piloto de IA — primeira consulta real</strong>
+        <div class="sub">Roda a IA em poucos casos reais, um a um, <b>depois da sua confirmação</b>. Nada é gravado em eventos, scores ou pré-release e nada é publicado: o resultado aparece só aqui e fica registrado em <i>api_execucoes</i>. Cada chamada passa pelo gate pré-IA, usa prompt versionado e esforço de raciocínio "none". O texto enviado é só o que já está gravado como evidência literal (o texto completo do OCR não é guardado, então alguns trechos podem estar cortados — você vê exatamente o que será enviado antes de confirmar).</div>
+        <div class="roNotice" style="margin-top:8px">Empresa: <b>${esc(nomeEmpresaPorId(empresaId))}</b> · API: <b>${cfg && cfg.ativo ? 'Ativa' : 'Pausada'}</b> · Modelo: <b>${esc(cfg && cfg.modelo_padrao || '—')}</b> · Limites: dia ${esc(cfg && cfg.limite_diario_usd != null ? fmtUsd(cfg.limite_diario_usd) : 'sem limite')} / mês ${esc(cfg && cfg.limite_mensal_usd != null ? fmtUsd(cfg.limite_mensal_usd) : 'sem limite')}
+          ${pronta ? '' : '<br><b>A API está pausada, sem modelo ou sem preço.</b> Para rodar o piloto, ative a API em ADMIN &gt; API (ação sua) e volte aqui.'}</div>
+      </div>
+      <div class="card"><strong>1. Escolha os casos e as etapas</strong>
+        ${PILOTO_CASOS.map(linhaCaso).join('')}
+        <div style="padding:8px 0">
+          <div><b>M9A · uma movimentação ANM</b> <span class="sub">(escolha 1 — ou deixe sem caso)</span></div>
+          <select id="pilM9a" style="margin:6px 0 0 22px;max-width:92%"><option value="">— não incluir M9A —</option>${m9a.map(e => `<option value="${esc(e.id_evento)}"${pilotoState.m9a === e.id_evento ? ' selected' : ''}>${esc((e.titulo_fato || e.id_evento).slice(0, 90))} · ${esc(e.municipio || '')}</option>`).join('')}</select>
+          <div class="sub" style="margin-left:22px">Etapa: ${esc(m9aEtapa.nome)} (${esc(m9aEtapa.prompt)})</div>
+        </div>
+        <div class="field" style="max-width:320px"><label>Carteira do escopo</label><select id="pilCarteira"><option value="">— selecione —</option>${carteiras.map(c => `<option value="${esc(c.id)}"${c.id === pilotoState.carteira ? ' selected' : ''}>${esc(c.nome)}</option>`).join('')}</select></div>
+        <div class="saveBar"><button id="pilMontar">Montar plano (sem custo)</button></div>
+      </div>
+      <div id="pilPlano"></div><div id="pilResultado"></div>`;
+    if (pilotoState.plano) pilotoDesenharPlano();
+    body.onclick = ev => {
+      const t = ev.target;
+      if (t.dataset && t.dataset.caso !== undefined) { t.checked ? pilotoState.sel.add(t.dataset.caso) : pilotoState.sel.delete(t.dataset.caso); }
+      if (t.dataset && t.dataset.etapa !== undefined) { t.checked ? pilotoState.etapasOff.delete(t.dataset.etapa) : pilotoState.etapasOff.add(t.dataset.etapa); }
+    };
+    document.getElementById('pilM9a').onchange = e => { pilotoState.m9a = e.target.value; };
+    document.getElementById('pilCarteira').onchange = e => { pilotoState.carteira = e.target.value; };
+    document.getElementById('pilMontar').onclick = pilotoMontar;
+  } catch (e) { if (meu === adminState.seq) body.innerHTML = '<div class="empty">Não consegui carregar o piloto: ' + esc(e.message) + '</div>'; }
+}
+
+function pilotoMontar(){
+  if (!exigirPermissao('admin_painel')) return;
+  const d = pilotoState.dados; const box = document.getElementById('pilPlano');
+  document.getElementById('pilResultado').innerHTML = '';
+  if (!pilotoState.carteira) { box.innerHTML = '<div class="authMsg erro">Selecione a carteira do escopo.</div>'; return; }
+  const itens = [];
+  const casos = PILOTO_CASOS.filter(c => pilotoState.sel.has(c.id_evento) && d.porId[c.id_evento]).map(c => ({ ev: d.porId[c.id_evento], modulo: c.modulo, rotulo: c.rotulo }));
+  if (pilotoState.m9a) { const e = d.m9a.find(x => x.id_evento === pilotoState.m9a); if (e) casos.push({ ev: e, modulo: 'm9a', rotulo: 'M9A · ' + (e.titulo_fato || e.id_evento).slice(0, 70) }); }
+  for (const c of casos) {
+    if (!c.ev.execucao_criacao_id) { itens.push({ caso: c, erro: 'Evento sem execução de origem — não pode ser consultado.' }); continue; }
+    const texto = pilotoTexto(c.ev, c.modulo);
+    for (const et of PILOTO_ETAPAS[c.modulo]) {
+      if (pilotoState.etapasOff.has(c.ev.id_evento + '|' + et.prompt)) continue;
+      const tokIn = Math.ceil((texto.length + PILOTO_OVERHEAD_PROMPT) / 3);
+      const usd = d.preco ? (tokIn * Number(d.preco.input_usd_por_milhao) + et.max * Number(d.preco.output_usd_por_milhao)) / 1e6 : null;
+      itens.push({ caso: c, etapa: et, texto, tokIn, usd, estado: 'pendente' });
+    }
+  }
+  pilotoState.plano = itens;
+  pilotoDesenharPlano();
+}
+
+function pilotoDesenharPlano(){
+  const d = pilotoState.dados; const box = document.getElementById('pilPlano'); const itens = pilotoState.plano || [];
+  const validos = itens.filter(i => i.etapa);
+  const total = validos.reduce((s, i) => s + (i.usd || 0), 0);
+  const pronta = !!(d.cfg && d.cfg.ativo && d.cfg.modelo_padrao && d.preco);
+  box.innerHTML = `<div class="card"><strong>2. Plano — confira antes de confirmar</strong>
+    <div class="sub">Modelo: ${esc(d.cfg && d.cfg.modelo_padrao || '—')} · esforço: none · ${validos.length} chamada(s) em sequência · custo <b>máximo</b> estimado: <b>${esc(fmtUsd(total))}</b> (estimativa pessimista: usa o teto de saída de cada operação; o custo real costuma ser bem menor).</div>
+    <div style="overflow-x:auto"><table class="miniTable"><thead><tr><th>Caso</th><th>Etapa / prompt</th><th>Enviado</th><th>Custo máx.</th><th>Texto</th></tr></thead><tbody>
+    ${itens.map(i => i.erro ? `<tr><td>${esc(i.caso.rotulo)}</td><td colspan="4" class="sub">${esc(i.erro)}</td></tr>`
+      : `<tr><td>${esc(i.caso.rotulo)}</td><td>${esc(i.etapa.nome)}<br><span class="sub">${esc(i.etapa.prompt)} · ${esc(i.etapa.operacao)}</span></td><td>${fmtNum(i.texto.length)} car.</td><td>${i.usd == null ? '—' : esc(fmtUsd(i.usd))}</td><td><details><summary>ver o que será enviado</summary><pre style="white-space:pre-wrap;max-width:560px;margin:6px 0 0">${esc(i.texto)}</pre></details></td></tr>`).join('') || '<tr><td colspan="5" class="empty">Nada selecionado.</td></tr>'}
+    </tbody></table></div>
+    <div class="field" style="margin-top:10px"><label><input type="checkbox" id="pilOk"> Confirmo enviar os textos acima à OpenAI (provider externo) e aceito o custo máximo estimado.</label></div>
+    <div class="field" style="max-width:320px"><label>Digite CONFIRMO para liberar</label><input type="text" id="pilDigite" autocomplete="off" spellcheck="false"></div>
+    <div id="pilAviso" class="sub">${pronta ? '' : 'A API está pausada: ative-a em ADMIN &gt; API e use "Atualizar status" abaixo.'}</div>
+    <div class="saveBar"><button class="smallBtn" id="pilAtualizar">Atualizar status</button><button id="pilRodar" disabled>Executar piloto</button></div></div>`;
+  const liberar = () => { document.getElementById('pilRodar').disabled = pilotoState.rodando || !pronta || !validos.length || !document.getElementById('pilOk').checked || document.getElementById('pilDigite').value.trim() !== 'CONFIRMO'; };
+  document.getElementById('pilOk').onchange = liberar; document.getElementById('pilDigite').oninput = liberar;
+  document.getElementById('pilAtualizar').onclick = () => adminPiloto();
+  document.getElementById('pilRodar').onclick = pilotoExecutar;
+}
+
+async function pilotoExecutar(){
+  if (!exigirPermissao('admin_painel')) return;
+  if (pilotoState.rodando) return;
+  const d = pilotoState.dados; const out = document.getElementById('pilResultado'); const btn = document.getElementById('pilRodar');
+  if (!document.getElementById('pilOk').checked || document.getElementById('pilDigite').value.trim() !== 'CONFIRMO') return;
+  pilotoState.rodando = true; btn.disabled = true;
+  const itens = (pilotoState.plano || []).filter(i => i.etapa);
+  const linhas = []; let totalUsd = 0, totalTok = 0, parou = null;
+  const desenhar = (andamento) => {
+    out.innerHTML = `<div class="card"><strong>3. Resultado do piloto</strong>
+      <div class="sub">${andamento || 'Concluído.'} Custo real somado: <b>${esc(fmtUsd(totalUsd))}</b> · tokens: ${fmtNum(totalTok)}</div>${linhas.join('')}
+      ${andamento ? '' : `<div class="saveBar"><button class="smallBtn" id="pilPausar">Pausar a API agora</button></div><div id="pilPausaMsg" class="sub"></div>`}</div>`;
+    const p = document.getElementById('pilPausar'); if (p) p.onclick = pilotoPausar;
+  };
+  desenhar('Executando… não feche esta tela.');
+  for (const i of itens) {
+    if (parou) { linhas.push(`<div class="roNotice"><b>${esc(i.caso.rotulo)}</b> · ${esc(i.etapa.nome)}<br>Não executado (piloto interrompido).</div>`); continue; }
+    desenhar('Executando: ' + i.caso.rotulo + ' — ' + i.etapa.nome + '…');
+    try {
+      const ev = i.caso.ev;
+      const versaoRegra = /^[A-Za-z0-9][A-Za-z0-9._\-:]{0,59}$/.test(ev.regra_evento_versao || '') ? ev.regra_evento_versao : 'sem_regra';
+      const r = await chamarFuncao('executar-ai', {
+        empresa_id: d.empresaId, carteira_id: pilotoState.carteira, event_id: ev.id, execucao_id: ev.execucao_criacao_id,
+        operacao: i.etapa.operacao, modulo: i.caso.modulo, prompt: i.etapa.prompt, reasoning_effort: 'none',
+        versao_regra: versaoRegra, motivo_chamada: 'piloto_primeira_consulta', referencia_evento: ev.id_evento,
+        status_evento: /^[a-z0-9_]{1,40}$/.test(ev.status_editorial || '') ? ev.status_editorial : undefined,
+        pre_ia: {}, payload: { input: i.texto },
+      });
+      const u = r.uso || {}; totalUsd += Number(r.custo_estimado_usd || 0); totalTok += Number(u.total_tokens || 0);
+      let json = r.texto || '';
+      try { json = JSON.stringify(JSON.parse(r.texto), null, 2); } catch (_) { /* mostra como veio */ }
+      linhas.push(`<div class="roNotice"><b>${esc(i.caso.rotulo)}</b> · ${esc(i.etapa.nome)}<br>
+        ${r.chamou_provider === false ? 'Reaproveitado do cache do Radar (sem custo)' : 'Chamada ao provedor feita'} · modelo ${esc(r.modelo)} · ${esc(r.latencia_ms)} ms · tokens: entrada ${fmtNum(u.input_tokens)} / saída ${fmtNum(u.output_tokens)} · custo ${esc(fmtUsd(r.custo_estimado_usd))} · execução ${esc(r.execucao_id)}
+        <pre style="white-space:pre-wrap;margin:8px 0 0">${esc(json)}</pre></div>`);
+    } catch (e) {
+      const fatal = PILOTO_FATAIS.includes(e.code);
+      if (fatal) parou = e.code;
+      linhas.push(`<div class="authMsg erro"><b>${esc(i.caso.rotulo)}</b> · ${esc(i.etapa.nome)}<br>${esc(e.message)}${e.code ? ' <span class="sub">(' + esc(e.code) + ')</span>' : ''}${fatal ? '<br><b>Piloto interrompido.</b>' : ''}${e.code === 'prompt_desconhecido' ? '<br>Este prompt ainda não foi publicado no servidor (nenhuma chamada à IA foi feita).' : ''}</div>`);
+    }
+  }
+  pilotoState.rodando = false;
+  desenhar(null);
+}
+
+const num0 = v => (v === null || v === undefined || v === '' ? null : Number(v));
+async function pilotoPausar(){
+  if (!exigirPermissao('admin_painel')) return;
+  const msg = document.getElementById('pilPausaMsg'); const c = (pilotoState.dados || {}).cfg;
+  if (!c) { msg.textContent = 'Sem configuração carregada.'; return; }
+  msg.textContent = 'Pausando…';
+  try {
+    await chamarFuncao('admin-api', {
+      acao: 'salvar_config', empresa_id: pilotoState.dados.empresaId, ativo: false, usa_credencial_global: c.usa_credencial_global !== false,
+      secret_ref: c.usa_credencial_global === false ? (c.secret_ref || undefined) : undefined, modelo_padrao: c.modelo_padrao || null,
+      limite_mensal_usd: num0(c.limite_mensal_usd), limite_diario_usd: num0(c.limite_diario_usd), limite_mensal_tokens: num0(c.limite_mensal_tokens),
+    });
+    pilotoState.dados.cfg = { ...c, ativo: false };
+    msg.textContent = 'API pausada. Nenhuma nova chamada será feita até você ativar de novo.';
+  } catch (e) { msg.textContent = 'Não foi possível pausar: ' + e.message + ' — pause em ADMIN > API.'; }
 }
 
 // ---------------------------------------------------------------------------
