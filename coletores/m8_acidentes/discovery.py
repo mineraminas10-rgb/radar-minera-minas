@@ -1,284 +1,183 @@
 """
-Módulo 8 — extração de texto do documento do comunicado (Carta M8 §5 passos
-4-6, §16 tratamento de falhas).
+Módulo 8 — descoberta na página anual da SEMAD (Carta Operacional M8 §3/§4/§5
+passos 1-3).
 
-Tenta texto nativo primeiro (pdfplumber). Se a página não trouxer texto
-útil (documento é imagem escaneada), renderiza e aplica OCR (pdf2image +
-pytesseract), conforme manda a carta.
+VALIDADO contra o HTML real da página (salvo em 10/10/2026, 20 itens, "Exibindo
+1 - 20 de 190 resultados"). A página é uma biblioteca de documentos do Liferay,
+renderizada no servidor (não depende de JavaScript). Cada comunicado é um cartão:
 
-Requer o binário `tesseract-ocr` instalado no ambiente de execução (no
-GitHub Actions: `apt-get install -y tesseract-ocr tesseract-ocr-por`).
+    <dd class="card-page-item card-page-item-asset" data-title="Comunicado de Acidente - Caeté/MG - 04/10/2026">
+        <input type="checkbox" value="10236593">                  <- id do arquivo (estável e único)
+        <img src=".../Emergência ambiental 204_2026.png">          <- o NÚMERO DO PROTOCOLO está no nome da imagem
+        <a class="card-title" href=".../view_file/10236593?...">Comunicado de Acidente - Caeté/MG - 04/10/2026</a>
 
-Igual ao discovery.py: não testado contra um documento real (sandbox sem
-acesso à rede). A lógica de fallback nativo->OCR e o cálculo de hash são
-puros/testáveis sem rede — ver test_extractor.py.
+Consequências importantes:
+- o título NÃO traz o protocolo; traz município e (quase sempre) a data do acidente. Um cartão
+  ("Serra do Salitre/MG") veio sem data — a data fica vazia, nunca inventada;
+- o protocolo (ex.: 204/2026) vem do nome da imagem de pré-visualização. Se um cartão vier sem esse
+  nome, o protocolo vira "arq<id do arquivo>" (identificador estável, marcado em `protocolo_origem`),
+  em vez de descartar o comunicado;
+- a página tem 20 itens por vez; as demais páginas são ligadas por `curEntry=N` (`urls_outras_paginas`);
+- o documento do comunicado é uma IMAGEM (PNG) — a leitura é por OCR (ver extractor.py).
 """
 import hashlib
-from dataclasses import dataclass
-from typing import Optional
+import re
+from dataclasses import dataclass, field
+from typing import List, Optional
+from urllib.parse import urljoin, unquote
 import requests
+from bs4 import BeautifulSoup
+
+URL_PAGINA_ANUAL = "https://meioambiente.mg.gov.br/comunicados-de-acidentes-ambientais-2026"
+
+SELETOR_ITEM_LISTA = "dd.card-page-item-asset, dd[data-qa-id='row']"   # um cartão por comunicado (Liferay)
+SELETOR_TITULO = "a.card-title"
+SELETOR_IMAGEM = "img"
+SELETOR_ID_ARQUIVO = "input[type=checkbox][value]"
 
 
 @dataclass
-class ResultadoExtracao:
-    texto: str
-    metodo_extracao: str  # 'nativo' | 'ocr'
-    qualidade_ocr: Optional[str]  # None quando nativo; 'boa'|'ruim'|'parcial' quando ocr
-    paginas_processadas: int
-    hash_documento: str
-    status_processamento: str  # 'processado' | 'pendente_revisao_manual' | 'falha_extracao'
-    motivo_falha: Optional[str] = None
+class ItemInventario:
+    protocolo: str
+    ano: int
+    titulo_fonte: str
+    municipio: Optional[str]
+    data_publicada: Optional[str]  # texto cru da data como aparece no título (dd/mm/aaaa) — pode faltar
+    url_detalhe: str
+    hash_linha: str  # hash do conteúdo textual do cartão, para detectar alteração sem reabrir o link
+    id_arquivo: Optional[str] = None       # id do arquivo no Liferay (fileEntryId)
+    protocolo_origem: str = "nome_da_imagem"   # 'nome_da_imagem' | 'id_do_arquivo' (fallback)
 
 
-def baixar_documento(url: str, session: Optional[requests.Session] = None, timeout: int = 60) -> bytes:
+_RE_PROTOCOLO = re.compile(r"(\d{1,4})\s*/\s*(20\d{2})")
+# nome da imagem de pré-visualização: "Emergência ambiental 204_2026.png" (ou com %20 / +)
+_RE_PROTOCOLO_ARQUIVO = re.compile(r"(?<!\d)(\d{1,4})\s*_\s*(20\d{2})(?!\d)")
+_RE_TITULO = re.compile(r"^\s*Comunicado de Acidente\s*-\s*(?P<municipio>.+?)\s*/\s*(?P<uf>[A-Z]{2})"
+                        r"(?:\s*-\s*(?P<data>\d{1,2}/\d{1,2}/\d{4}))?\s*$", re.IGNORECASE)
+_RE_ID_ARQUIVO = re.compile(r"view_file/(\d+)")
+_RE_CUR_ENTRY = re.compile(r"curEntry=(\d+)")
+
+
+def extrair_protocolo_ano(texto: str) -> Optional[tuple]:
+    """Carta §3: 'identificado prioritariamente por protocolo e endereço permanente do documento'.
+    Aceita '179/2026' (texto) ou '179_2026' (nome de arquivo). Devolve (protocolo:str, ano:int)."""
+    m = _RE_PROTOCOLO.search(texto) or _RE_PROTOCOLO_ARQUIVO.search(texto)
+    if not m:
+        return None
+    return m.group(1), int(m.group(2))
+
+
+def interpretar_titulo(titulo: str) -> dict:
+    """'Comunicado de Acidente - Caeté/MG - 04/10/2026' -> município, UF, data (texto cru). Título fora do
+    padrão devolve campos vazios (nunca chuta)."""
+    m = _RE_TITULO.match(titulo or "")
+    if not m:
+        return {"municipio": None, "uf": None, "data": None}
+    return {"municipio": m.group("municipio").strip(), "uf": m.group("uf").upper(), "data": m.group("data")}
+
+
+def _hash_linha(texto: str) -> str:
+    return hashlib.sha256(texto.strip().encode("utf-8")).hexdigest()
+
+
+def buscar_pagina(url: str, session: Optional[requests.Session] = None, timeout: int = 30) -> requests.Response:
     s = session or requests.Session()
     resp = s.get(url, timeout=timeout, headers={
         "User-Agent": "RadarDigitalMineraMinas/1.0 (+coletor M8; contato: Rapha)"
     })
     resp.raise_for_status()
-    return resp.content
+    return resp
 
 
-def hash_bytes(conteudo: bytes) -> str:
-    return hashlib.sha256(conteudo).hexdigest()
+def _protocolo_do_cartao(card, titulo: str, id_arquivo: Optional[str]) -> tuple:
+    """(protocolo, ano, origem). Ordem: nome da imagem -> título -> id do arquivo (último recurso)."""
+    for img in card.select(SELETOR_IMAGEM):
+        for atributo in ("src", "alt", "title"):
+            valor = unquote((img.get(atributo) or "").replace("+", " "))
+            nome = valor.rsplit("/", 1)[-1]
+            pa = _RE_PROTOCOLO_ARQUIVO.search(nome)
+            if pa:
+                return pa.group(1), int(pa.group(2)), "nome_da_imagem"
+    # O título NÃO é fonte de protocolo: "…- 04/10/2026" é uma DATA e casaria com o padrão "n/2026".
+    if id_arquivo:
+        return f"arq{id_arquivo}", ANO_PAGINA, "id_do_arquivo"
+    return None, None, None
 
 
-def extrair_texto_nativo(pdf_bytes: bytes) -> Optional[str]:
-    """Retorna None quando não há texto nativo útil (ex.: PDF de imagem
-    escaneada sem camada de texto) — carta §5 passo 5: 'quando não houver
-    texto útil, renderizar o documento e aplicar OCR'."""
-    import pdfplumber
-    import io
-    textos = []
-    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        for page in pdf.pages:
-            t = page.extract_text() or ""
-            textos.append(t)
-    texto_completo = "\n".join(textos).strip()
-    # heurística simples de "texto útil": tem que ter um mínimo de
-    # caracteres alfabéticos, senão é provável que seja lixo/():espaços
-    letras = sum(c.isalpha() for c in texto_completo)
-    if letras < 50:
-        return None
-    return texto_completo
+ANO_PAGINA = 2026   # a página é anual (…-acidentes-ambientais-2026)
 
 
-def extrair_texto_ocr(pdf_bytes: bytes, idioma: str = "por") -> tuple:
-    """Retorna (texto, qualidade_ocr, paginas_processadas)."""
-    from pdf2image import convert_from_bytes
-    imagens = convert_from_bytes(pdf_bytes, dpi=300)
-    return _ocr_de_imagens(imagens, idioma)
-
-
-def _ocr_de_imagens(imagens, idioma: str = "por") -> tuple:
-    """OCR sobre uma lista de imagens PIL. Retorna (texto, qualidade_ocr, quantidade)."""
-    import pytesseract
-    textos = []
-    confiancas = []
-    for img in imagens:
-        dados = pytesseract.image_to_data(img, lang=idioma, output_type=pytesseract.Output.DICT)
-        confs = [int(c) for c in dados["conf"] if c not in ("-1", -1)]
-        if confs:
-            confiancas.append(sum(confs) / len(confs))
-        textos.append(pytesseract.image_to_string(img, lang=idioma))
-
-    texto_completo = "\n".join(textos).strip()
-    confianca_media = sum(confiancas) / len(confiancas) if confiancas else 0
-    if confianca_media >= 70:
-        qualidade = "boa"
-    elif confianca_media >= 40:
-        qualidade = "parcial"
-    else:
-        qualidade = "ruim"
-    return texto_completo, qualidade, len(imagens)
-
-
-def _processar_pdf(conteudo: bytes) -> ResultadoExtracao:
-    """Texto nativo -> OCR (Carta §5 passos 5-6) sobre os bytes de um PDF já baixado."""
-    hash_doc = hash_bytes(conteudo)
-
-    texto_nativo = None
-    try:
-        texto_nativo = extrair_texto_nativo(conteudo)
-    except Exception:
-        texto_nativo = None  # cai para OCR
-
-    if texto_nativo:
-        return ResultadoExtracao(
-            texto=texto_nativo, metodo_extracao="nativo", qualidade_ocr=None,
-            paginas_processadas=texto_nativo.count("\x0c") + 1,  # aproximação
-            hash_documento=hash_doc, status_processamento="processado",
-        )
-
-    try:
-        texto_ocr, qualidade, paginas = extrair_texto_ocr(conteudo)
-    except Exception as e:
-        return ResultadoExtracao(
-            texto="", metodo_extracao="ocr", qualidade_ocr=None,
-            paginas_processadas=0, hash_documento=hash_doc,
-            status_processamento="falha_extracao",
-            motivo_falha=f"OCR falhou: {e}",
-        )
-
-    if not texto_ocr.strip():
-        return ResultadoExtracao(
-            texto="", metodo_extracao="ocr", qualidade_ocr="ruim",
-            paginas_processadas=paginas, hash_documento=hash_doc,
-            status_processamento="pendente_revisao_manual",
-            motivo_falha="OCR não produziu texto legível",
-        )
-
-    return ResultadoExtracao(
-        texto=texto_ocr, metodo_extracao="ocr", qualidade_ocr=qualidade,
-        paginas_processadas=paginas, hash_documento=hash_doc,
-        status_processamento="processado" if qualidade != "ruim" else "pendente_revisao_manual",
-    )
-
-
-def _processar_imagem(conteudo: bytes) -> ResultadoExtracao:
-    """Os comunicados da SEMAD são publicados como imagem (PNG/JPG): não há texto nativo, vai direto para OCR."""
-    hash_doc = hash_bytes(conteudo)
-    try:
-        import io
-        from PIL import Image
-        img = Image.open(io.BytesIO(conteudo))
-        img.load()
-        texto, qualidade, n = _ocr_de_imagens([img.convert("RGB")])
-    except Exception as e:
-        return ResultadoExtracao(texto="", metodo_extracao="ocr", qualidade_ocr=None, paginas_processadas=0,
-                                 hash_documento=hash_doc, status_processamento="falha_extracao",
-                                 motivo_falha=f"OCR da imagem falhou: {e}")
-    if not texto.strip():
-        return ResultadoExtracao(texto="", metodo_extracao="ocr", qualidade_ocr="ruim", paginas_processadas=n,
-                                 hash_documento=hash_doc, status_processamento="pendente_revisao_manual",
-                                 motivo_falha="OCR não produziu texto legível")
-    return ResultadoExtracao(texto=texto, metodo_extracao="ocr", qualidade_ocr=qualidade, paginas_processadas=n,
-                             hash_documento=hash_doc,
-                             status_processamento="processado" if qualidade != "ruim" else "pendente_revisao_manual")
-
-
-def _processar_conteudo(conteudo: bytes, content_type: str) -> ResultadoExtracao:
-    """Roteia pelo tipo real do arquivo baixado: imagem -> OCR; demais -> fluxo de PDF."""
-    if (content_type or "").lower().startswith("image/"):
-        return _processar_imagem(conteudo)
-    return _processar_pdf(conteudo)
-
-
-EXTENSOES_IMAGEM = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp")
-
-
-def candidatos_documento(html: str, base_url: str, limite: int = 5) -> list:
-    """Documentos do comunicado numa página individual: anexos (.pdf) e imagens/arquivos servidos pela
-    biblioteca de documentos (`/documents/...`). Exclui o que é do tema/menu do site (`/o/`). Reprodutível:
-    ordem de aparição, sem repetir, só URLs dentro das fontes oficiais."""
-    from urllib.parse import urljoin, urlparse
-    from bs4 import BeautifulSoup
-    import rotas
+def parse_inventario(html: str, base_url: str = URL_PAGINA_ANUAL) -> List[ItemInventario]:
+    """Extrai os comunicados (um por cartão) de UMA página da lista. Ordem = ordem na página (mais recente
+    primeiro). Cartões repetidos (mesmo id de arquivo) são ignorados."""
     soup = BeautifulSoup(html, "lxml")
-    vistos, saida = set(), []
-    for tag, attr in (("a", "href"), ("img", "src")):
-        for el in soup.select(f"{tag}[{attr}]"):
-            ref = (el.get(attr) or "").strip()
-            if not ref or ref.startswith(("#", "javascript:", "mailto:", "tel:", "data:")):
-                continue
-            url = urljoin(base_url, ref).split("#")[0]
-            caminho = urlparse(url).path.lower()
-            if caminho.startswith("/o/"):      # recursos do tema/menu do site (logos, ícones, scripts)
-                continue
-            eh_doc = caminho.endswith(".pdf") or caminho.endswith(EXTENSOES_IMAGEM) or caminho.startswith("/documents/")
-            if not eh_doc or url in vistos:
-                continue
-            ok, _ = rotas.url_permitida(url)
-            if ok:
-                vistos.add(url)
-                saida.append(url)
-    return saida[:limite]
+    itens: List[ItemInventario] = []
+    vistos = set()
+
+    for card in soup.select(SELETOR_ITEM_LISTA):
+        link = card.select_one(SELETOR_TITULO)
+        href = (link.get("href") or "").strip() if link else ""
+        if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
+            continue
+        url_detalhe = urljoin(base_url, href)
+        titulo = (card.get("data-title") or (link.get_text(" ", strip=True) if link else "")).strip()
+        m_id = _RE_ID_ARQUIVO.search(url_detalhe)
+        box = card.select_one(SELETOR_ID_ARQUIVO)
+        id_arquivo = (m_id.group(1) if m_id else (box.get("value") if box else None))
+        if id_arquivo and id_arquivo in vistos:
+            continue
+        protocolo, ano, origem = _protocolo_do_cartao(card, titulo, id_arquivo)
+        if not protocolo:
+            continue    # sem protocolo e sem id de arquivo: não há como identificar com segurança
+        if id_arquivo:
+            vistos.add(id_arquivo)
+        t = interpretar_titulo(titulo)
+        itens.append(ItemInventario(
+            protocolo=protocolo, ano=ano, titulo_fonte=titulo[:500],
+            municipio=t["municipio"], data_publicada=t["data"], url_detalhe=url_detalhe,
+            hash_linha=_hash_linha(f"{titulo}|{protocolo}/{ano}"),
+            id_arquivo=id_arquivo, protocolo_origem=origem,
+        ))
+    return itens
 
 
-MAX_DOCUMENTOS_POR_COMUNICADO = 5
-MIN_CARACTERES_PAGINA = 200
+def total_informado(html: str) -> Optional[int]:
+    """'Exibindo 1 - 20 de 190 resultados.' -> 190 (para conferir a paginação)."""
+    m = re.search(r"Exibindo\s+\d+\s*-\s*\d+\s+de\s+(\d+)\s+resultados", html or "")
+    return int(m.group(1)) if m else None
 
 
-def _html_para_texto(html_bytes: bytes) -> str:
-    from bs4 import BeautifulSoup
-    soup = BeautifulSoup(html_bytes, "lxml")
-    for t in soup(["script", "style", "nav", "header", "footer", "noscript"]):
-        t.decompose()
-    return "\n".join(l.strip() for l in soup.get_text("\n").splitlines() if l.strip())
+def urls_outras_paginas(html: str, base_url: str = URL_PAGINA_ANUAL) -> List[str]:
+    """URLs das demais páginas da lista (paginação `curEntry=N`), em ordem, sem repetir e sem a página 1."""
+    soup = BeautifulSoup(html, "lxml")
+    por_pagina = {}
+    for a in soup.select("ul.pagination a[href], .pagination-bar a[href]"):
+        href = (a.get("href") or "").strip()
+        m = _RE_CUR_ENTRY.search(href)
+        if not m or "/document_library/" not in href:
+            continue
+        n = int(m.group(1))
+        if n > 1:
+            por_pagina.setdefault(n, urljoin(base_url, href.replace("&amp;", "&")))
+    return [por_pagina[n] for n in sorted(por_pagina)]
 
 
-def _falha(motivo: str, metodo: str = "nativo") -> ResultadoExtracao:
-    return ResultadoExtracao(texto="", metodo_extracao=metodo, qualidade_ocr=None, paginas_processadas=0,
-                             hash_documento="", status_processamento="falha_extracao", motivo_falha=motivo)
-
-
-def extrair(url_documento: str, session: Optional[requests.Session] = None, acessador=None) -> ResultadoExtracao:
-    """Fluxo Carta §5 passos 4-6 + §16 + roteamento de fontes.
-    - `url_documento` pode ser um PDF direto OU a página individual do comunicado (HTML). Na página, o
-      conteúdo textual é lido, os anexos (PDF) são inventariados (reprodutível, até MAX_DOCUMENTOS_POR_COMUNICADO)
-      e abertos; nada é classificado só por título/município.
-    - Barreira de acesso (CAPTCHA/401/403/429): para, registra e devolve falha_extracao com motivo
-      'barreira_de_acesso:...' — nunca contorna e nunca pede à IA que invente o conteúdo.
-    - Documento não abre -> status_processamento='falha_extracao' (alerta básico preservado, Carta §16)."""
-    ctype, pagina_html, resposta = "application/pdf", None, None
-    try:
-        if acessador is not None:
-            resposta = acessador.get(url_documento, metodo_acesso="m8_documento")
-            conteudo, ctype = resposta.corpo, resposta.content_type
+def comparar_com_inventario_anterior(
+    inventario_novo: List[ItemInventario],
+    hashes_anteriores: dict,  # {(protocolo, ano): hash_linha da rodada anterior}
+) -> dict:
+    """Carta §4 passo 2/3: compara protocolo+hash com a rodada anterior e
+    seleciona só itens novos ou alterados para processamento integral;
+    itens idênticos só recebem registro de verificação (sem nova chamada
+    de IA — carta §4.3)."""
+    novos, alterados, identicos = [], [], []
+    for item in inventario_novo:
+        chave = (item.protocolo, item.ano)
+        hash_anterior = hashes_anteriores.get(chave)
+        if hash_anterior is None:
+            novos.append(item)
+        elif hash_anterior != item.hash_linha:
+            alterados.append(item)
         else:
-            conteudo = baixar_documento(url_documento, session=session)
-    except Exception as e:
-        from acesso import BarreiraDeAcesso, AcessoInterrompido
-        if isinstance(e, BarreiraDeAcesso):
-            return _falha(f"barreira_de_acesso:{e.motivo}")
-        if isinstance(e, AcessoInterrompido):
-            return _falha(f"{e.resultado}:{e.motivo}")
-        return _falha(f"documento não abriu: {e}")
-
-    if not (ctype.startswith("text/html") or ctype == "application/xhtml+xml"):
-        return _processar_conteudo(conteudo, ctype)
-
-    # ---- página individual (HTML): texto da página + anexos ----
-    from acesso import BarreiraDeAcesso, AcessoInterrompido, sha256
-    texto_pagina = _html_para_texto(conteudo)
-    hash_pagina = sha256(conteudo)
-    base = resposta.url_final if resposta is not None else url_documento
-    # Página de visualização da biblioteca de documentos (Liferay `view_file`): o texto da página é só
-    # menu/rodapé do site — o conteúdo do comunicado está no arquivo (imagem/PDF). Não usar o texto da página.
-    pagina_de_visualizacao = "/view_file/" in base
-    anexos = candidatos_documento(conteudo.decode("utf-8", "replace"), base, MAX_DOCUMENTOS_POR_COMUNICADO)
-    textos, hashes, paginas, metodo, qualidade, status = [], [hash_pagina], 0, "nativo", None, "processado"
-    falhas = []
-    for url_anexo in anexos:
-        try:
-            r = acessador.get(url_anexo, metodo_acesso="m8_anexo") if acessador is not None else None
-            if r is None:
-                break
-            if (r.content_type or "").startswith("text/html"):
-                falhas.append(f"anexo_era_pagina_html@{url_anexo}")
-                continue
-            res = _processar_conteudo(r.corpo, r.content_type)
-        except BarreiraDeAcesso as e:
-            falhas.append(f"barreira_de_acesso:{e.motivo}@{url_anexo}")
-            continue
-        except AcessoInterrompido as e:
-            falhas.append(f"{e.resultado}:{e.motivo}@{url_anexo}")
-            continue
-        if res.texto:
-            textos.append(res.texto)
-        hashes.append(res.hash_documento)
-        paginas += res.paginas_processadas or 0
-        if res.metodo_extracao == "ocr":
-            metodo, qualidade = "ocr", res.qualidade_ocr
-        if res.status_processamento != "processado":
-            status = "pendente_revisao_manual"
-    if not textos and (pagina_de_visualizacao or len(texto_pagina) < MIN_CARACTERES_PAGINA):
-        achados = f"; documentos encontrados na página: {len(anexos)}" if pagina_de_visualizacao else ""
-        return _falha("página individual sem texto suficiente e sem documento associado legível"
-                      + (f" ({'; '.join(falhas)})" if falhas else "") + achados)
-    texto = "\n\n".join(([] if pagina_de_visualizacao else [texto_pagina]) + textos).strip()
-    return ResultadoExtracao(
-        texto=texto, metodo_extracao=metodo, qualidade_ocr=qualidade,
-        paginas_processadas=paginas or 1, hash_documento=sha256("|".join(hashes).encode()),
-        status_processamento=status, motivo_falha=("; ".join(falhas) or None),
-    )
+            identicos.append(item)
+    return {"novos": novos, "alterados": alterados, "identicos": identicos}
