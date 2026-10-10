@@ -129,7 +129,8 @@ _RE_PORTARIA_COMPLETA = re.compile(
 _RE_PUBLICACAO = re.compile(r"^\s*PUBLICA[ÇC][ÃA]O\s+DE\s+(.+?)\s*[-–—]\s*(\d{2}/\d{2}/\d{4})\s*$", re.IGNORECASE)
 _RE_CAMPO = re.compile(r"^\s*([A-Za-zÀ-ÿ' ]{3,40}?)\s*:\s*(.*)$")
 _RE_PORTARIA_NUM = re.compile(r"Portaria\s+n[º°o]\s*(\d[\d./]*\d|\d)", re.IGNORECASE)
-_RE_PROCESSO_NUM = re.compile(r"Processo\s+n?[º°o]?\s*:?\s*(\d[\d./-]*\d)", re.IGNORECASE)
+# "Arquiva-se o processo nº. 08148 de 08/08/2025." — com ponto depois do "nº" e a data do processo logo depois
+_RE_PROCESSO_NUM = re.compile(r"Processo\s+n?[º°o]?\s*[.:]?\s*(\d[\d./-]*\d)(?:\s+de\s+\d{2}/\d{2}/(\d{4}))?", re.IGNORECASE)
 
 
 @dataclass
@@ -226,10 +227,13 @@ def _segmentar_publicacoes_curtas(linhas: List[str]) -> List[AtoIgam]:
         if mp:
             chave = f"portaria-{mp.group(1).rstrip('.')}"
         elif mpr:
-            chave = f"processo-{mpr.group(1)}"
+            numero_proc = mpr.group(1)
+            if mpr.group(2) and "/" not in numero_proc:
+                numero_proc = f"{numero_proc}/{mpr.group(2)}"      # número do processo + ano (o número sozinho repete entre anos)
+            chave = f"processo-{numero_proc}"
         else:
             chave = "ato-" + hashlib.sha1(texto.encode("utf-8")).hexdigest()[:12]
-        mt = re.search(r"(?:Usu[aá]rio|Requerente|Empreendimento|Outorgado)\s*:\s*(.+?)(?:\s*[.,]?\s*(?:CNPJ|CPF)\b|\.\s+(?:Curso|Motivo|Munic))",
+        mt = re.search(r"(?:Usu[aá]rios?|Requerentes?|Empreendimento|Outorgad[oa]s?)\s*:\s*(.+?)(?:\s*[.,]?\s*(?:CNPJ|CPF)\b|\.\s+(?:Curso|Motivo|Munic))",
                        base, re.IGNORECASE)
         titular = _ponto_final(mt.group(1)) if mt else ""
         mm = re.search(r"Munic[ií]pios?\s*:\s*(.+?)\s*[-–—]\s*MG", texto, re.IGNORECASE)
