@@ -56,6 +56,14 @@ Retifica-se a publicação do mantido o indeferimento publicado dia 16/09/2026. 
 
 """
 
+TEXTO_ARQUIVAMENTO = """PUBLICAÇÃO DE ARQUIVAMENTO  -  01/10/2026
+
+
+Arquivamento:
+
+Arquiva-se o processo nº. 08148 de 08/08/2025. Requerentes: Instituto Mineiro de Gestão das Águas – IGAM – Usuários de Águas da Bacia do Ribeirão Entre Ribeiros – Sub-Bacia do Córrego Conceição. Motivo: Por não atendimento das informações complementares nos termos do artigo 24 do Decreto Estadual 47.705/2019. Município: Paracatu – MG.
+"""
+
 INDICE_REAL = r"""<body>
 <a href="https://outorga.meioambiente.mg.gov.br/arquivos/outorgas_ate_31_12_2008.zip">Listagem de outorgados até 31/12/2008 - 1.03 MB</a><br>
 <a href="https://outorga.meioambiente.mg.gov.br/arquivos/outorgas_ate_25_02_11.zip">Listagem de outorgados de 01/01/09 a 25/02/2011 - 997 KB</a><br>
@@ -118,6 +126,14 @@ class TestSegmentacaoReal(unittest.TestCase):
         self.assertEqual(a.processo_ou_portaria, "portaria-00650")      # "Onde se lê" era 00640
         self.assertEqual(a.titular, "Concrelagos Concreto Ltda")
         self.assertEqual(a.municipio, "Congonhas")
+
+    def test_arquivamento_com_processo_numero_ponto_e_requerentes_no_plural(self):
+        # caso REAL do ptp01_10_2026_21828.doc (o texto veio da evidência gravada na 1a coleta)
+        a = extractor.segmentar_documento(TEXTO_ARQUIVAMENTO)[0]
+        self.assertEqual(a.processo_ou_portaria, "processo-08148/2025")
+        self.assertIn("Entre Ribeiros", a.titular)
+        self.assertEqual(a.municipio, "Paracatu")
+        self.assertEqual(signals.classificar_ato(a.trecho_decisorio), "arquivamento_original")
 
     def test_texto_para_vinculo_nao_contem_nome_nem_cnpj_do_titular(self):
         for texto in (TEXTO_ANULACAO, TEXTO_RETIFICACAO):
