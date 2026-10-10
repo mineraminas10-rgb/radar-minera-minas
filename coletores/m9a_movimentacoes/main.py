@@ -338,7 +338,10 @@ def run(caminho_microdados: str, ambiente: str = "piloto", limite_casos: int = N
         with etapas.etapa("registro_final"):
             db_writer.registrar_log_coleta(sb, execucao_id, source_id, {
                 "brutos": resumo["brutos"], "filtrados": resumo["dentro_recorte"],
-                "analisados": resumo["casos_consolidados"], "novos": resumo["novos"],
+                # Regra do banco (chk_analisados_soma): analisados = identicos + atualizados + novos + duplicatas
+                # + descartados. Aqui só contam os casos EFETIVAMENTE processados (com --limite-casos são menos que
+                # os consolidados; o total consolidado fica em `execucoes.totais.casos_consolidados`). Erros ficam à parte.
+                "analisados": resumo["novos"] + resumo["atualizados"], "novos": resumo["novos"],
                 "atualizados": resumo["atualizados"], "erros": resumo["erros"],
             }, empresa_id=empresa_id)
         finalizar("concluída")
