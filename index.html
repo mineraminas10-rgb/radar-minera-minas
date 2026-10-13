@@ -2460,7 +2460,7 @@ async function apiPreco(){
 // ---------------------------------------------------------------------------
 const PILOTO_MAX = 6;
 const PILOTO_MODULOS = ['M6_outorgas', 'M8_acidentes_ambientais', 'M9A_anm_movimentacoes'];
-const PILOTO_PROMPT = { m6: 'M6_ANALISE_EDITORIAL_V1', m8: 'M8_ANALISE_EDITORIAL_V1', m9a: 'M9A_ANALISE_EDITORIAL_V1' };
+const PILOTO_PROMPT = { m6: 'M6_ANALISE_EDITORIAL_V2', m8: 'M8_ANALISE_EDITORIAL_V2', m9a: 'M9A_ANALISE_EDITORIAL_V2' };
 // recusas que interrompem o lote inteiro (as demais só encerram aquele caso — e nunca há nova tentativa)
 const PILOTO_FATAIS = ['api_pausada', 'api_nao_configurada', 'credencial_ausente', 'modelo_nao_definido', 'modelo_sem_preco', 'limite_atingido',
   'limite_ia_do_lote', 'limite_ia_zero', 'usar_api_real_desligado', 'sem_permissao', 'nao_autenticado', 'trocar_senha', 'erro_provider', 'operacao_desconhecida', 'prompt_desconhecido'];
