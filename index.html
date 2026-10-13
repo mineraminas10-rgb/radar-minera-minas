@@ -2502,14 +2502,20 @@ async function adminPiloto(){
   if (pilotoState.dados && pilotoState.dados.empresaId !== empresaId) { pilotoState.sel = new Set(); pilotoState.resultado = null; }
   body.innerHTML = '<div class="empty">Verificando elegibilidade dos eventos (sem custo)…</div>';
   try {
-    const [cfgR, evR] = await Promise.all([
+    const [cfgR, evR, carR] = await Promise.all([
       chamarFuncao('admin-api', { acao: 'obter_config', empresa_id: empresaId }),
       sb.from('events').select('id, id_evento, modulo, titulo_fato, municipio, status_editorial, revisao_humana, execucao_criacao_id, carteira_id, created_at')
         .eq('empresa_id', empresaId).in('modulo', PILOTO_MODULOS).order('created_at', { ascending: false }).limit(50),
+      sb.from('carteiras').select('id, nome, ativa').eq('empresa_id', empresaId),
     ]);
     if (meu !== adminState.seq || empresaId !== adminState.empresaId) return;
-    if (evR.error) throw evR.error;
+    if (evR.error) throw evR.error; if (carR.error) throw carR.error;
     const evs = evR.data || [];
+    const carteiras = (carR.data || []).filter(c => c.ativa !== false);
+    // carteira de cada evento: a própria ou, se o evento não tem, a da execução que o criou (o servidor exige que batam)
+    const exIds = [...new Set(evs.map(e => e.execucao_criacao_id).filter(Boolean))];
+    const exCart = {};
+    if (exIds.length) { const xr = await sb.from('execucoes').select('id, carteira_id').in('id', exIds); (xr.data || []).forEach(x => { if (x.carteira_id) exCart[x.id] = x.carteira_id; }); }
     const cfg = cfgR.config || null;
     const preco = cfg ? (cfgR.precos || []).filter(p => p.modelo === cfg.modelo_padrao && p.ativo !== false).sort((a, b) => String(b.vigente_desde).localeCompare(String(a.vigente_desde)))[0] : null;
     let elig = { itens: [], lote_id: null };
@@ -2527,10 +2533,16 @@ async function adminPiloto(){
     const itens = evs.map(ev => {
       const el = porEv[ev.id] || {};
       const motivos = (el.motivos_dispensa || []).map(m => ptMotivoDispensa[m] || m);
-      const executavel = !!el.elegivel && !el.ja_analisado_pela_ia && !jaNoLote.has(ev.id) && !!ev.carteira_id && !!ev.execucao_criacao_id;
-      return { ev, el, motivos, jaNoLote: jaNoLote.has(ev.id), executavel };
+      const cartEfetiva = ev.carteira_id || exCart[ev.execucao_criacao_id] || '';
+      const executavel = !!el.elegivel && !el.ja_analisado_pela_ia && !jaNoLote.has(ev.id) && !!ev.execucao_criacao_id && (!!cartEfetiva || carteiras.length > 0);
+      return { ev, el, motivos, jaNoLote: jaNoLote.has(ev.id), executavel, cartEfetiva };
     }).sort((a, b) => (b.executavel - a.executavel) || String(a.ev.modulo).localeCompare(String(b.ev.modulo)));
-    pilotoState.dados = { empresaId, cfg, preco };
+    pilotoState.dados = { empresaId, cfg, preco, carteiras };
+    if (!pilotoState.carteira || !carteiras.some(c => c.id === pilotoState.carteira)) {
+      const cont = {}; itens.filter(i => i.executavel && i.cartEfetiva).forEach(i => { cont[i.cartEfetiva] = (cont[i.cartEfetiva] || 0) + 1; });
+      const top = Object.keys(cont).sort((a, b) => cont[b] - cont[a])[0];
+      pilotoState.carteira = carteiras.length === 1 ? carteiras[0].id : (top && carteiras.some(c => c.id === top) ? top : '');
+    }
     pilotoState.itens = itens; pilotoState.loteId = elig.lote_id; pilotoState.lote = lote;
     pilotoState.sel = new Set([...pilotoState.sel].filter(id => itens.some(i => i.executavel && i.ev.id === id)));
     if (!pilotoState.sel.size && !pilotoState.resultado) itens.filter(i => i.executavel).slice(0, PILOTO_MAX).forEach(i => pilotoState.sel.add(i.ev.id));
@@ -2545,7 +2557,7 @@ function pilotoDesenhar(){
   const linha = i => {
     const e = i.ev, el = i.el, sc = el.score_antes || null;
     const estado = i.jaNoLote ? 'Já consultado neste lote' : (el.ja_analisado_pela_ia ? 'IA já concluída' : (i.executavel ? 'Elegível' : 'Dispensado'));
-    const porque = i.executavel ? `regra ${esc(el.regra_pre_ia || '—')}${el.faixa_vinculo ? ' · vínculo ' + esc(el.faixa_vinculo) : ''}` : esc(i.motivos.join('; ') || (!e.carteira_id ? 'evento sem carteira' : (!e.execucao_criacao_id ? 'evento sem execução de origem' : '—')));
+    const porque = i.executavel ? `regra ${esc(el.regra_pre_ia || '—')}${el.faixa_vinculo ? ' · vínculo ' + esc(el.faixa_vinculo) : ''}` : esc(i.motivos.join('; ') || (!e.execucao_criacao_id ? 'evento sem execução de origem' : (!e.carteira_id && !d.carteiras.length ? 'empresa sem carteira ativa' : '—')));
     return `<tr><td><input type="checkbox" data-pil="${esc(e.id)}"${i.executavel ? '' : ' disabled'}${pilotoState.sel.has(e.id) ? ' checked' : ''}></td>
       <td>${esc(rotuloModulo(e.modulo))}</td><td>${esc((e.titulo_fato || e.id_evento).slice(0, 80))}<br><span class="sub">${esc(e.id_evento)} · ${esc(e.municipio || '')}</span></td>
       <td>${sc ? esc(sc.score_relevancia ?? '—') + ' / ' + esc(sc.prioridade || '—') + '<br><span class="sub">' + esc(sc.estagio || '') + (sc.versao_score ? ' · ' + esc(sc.versao_score) : '') + '</span>' : '—'}</td>
@@ -2565,6 +2577,7 @@ function pilotoDesenhar(){
     <div class="card"><strong>2. Parâmetros e confirmação</strong>
       <div class="field"><label><input type="checkbox" id="pilReal"${pilotoState.usarReal ? ' checked' : ''}> usar_api_real (desmarcado = nenhuma chamada paga; só registra o bloqueio)</label></div>
       <div class="field" style="max-width:220px"><label>limite_ia (0 a ${PILOTO_MAX})</label><input type="number" id="pilLimite" min="0" max="${PILOTO_MAX}" step="1" value="${esc(pilotoState.limite)}"></div>
+      <div class="field" style="max-width:360px"><label>Carteira do escopo <span class="sub">(usada nos eventos que ainda não têm carteira própria)</span></label><select id="pilCarteira"><option value="">— selecione —</option>${d.carteiras.map(c => `<option value="${esc(c.id)}"${c.id === pilotoState.carteira ? ' selected' : ''}>${esc(c.nome)}</option>`).join('')}</select></div>
       <div id="pilPlano" class="sub"></div>
       <div class="field" style="margin-top:10px"><label><input type="checkbox" id="pilOk"> Confirmo enviar o dossiê dos eventos selecionados à OpenAI (provider externo) e aceito o custo estimado.</label></div>
       <div class="field" style="max-width:320px"><label>Digite CONFIRMO para liberar</label><input type="text" id="pilDigite" autocomplete="off" spellcheck="false"></div>
@@ -2578,7 +2591,9 @@ function pilotoDesenhar(){
     // estimativa grosseira: dossiê ≈ 3.000 tokens de entrada; saída até o teto da operação (1.600)
     const usd = preco ? chamadas * ((3000 * Number(preco.input_usd_por_milhao) + 1600 * Number(preco.output_usd_por_milhao)) / 1e6) : null;
     document.getElementById('pilPlano').innerHTML = `${n} caso(s) selecionado(s) · modelo ${esc(cfg && cfg.modelo_padrao || '—')} · esforço none · <b>${chamadas} chamada(s) paga(s)</b> · custo <b>máximo</b> estimado ≈ ${usd == null ? '—' : esc(fmtUsd(usd))} (o custo real costuma ser menor).${n > lim && pilotoState.usarReal ? ' <b>Atenção:</b> há mais casos do que o limite_ia; só os primeiros serão consultados.' : ''}`;
-    document.getElementById('pilRodar').disabled = pilotoState.rodando || !pronta || n === 0 || n > PILOTO_MAX || !document.getElementById('pilOk').checked || document.getElementById('pilDigite').value.trim() !== 'CONFIRMO';
+    const faltaCarteira = !pilotoState.carteira && pilotoState.itens.some(i => pilotoState.sel.has(i.ev.id) && !i.cartEfetiva);
+    if (faltaCarteira) document.getElementById('pilPlano').innerHTML += ' <b>Selecione a carteira do escopo.</b>';
+    document.getElementById('pilRodar').disabled = pilotoState.rodando || !pronta || faltaCarteira || n === 0 || n > PILOTO_MAX || !document.getElementById('pilOk').checked || document.getElementById('pilDigite').value.trim() !== 'CONFIRMO';
   };
   body.onclick = ev => {
     const t = ev.target;
@@ -2589,6 +2604,7 @@ function pilotoDesenhar(){
   };
   document.getElementById('pilReal').onchange = e => { pilotoState.usarReal = e.target.checked; plano(); };
   document.getElementById('pilLimite').oninput = e => { pilotoState.limite = limiteEfetivo(); plano(); };
+  document.getElementById('pilCarteira').onchange = e => { pilotoState.carteira = e.target.value; plano(); };
   document.getElementById('pilOk').onchange = plano; document.getElementById('pilDigite').oninput = plano;
   document.getElementById('pilAtualizar').onclick = () => { pilotoState.resultado = null; adminPiloto(); };
   document.getElementById('pilRodar').onclick = pilotoExecutar;
@@ -2620,7 +2636,7 @@ async function pilotoExecutar(){
     try {
       // 1 chamada por caso, SEM nova tentativa. O servidor monta o dossiê e confere a elegibilidade de novo.
       const r = await chamarFuncao('executar-ai', {
-        empresa_id: d.empresaId, carteira_id: ev.carteira_id, event_id: ev.id, execucao_id: ev.execucao_criacao_id,
+        empresa_id: d.empresaId, carteira_id: i.cartEfetiva || pilotoState.carteira, event_id: ev.id, execucao_id: ev.execucao_criacao_id,
         operacao: 'analise_editorial', modulo: moduloCurtoUI(ev.modulo), prompt: PILOTO_PROMPT[moduloCurtoUI(ev.modulo)], reasoning_effort: 'none',
         usar_api_real: usarReal, limite_ia: limiteIa, motivo_chamada: 'operacao_assistida_piloto', referencia_evento: ev.id_evento,
       });
