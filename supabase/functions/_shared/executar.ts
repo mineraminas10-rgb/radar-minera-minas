@@ -385,6 +385,10 @@ async function executarIAInterno(
 
   // --- teto do lote: no máximo `limite_ia` (≤ 6) chamadas reais, 1 por evento, sem repetição de erro ---
   if (porDossie) {
+    // 1 chamada paga por caso no piloto: evento com análise de IA já concluída não é cobrado de novo (vale para qualquer lote)
+    if (elegibilidade?.ia_sucesso_previo === true) {
+      return bloquear('bloqueado_limite', 409, 'evento_ja_analisado', 'Este evento já tem uma análise de IA concluída; o piloto faz 1 chamada paga por caso.', modelo, {});
+    }
     const lote = await deps.repo.estadoLote(empresaId, LOTE_PILOTO_ID, eventId);
     if (lote.evento_ja_chamado) {
       return bloquear('bloqueado_limite', 409, 'evento_ja_chamado_no_lote', 'Este evento já teve a sua chamada neste lote (sem nova tentativa automática).', modelo, { lote });
