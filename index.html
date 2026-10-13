@@ -1180,7 +1180,7 @@ async function carregarFila(){
     const { data: allEvents, error: eEv } = await comLimiteDeTempo(
       sb.from('events')
         .select(`id, id_evento, titulo_fato, resumo_factual, empresa, municipio, fonte_id,
-          status_editorial, pre_release, url_oficial, data_evento, data_publicacao, created_at, processo, tipo_evento,
+          status_editorial, revisao_humana, pre_release, url_oficial, data_evento, data_publicacao, created_at, processo, tipo_evento,
           decisao, situacao_processual, proximo_marco, palavras_chave, justificativa_editorial,
           event_scores ( score_bruto, score_normalizado, score_relevancia, componentes, prioridade, justificativa_score, versao_score, vigente, estagio ),
           documentos ( id, url, tipo, orgao ),
@@ -1348,6 +1348,9 @@ function renderFila(){
   wrap.querySelectorAll('.checkEditorial').forEach(chk=>{
     chk.addEventListener('change', ()=> atualizarChecklist(chk));
   });
+  wrap.querySelectorAll('details.iaEvento').forEach(d=>{
+    d.addEventListener('toggle', ()=>{ if(d.open) iaEventoCarregar(d); });
+  });
 }
 
 function cardHTML(item){
@@ -1481,6 +1484,10 @@ function cardHTML(item){
       <summary>Fontes e evidências (${docs.length + evid.length})</summary>
       <ul class="srcList">${srcItems}</ul>
     </details>
+    ${pode('admin_painel') ? `<details class="iaEvento" data-ia-event="${esc(e.id)}" data-revisao="${esc(e.revisao_humana || '')}">
+      <summary>IA assistida (somente master)</summary>
+      <div class="iaBody sub" style="margin-top:6px">Abra para carregar…</div>
+    </details>` : ''}
     <details>
       <summary>Checklist editorial — ${chkCount}/12 avaliadas, ${chkConfirmados} confirmadas</summary>
       <ul class="chkList">${chkItems}</ul>
@@ -2445,154 +2452,147 @@ async function apiPreco(){
 }
 
 // ---------------------------------------------------------------------------
-// ADMIN > PILOTO IA — primeira consulta real de IA, só master, caso a caso, com confirmação explícita.
-// Não altera eventos, scores nem pré-release e não publica nada: cada chamada só grava em api_execucoes
-// (com origem "piloto_primeira_consulta"). A API precisa estar Ativa (ADMIN > API) e deve ser pausada de novo depois.
+// ADMIN > PILOTO IA — OPERAÇÃO ASSISTIDA MANUAL (só master). Sem cron, sem consulta automática.
+// Fluxo: o servidor (executar-ai) decide a elegibilidade a partir do que os coletores já gravaram, monta o dossiê
+// do evento, chama a IA UMA vez por caso e valida a resposta. A IA nunca altera score, status nem publica:
+// a resposta fica em api_execucoes e a revisão humana continua Pendente. Máx. 6 chamadas reais, sem nova tentativa.
+// O navegador NÃO envia texto nem filtros pré-IA: só escolhe quais eventos consultar.
 // ---------------------------------------------------------------------------
-const PILOTO_CASOS = [
-  { id_evento: 'semad-m8-204', modulo: 'm8', rotulo: 'M8 · Caeté — protocolo 204/2026 (mineração)' },
-  { id_evento: 'semad-m8-200', modulo: 'm8', rotulo: 'M8 · Monte Alegre de Minas — protocolo 200/2026 (rodoviário)' },
-  { id_evento: 'semad-m8-201', modulo: 'm8', rotulo: 'M8 · Serra do Salitre — protocolo 201/2026 (rodoviário)' },
-  { id_evento: 'igam-m6-portaria-150100505522026', modulo: 'm6', rotulo: 'M6 · GSM Mineração — anulação de portaria' },
-  { id_evento: 'igam-m6-processo-08148-2025', modulo: 'm6', rotulo: 'M6 · Paracatu — arquivamento do processo 08148/2025' },
-];
-// operação/prompt/teto espelham supabase/functions/_shared/operacoes.ts e prompts.ts (o servidor é quem manda)
-const PILOTO_ETAPAS = {
-  m8:  [{ prompt: 'M8_CLASSIFICACAO_V1', operacao: 'classificacao', max: 150, nome: 'Classificação do vínculo minerário' },
-        { prompt: 'M8_EXTRACAO_V1', operacao: 'extracao_estruturada', max: 350, nome: 'Extração estruturada' }],
-  m6:  [{ prompt: 'M6_ENRIQUECIMENTO_V1', operacao: 'avaliacao_editorial', max: 400, nome: 'Resumo factual do ato e lacunas' }],
-  m9a: [{ prompt: 'M9A_CLASSIFICACAO_V1', operacao: 'classificacao', max: 150, nome: 'Natureza do ato' }],
+const PILOTO_MAX = 6;
+const PILOTO_MODULOS = ['M6_outorgas', 'M8_acidentes_ambientais', 'M9A_anm_movimentacoes'];
+const PILOTO_PROMPT = { m6: 'M6_ANALISE_EDITORIAL_V1', m8: 'M8_ANALISE_EDITORIAL_V1', m9a: 'M9A_ANALISE_EDITORIAL_V1' };
+// recusas que interrompem o lote inteiro (as demais só encerram aquele caso — e nunca há nova tentativa)
+const PILOTO_FATAIS = ['api_pausada', 'api_nao_configurada', 'credencial_ausente', 'modelo_nao_definido', 'modelo_sem_preco', 'limite_atingido',
+  'limite_ia_do_lote', 'limite_ia_zero', 'usar_api_real_desligado', 'sem_permissao', 'nao_autenticado', 'trocar_senha', 'erro_provider', 'operacao_desconhecida', 'prompt_desconhecido'];
+const PILOTO_SECOES = [['fato_confirmado', 'Fato confirmado'], ['contexto_documental', 'Contexto documental'], ['avaliacao_editorial', 'Avaliação editorial'],
+  ['hipotese_apuracao', 'Hipótese de apuração'], ['lacunas', 'Lacunas'], ['perguntas_redacao', 'Perguntas para a redação'], ['proposta_abordagem', 'Proposta de abordagem']];
+const pilotoState = { dados: null, itens: [], sel: new Set(), rodando: false, usarReal: true, limite: PILOTO_MAX, loteId: null, resultado: null };
+
+const moduloCurtoUI = m => { const x = /^(M\d+[A-Z]?)_/.exec(String(m || '')); return x ? x[1].toLowerCase() : ''; };
+const rotuloModulo = m => ({ m6: 'M6', m8: 'M8', m9a: 'M9A' }[moduloCurtoUI(m)] || String(m || '—'));
+const ptStatusIa = { sucesso: 'Concluída', erro: 'Com erro', pendente: 'Pendente', bloqueado_limite: 'Bloqueada (limite)', bloqueado_config: 'Bloqueada (configuração)', bloqueado_pre_ia: 'Dispensada (pré-IA)', reutilizado: 'Reaproveitada' };
+const ptMotivoDispensa = {
+  registro_identico: 'registro idêntico', hash_igual_ultimo_sucesso: 'mesma entrada já analisada', republicacao_literal: 'republicação literal',
+  fora_de_escopo: 'fora do escopo (já revisado/descartado/sem evidência)', descartado_por_regra_deterministica: 'descartado pela regra determinística',
+  continuidade_sem_mudanca_material: 'sem mudança material', enriquecimento_ja_concluido: 'IA já concluída para este evento',
+  bloqueado_por_falta_de_documento: 'sem documento/evidência', tarefa_sem_linguagem_natural: 'não exige linguagem natural',
+  evento_de_outra_empresa_ou_inexistente: 'evento de outra empresa ou inexistente',
 };
-const PILOTO_ROTULO_M9A = { evento_tipo: 'Movimentação', descricao_tipo_evento: 'Tipo do evento', processo: 'Processo', titular: 'Titular', substancia: 'Substância', municipio: 'Município', data_evento: 'Data do evento', area_ha: 'Área (ha)' };
-const PILOTO_FATAIS = ['api_pausada', 'api_nao_configurada', 'credencial_ausente', 'modelo_nao_definido', 'modelo_sem_preco', 'limite_atingido', 'sem_permissao', 'nao_autenticado', 'trocar_senha'];
-const PILOTO_OVERHEAD_PROMPT = 700;   // caracteres aproximados das instruções do prompt (para a estimativa)
-const pilotoState = { sel: null, etapasOff: new Set(), m9a: '', plano: null, rodando: false };
 
-const pilotoNorm = s => String(s || '').replace(/\s+/g, ' ').trim();
-
-// Monta o texto que vai para a IA SÓ com trechos literais já gravados em evidencias (sem rótulos internos que induzam a resposta).
-function pilotoTexto(ev, modulo){
-  const evs = (ev.evidencias || []).filter(x => !x.superseded && x.trecho_literal);
-  if (modulo === 'm9a') {
-    const vistos = new Set(), linhas = [];
-    for (const x of evs) {
-      const rot = PILOTO_ROTULO_M9A[x.campo_sustentado]; if (!rot) continue;
-      const l = rot + ': ' + pilotoNorm(x.trecho_literal);
-      if (!vistos.has(l)) { vistos.add(l); linhas.push(l); }
-    }
-    return 'Movimentação de processo minerário (ANM/SCM) — campos literais da planilha:\n' + linhas.join('\n');
-  }
-  const trechos = [];
-  const add = t => { const n = pilotoNorm(t); if (n && !trechos.some(o => pilotoNorm(o).includes(n))) trechos.push(t.trim()); };
-  const desc = evs.find(x => x.campo_sustentado === 'descricao_literal');
-  if (desc) add(desc.trecho_literal);
-  evs.filter(x => x !== desc && x.campo_sustentado !== 'descricao_literal').sort((a, b) => b.trecho_literal.length - a.trecho_literal.length).forEach(x => add(x.trecho_literal));
-  const cab = modulo === 'm8' ? 'Comunicado de Acidente Ambiental (SEMAD/MG) — trechos literais extraídos do documento:\n' : 'Ato publicado pelo IGAM — trecho literal:\n';
-  return (cab + trechos.join('\n---\n')).slice(0, 8000);
+// Resposta estruturada (7 seções) em HTML — usada no painel e no detalhe do evento.
+function iaRespostaHTML(texto){
+  let j = null; try { j = JSON.parse(texto); } catch (_) { /* mostra bruto */ }
+  if (!j || typeof j !== 'object') return `<pre style="white-space:pre-wrap;margin:6px 0 0">${esc(texto || '(sem resposta)')}</pre>`;
+  const lista = a => `<ul style="margin:4px 0 0 18px">${(a || []).map(x => `<li>${esc(x)}</li>`).join('')}</ul>`;
+  return PILOTO_SECOES.map(([k, rot]) => {
+    const v = j[k]; let corpo = '';
+    if (Array.isArray(v)) corpo = lista(v);
+    else if (v && typeof v === 'object') {
+      corpo = esc(v.texto || '');
+      if (Array.isArray(v.citacoes) && v.citacoes.length) corpo += ` <span class="sub">[evidências: ${v.citacoes.map(esc).join(', ')}]</span>`;
+      if (v.rascunho_pre_release) corpo += `<div class="sub" style="margin-top:4px"><b>Rascunho de pré-release (não aplicado ao evento):</b> ${esc(v.rascunho_pre_release)}</div>`;
+    } else corpo = esc(v == null ? '—' : v);
+    return `<div style="margin-top:6px"><b>${esc(rot)}</b><div>${corpo}</div></div>`;
+  }).join('');
 }
 
 async function adminPiloto(){
   const body = document.getElementById('adminBody'); const meu = adminState.seq; const empresaId = adminState.empresaId;
   if (!empresaId) { body.innerHTML = '<div class="empty">Escolha a empresa ativa.</div>'; return; }
-  if (pilotoState.dados && pilotoState.dados.empresaId !== empresaId) { pilotoState.plano = null; pilotoState.m9a = ''; pilotoState.carteira = ''; pilotoState.sel = null; }
-  body.innerHTML = '<div class="empty">Carregando casos do piloto…</div>';
+  if (pilotoState.dados && pilotoState.dados.empresaId !== empresaId) { pilotoState.sel = new Set(); pilotoState.resultado = null; }
+  body.innerHTML = '<div class="empty">Verificando elegibilidade dos eventos (sem custo)…</div>';
   try {
-    const ids = PILOTO_CASOS.map(c => c.id_evento);
-    const [cfgR, evR, m9R, carR] = await Promise.all([
+    const [cfgR, evR] = await Promise.all([
       chamarFuncao('admin-api', { acao: 'obter_config', empresa_id: empresaId }),
-      sb.from('events').select('id, id_evento, titulo_fato, municipio, tipo_evento, status_editorial, execucao_criacao_id, carteira_id, regra_evento_versao, evidencias(campo_sustentado, trecho_literal, superseded)').eq('empresa_id', empresaId).in('id_evento', ids),
-      sb.from('events').select('id, id_evento, titulo_fato, municipio, tipo_evento, status_editorial, execucao_criacao_id, carteira_id, regra_evento_versao, evidencias(campo_sustentado, trecho_literal, superseded)').eq('empresa_id', empresaId).eq('modulo', 'M9A_anm_movimentacoes').eq('tipo_evento', 'movimentacao_scm_anm').order('created_at', { ascending: false }).limit(12),
-      sb.from('carteiras').select('id, nome, ativa').eq('empresa_id', empresaId),
+      sb.from('events').select('id, id_evento, modulo, titulo_fato, municipio, status_editorial, revisao_humana, execucao_criacao_id, carteira_id, created_at')
+        .eq('empresa_id', empresaId).in('modulo', PILOTO_MODULOS).order('created_at', { ascending: false }).limit(50),
     ]);
     if (meu !== adminState.seq || empresaId !== adminState.empresaId) return;
-    if (evR.error) throw evR.error; if (m9R.error) throw m9R.error; if (carR.error) throw carR.error;
+    if (evR.error) throw evR.error;
+    const evs = evR.data || [];
     const cfg = cfgR.config || null;
-    const porId = {}; (evR.data || []).forEach(e => { porId[e.id_evento] = e; });
-    const m9a = m9R.data || [];
-    const carteiras = (carR.data || []).filter(c => c.ativa !== false);
     const preco = cfg ? (cfgR.precos || []).filter(p => p.modelo === cfg.modelo_padrao && p.ativo !== false).sort((a, b) => String(b.vigente_desde).localeCompare(String(a.vigente_desde)))[0] : null;
-    pilotoState.dados = { empresaId, cfg, preco, porId, m9a, carteiras };
-    if (!pilotoState.sel) pilotoState.sel = new Set(PILOTO_CASOS.map(c => c.id_evento));
-    if (!pilotoState.carteira) pilotoState.carteira = carteiras.length === 1 ? carteiras[0].id : '';
-    const pronta = !!(cfg && cfg.ativo && cfg.modelo_padrao && preco);
-    const linhaCaso = c => {
-      const ev = porId[c.id_evento];
-      const etapas = PILOTO_ETAPAS[c.modulo].map(et => `<label style="display:block;margin-left:22px"><input type="checkbox" data-etapa="${esc(c.id_evento + '|' + et.prompt)}"${pilotoState.etapasOff.has(c.id_evento + '|' + et.prompt) ? '' : ' checked'}> ${esc(et.nome)} <span class="sub">(${esc(et.prompt)})</span></label>`).join('');
-      return `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
-        <label><input type="checkbox" data-caso="${esc(c.id_evento)}"${ev && pilotoState.sel.has(c.id_evento) ? ' checked' : ''}${ev ? '' : ' disabled'}> <b>${esc(c.rotulo)}</b></label>
-        ${ev ? '' : '<div class="sub" style="margin-left:22px">Evento não encontrado nesta empresa.</div>'}${ev ? etapas : ''}</div>`;
-    };
-    const m9aEtapa = PILOTO_ETAPAS.m9a[0];
-    body.innerHTML = `
-      <div class="card"><strong>Piloto de IA — primeira consulta real</strong>
-        <div class="sub">Roda a IA em poucos casos reais, um a um, <b>depois da sua confirmação</b>. Nada é gravado em eventos, scores ou pré-release e nada é publicado: o resultado aparece só aqui e fica registrado em <i>api_execucoes</i>. Cada chamada passa pelo gate pré-IA, usa prompt versionado e esforço de raciocínio "none". O texto enviado é só o que já está gravado como evidência literal (o texto completo do OCR não é guardado, então alguns trechos podem estar cortados — você vê exatamente o que será enviado antes de confirmar).</div>
-        <div class="roNotice" style="margin-top:8px">Empresa: <b>${esc(nomeEmpresaPorId(empresaId))}</b> · API: <b>${cfg && cfg.ativo ? 'Ativa' : 'Pausada'}</b> · Modelo: <b>${esc(cfg && cfg.modelo_padrao || '—')}</b> · Limites: dia ${esc(cfg && cfg.limite_diario_usd != null ? fmtUsd(cfg.limite_diario_usd) : 'sem limite')} / mês ${esc(cfg && cfg.limite_mensal_usd != null ? fmtUsd(cfg.limite_mensal_usd) : 'sem limite')}
-          ${pronta ? '' : '<br><b>A API está pausada, sem modelo ou sem preço.</b> Para rodar o piloto, ative a API em ADMIN &gt; API (ação sua) e volte aqui.'}</div>
-      </div>
-      <div class="card"><strong>1. Escolha os casos e as etapas</strong>
-        ${PILOTO_CASOS.map(linhaCaso).join('')}
-        <div style="padding:8px 0">
-          <div><b>M9A · uma movimentação ANM</b> <span class="sub">(escolha 1 — ou deixe sem caso)</span></div>
-          <select id="pilM9a" style="margin:6px 0 0 22px;max-width:92%"><option value="">— não incluir M9A —</option>${m9a.map(e => `<option value="${esc(e.id_evento)}"${pilotoState.m9a === e.id_evento ? ' selected' : ''}>${esc((e.titulo_fato || e.id_evento).slice(0, 90))} · ${esc(e.municipio || '')}</option>`).join('')}</select>
-          <div class="sub" style="margin-left:22px">Etapa: ${esc(m9aEtapa.nome)} (${esc(m9aEtapa.prompt)})</div>
-        </div>
-        <div class="field" style="max-width:320px"><label>Carteira do escopo</label><select id="pilCarteira"><option value="">— selecione —</option>${carteiras.map(c => `<option value="${esc(c.id)}"${c.id === pilotoState.carteira ? ' selected' : ''}>${esc(c.nome)}</option>`).join('')}</select></div>
-        <div class="saveBar"><button id="pilMontar">Montar plano (sem custo)</button></div>
-      </div>
-      <div id="pilPlano"></div><div id="pilResultado"></div>`;
-    if (pilotoState.plano) pilotoDesenharPlano();
-    body.onclick = ev => {
-      const t = ev.target;
-      if (t.dataset && t.dataset.caso !== undefined) { t.checked ? pilotoState.sel.add(t.dataset.caso) : pilotoState.sel.delete(t.dataset.caso); }
-      if (t.dataset && t.dataset.etapa !== undefined) { t.checked ? pilotoState.etapasOff.delete(t.dataset.etapa) : pilotoState.etapasOff.add(t.dataset.etapa); }
-    };
-    document.getElementById('pilM9a').onchange = e => { pilotoState.m9a = e.target.value; };
-    document.getElementById('pilCarteira').onchange = e => { pilotoState.carteira = e.target.value; };
-    document.getElementById('pilMontar').onclick = pilotoMontar;
-  } catch (e) { if (meu === adminState.seq) body.innerHTML = '<div class="empty">Não consegui carregar o piloto: ' + esc(e.message) + '</div>'; }
-}
-
-function pilotoMontar(){
-  if (!exigirPermissao('admin_painel')) return;
-  const d = pilotoState.dados; const box = document.getElementById('pilPlano');
-  document.getElementById('pilResultado').innerHTML = '';
-  if (!pilotoState.carteira) { box.innerHTML = '<div class="authMsg erro">Selecione a carteira do escopo.</div>'; return; }
-  const itens = [];
-  const casos = PILOTO_CASOS.filter(c => pilotoState.sel.has(c.id_evento) && d.porId[c.id_evento]).map(c => ({ ev: d.porId[c.id_evento], modulo: c.modulo, rotulo: c.rotulo }));
-  if (pilotoState.m9a) { const e = d.m9a.find(x => x.id_evento === pilotoState.m9a); if (e) casos.push({ ev: e, modulo: 'm9a', rotulo: 'M9A · ' + (e.titulo_fato || e.id_evento).slice(0, 70) }); }
-  for (const c of casos) {
-    if (!c.ev.execucao_criacao_id) { itens.push({ caso: c, erro: 'Evento sem execução de origem — não pode ser consultado.' }); continue; }
-    const texto = pilotoTexto(c.ev, c.modulo);
-    for (const et of PILOTO_ETAPAS[c.modulo]) {
-      if (pilotoState.etapasOff.has(c.ev.id_evento + '|' + et.prompt)) continue;
-      const tokIn = Math.ceil((texto.length + PILOTO_OVERHEAD_PROMPT) / 3);
-      const usd = d.preco ? (tokIn * Number(d.preco.input_usd_por_milhao) + et.max * Number(d.preco.output_usd_por_milhao)) / 1e6 : null;
-      itens.push({ caso: c, etapa: et, texto, tokIn, usd, estado: 'pendente' });
+    let elig = { itens: [], lote_id: null };
+    if (evs.length) elig = await chamarFuncao('executar-ai', { acao: 'elegibilidade', empresa_id: empresaId, event_ids: evs.map(e => e.id) });
+    if (meu !== adminState.seq || empresaId !== adminState.empresaId) return;
+    const porEv = {}; (elig.itens || []).forEach(i => { porEv[i.event_id] = i; });
+    // chamadas já feitas neste lote (para mostrar o que já foi consumido)
+    let lote = [];
+    if (elig.lote_id) {
+      const lr = await sb.from('api_execucoes').select('id, event_id, status, data_inicio, custo_estimado_usd').eq('empresa_id', empresaId)
+        .eq('operacao', 'analise_editorial').eq('metadata->>lote_id', elig.lote_id).in('status', ['pendente', 'sucesso', 'erro']);
+      if (lr.error) throw lr.error; lote = lr.data || [];
     }
-  }
-  pilotoState.plano = itens;
-  pilotoDesenharPlano();
+    const jaNoLote = new Set(lote.map(l => l.event_id));
+    const itens = evs.map(ev => {
+      const el = porEv[ev.id] || {};
+      const motivos = (el.motivos_dispensa || []).map(m => ptMotivoDispensa[m] || m);
+      const executavel = !!el.elegivel && !el.ja_analisado_pela_ia && !jaNoLote.has(ev.id) && !!ev.carteira_id && !!ev.execucao_criacao_id;
+      return { ev, el, motivos, jaNoLote: jaNoLote.has(ev.id), executavel };
+    }).sort((a, b) => (b.executavel - a.executavel) || String(a.ev.modulo).localeCompare(String(b.ev.modulo)));
+    pilotoState.dados = { empresaId, cfg, preco };
+    pilotoState.itens = itens; pilotoState.loteId = elig.lote_id; pilotoState.lote = lote;
+    pilotoState.sel = new Set([...pilotoState.sel].filter(id => itens.some(i => i.executavel && i.ev.id === id)));
+    if (!pilotoState.sel.size && !pilotoState.resultado) itens.filter(i => i.executavel).slice(0, PILOTO_MAX).forEach(i => pilotoState.sel.add(i.ev.id));
+    pilotoDesenhar();
+  } catch (e) { if (meu === adminState.seq) body.innerHTML = '<div class="empty">Não consegui carregar a operação assistida: ' + esc(e.message) + (e.code ? ' (' + esc(e.code) + ')' : '') + '</div>'; }
 }
 
-function pilotoDesenharPlano(){
-  const d = pilotoState.dados; const box = document.getElementById('pilPlano'); const itens = pilotoState.plano || [];
-  const validos = itens.filter(i => i.etapa);
-  const total = validos.reduce((s, i) => s + (i.usd || 0), 0);
-  const pronta = !!(d.cfg && d.cfg.ativo && d.cfg.modelo_padrao && d.preco);
-  box.innerHTML = `<div class="card"><strong>2. Plano — confira antes de confirmar</strong>
-    <div class="sub">Modelo: ${esc(d.cfg && d.cfg.modelo_padrao || '—')} · esforço: none · ${validos.length} chamada(s) em sequência · custo <b>máximo</b> estimado: <b>${esc(fmtUsd(total))}</b> (estimativa pessimista: usa o teto de saída de cada operação; o custo real costuma ser bem menor).</div>
-    <div style="overflow-x:auto"><table class="miniTable"><thead><tr><th>Caso</th><th>Etapa / prompt</th><th>Enviado</th><th>Custo máx.</th><th>Texto</th></tr></thead><tbody>
-    ${itens.map(i => i.erro ? `<tr><td>${esc(i.caso.rotulo)}</td><td colspan="4" class="sub">${esc(i.erro)}</td></tr>`
-      : `<tr><td>${esc(i.caso.rotulo)}</td><td>${esc(i.etapa.nome)}<br><span class="sub">${esc(i.etapa.prompt)} · ${esc(i.etapa.operacao)}</span></td><td>${fmtNum(i.texto.length)} car.</td><td>${i.usd == null ? '—' : esc(fmtUsd(i.usd))}</td><td><details><summary>ver o que será enviado</summary><pre style="white-space:pre-wrap;max-width:560px;margin:6px 0 0">${esc(i.texto)}</pre></details></td></tr>`).join('') || '<tr><td colspan="5" class="empty">Nada selecionado.</td></tr>'}
-    </tbody></table></div>
-    <div class="field" style="margin-top:10px"><label><input type="checkbox" id="pilOk"> Confirmo enviar os textos acima à OpenAI (provider externo) e aceito o custo máximo estimado.</label></div>
-    <div class="field" style="max-width:320px"><label>Digite CONFIRMO para liberar</label><input type="text" id="pilDigite" autocomplete="off" spellcheck="false"></div>
-    <div id="pilAviso" class="sub">${pronta ? '' : 'A API está pausada: ative-a em ADMIN &gt; API e use "Atualizar status" abaixo.'}</div>
-    <div class="saveBar"><button class="smallBtn" id="pilAtualizar">Atualizar status</button><button id="pilRodar" disabled>Executar piloto</button></div></div>`;
-  const liberar = () => { document.getElementById('pilRodar').disabled = pilotoState.rodando || !pronta || !validos.length || !document.getElementById('pilOk').checked || document.getElementById('pilDigite').value.trim() !== 'CONFIRMO'; };
-  document.getElementById('pilOk').onchange = liberar; document.getElementById('pilDigite').oninput = liberar;
-  document.getElementById('pilAtualizar').onclick = () => adminPiloto();
+function pilotoDesenhar(){
+  const body = document.getElementById('adminBody'); const d = pilotoState.dados; const cfg = d.cfg; const preco = d.preco;
+  const pronta = !!(cfg && cfg.ativo && cfg.modelo_padrao && preco);
+  const elegiveis = pilotoState.itens.filter(i => i.executavel).length;
+  const linha = i => {
+    const e = i.ev, el = i.el, sc = el.score_antes || null;
+    const estado = i.jaNoLote ? 'Já consultado neste lote' : (el.ja_analisado_pela_ia ? 'IA já concluída' : (i.executavel ? 'Elegível' : 'Dispensado'));
+    const porque = i.executavel ? `regra ${esc(el.regra_pre_ia || '—')}${el.faixa_vinculo ? ' · vínculo ' + esc(el.faixa_vinculo) : ''}` : esc(i.motivos.join('; ') || (!e.carteira_id ? 'evento sem carteira' : (!e.execucao_criacao_id ? 'evento sem execução de origem' : '—')));
+    return `<tr><td><input type="checkbox" data-pil="${esc(e.id)}"${i.executavel ? '' : ' disabled'}${pilotoState.sel.has(e.id) ? ' checked' : ''}></td>
+      <td>${esc(rotuloModulo(e.modulo))}</td><td>${esc((e.titulo_fato || e.id_evento).slice(0, 80))}<br><span class="sub">${esc(e.id_evento)} · ${esc(e.municipio || '')}</span></td>
+      <td>${sc ? esc(sc.score_relevancia ?? '—') + ' / ' + esc(sc.prioridade || '—') + '<br><span class="sub">' + esc(sc.estagio || '') + (sc.versao_score ? ' · ' + esc(sc.versao_score) : '') + '</span>' : '—'}</td>
+      <td><b>${esc(estado)}</b><br><span class="sub">${porque}</span></td></tr>`;
+  };
+  body.innerHTML = `
+    <div class="card"><strong>Operação assistida — análise editorial por IA (manual)</strong>
+      <div class="sub">Não há consulta automática nem agendamento: a IA só roda quando você confirma aqui. O servidor escolhe o texto (dossiê do evento no banco), confere a elegibilidade pré-IA, faz <b>uma</b> chamada por caso — sem nova tentativa — e valida a resposta. A IA <b>não</b> altera score, prioridade nem status e <b>não</b> libera publicação; a revisão humana continua Pendente.</div>
+      <div class="roNotice" style="margin-top:8px">Empresa: <b>${esc(nomeEmpresaPorId(d.empresaId))}</b> · API: <b>${cfg && cfg.ativo ? 'Ativa' : 'Pausada'}</b> · Modelo: <b>${esc(cfg && cfg.modelo_padrao || '—')}</b> · Limites: dia ${esc(cfg && cfg.limite_diario_usd != null ? fmtUsd(cfg.limite_diario_usd) : 'sem limite')} / mês ${esc(cfg && cfg.limite_mensal_usd != null ? fmtUsd(cfg.limite_mensal_usd) : 'sem limite')} · Lote ${esc(pilotoState.loteId || '—')}: ${(pilotoState.lote || []).length} de ${PILOTO_MAX} chamadas já usadas
+        ${pronta ? '' : '<br><b>A API está pausada, sem modelo ou sem preço.</b> Para rodar, ative a API em ADMIN &gt; API (ação sua) e use "Atualizar".'}</div>
+    </div>
+    <div class="card"><strong>1. Eventos (${elegiveis} elegível(is) de ${pilotoState.itens.length})</strong>
+      <div class="sub">Só aparecem como selecionáveis os eventos que passaram em todos os filtros pré-IA calculados no banco. Os demais mostram o motivo da dispensa.</div>
+      <div style="overflow-x:auto"><table class="miniTable"><thead><tr><th></th><th>Módulo</th><th>Evento</th><th>Score / prioridade (antes da IA)</th><th>Elegibilidade</th></tr></thead><tbody>
+      ${pilotoState.itens.map(linha).join('') || '<tr><td colspan="5" class="empty">Nenhum evento M6/M8/M9A nesta empresa.</td></tr>'}</tbody></table></div>
+    </div>
+    <div class="card"><strong>2. Parâmetros e confirmação</strong>
+      <div class="field"><label><input type="checkbox" id="pilReal"${pilotoState.usarReal ? ' checked' : ''}> usar_api_real (desmarcado = nenhuma chamada paga; só registra o bloqueio)</label></div>
+      <div class="field" style="max-width:220px"><label>limite_ia (0 a ${PILOTO_MAX})</label><input type="number" id="pilLimite" min="0" max="${PILOTO_MAX}" step="1" value="${esc(pilotoState.limite)}"></div>
+      <div id="pilPlano" class="sub"></div>
+      <div class="field" style="margin-top:10px"><label><input type="checkbox" id="pilOk"> Confirmo enviar o dossiê dos eventos selecionados à OpenAI (provider externo) e aceito o custo estimado.</label></div>
+      <div class="field" style="max-width:320px"><label>Digite CONFIRMO para liberar</label><input type="text" id="pilDigite" autocomplete="off" spellcheck="false"></div>
+      <div class="saveBar"><button class="smallBtn" id="pilAtualizar">Atualizar</button><button id="pilRodar" disabled>Executar operação assistida</button></div>
+    </div>
+    <div id="pilResultado">${pilotoState.resultado || ''}</div>`;
+  const limiteEfetivo = () => { const n = Number(document.getElementById('pilLimite').value); return Number.isInteger(n) ? Math.max(0, Math.min(PILOTO_MAX, n)) : 0; };
+  const plano = () => {
+    const n = pilotoState.sel.size; const lim = limiteEfetivo();
+    const chamadas = pilotoState.usarReal ? Math.min(n, lim) : 0;
+    // estimativa grosseira: dossiê ≈ 3.000 tokens de entrada; saída até o teto da operação (1.600)
+    const usd = preco ? chamadas * ((3000 * Number(preco.input_usd_por_milhao) + 1600 * Number(preco.output_usd_por_milhao)) / 1e6) : null;
+    document.getElementById('pilPlano').innerHTML = `${n} caso(s) selecionado(s) · modelo ${esc(cfg && cfg.modelo_padrao || '—')} · esforço none · <b>${chamadas} chamada(s) paga(s)</b> · custo <b>máximo</b> estimado ≈ ${usd == null ? '—' : esc(fmtUsd(usd))} (o custo real costuma ser menor).${n > lim && pilotoState.usarReal ? ' <b>Atenção:</b> há mais casos do que o limite_ia; só os primeiros serão consultados.' : ''}`;
+    document.getElementById('pilRodar').disabled = pilotoState.rodando || !pronta || n === 0 || n > PILOTO_MAX || !document.getElementById('pilOk').checked || document.getElementById('pilDigite').value.trim() !== 'CONFIRMO';
+  };
+  body.onclick = ev => {
+    const t = ev.target;
+    if (t.dataset && t.dataset.pil !== undefined) {
+      if (t.checked) { if (pilotoState.sel.size >= PILOTO_MAX) { t.checked = false; } else pilotoState.sel.add(t.dataset.pil); } else pilotoState.sel.delete(t.dataset.pil);
+      plano();
+    }
+  };
+  document.getElementById('pilReal').onchange = e => { pilotoState.usarReal = e.target.checked; plano(); };
+  document.getElementById('pilLimite').oninput = e => { pilotoState.limite = limiteEfetivo(); plano(); };
+  document.getElementById('pilOk').onchange = plano; document.getElementById('pilDigite').oninput = plano;
+  document.getElementById('pilAtualizar').onclick = () => { pilotoState.resultado = null; adminPiloto(); };
   document.getElementById('pilRodar').onclick = pilotoExecutar;
+  plano();
 }
 
 async function pilotoExecutar(){
@@ -2600,43 +2600,92 @@ async function pilotoExecutar(){
   if (pilotoState.rodando) return;
   const d = pilotoState.dados; const out = document.getElementById('pilResultado'); const btn = document.getElementById('pilRodar');
   if (!document.getElementById('pilOk').checked || document.getElementById('pilDigite').value.trim() !== 'CONFIRMO') return;
+  const limiteIa = Math.max(0, Math.min(PILOTO_MAX, Number(document.getElementById('pilLimite').value) || 0));
+  const usarReal = document.getElementById('pilReal').checked;
+  const alvo = pilotoState.itens.filter(i => i.executavel && pilotoState.sel.has(i.ev.id)).slice(0, PILOTO_MAX);   // nunca mais que 6 casos
+  if (!alvo.length) return;
   pilotoState.rodando = true; btn.disabled = true;
-  const itens = (pilotoState.plano || []).filter(i => i.etapa);
-  const linhas = []; let totalUsd = 0, totalTok = 0, parou = null;
-  const desenhar = (andamento) => {
-    out.innerHTML = `<div class="card"><strong>3. Resultado do piloto</strong>
-      <div class="sub">${andamento || 'Concluído.'} Custo real somado: <b>${esc(fmtUsd(totalUsd))}</b> · tokens: ${fmtNum(totalTok)}</div>${linhas.join('')}
-      ${andamento ? '' : `<div class="saveBar"><button class="smallBtn" id="pilPausar">Pausar a API agora</button></div><div id="pilPausaMsg" class="sub"></div>`}</div>`;
-    const p = document.getElementById('pilPausar'); if (p) p.onclick = pilotoPausar;
+  const linhas = []; let chamadasReais = 0, totalUsd = 0, totalTok = 0, parou = null;
+  const ids = [];
+  const desenhar = andamento => {
+    out.innerHTML = `<div class="card"><strong>3. Execução</strong>
+      <div class="sub">${esc(andamento || 'Concluída.')} Chamadas reais: <b>${chamadasReais}</b> de ${limiteIa} · custo estimado somado: <b>${esc(fmtUsd(totalUsd))}</b> · tokens: ${fmtNum(totalTok)}</div>${linhas.join('')}</div><div id="pilConferencia"></div>`;
   };
   desenhar('Executando… não feche esta tela.');
-  for (const i of itens) {
-    if (parou) { linhas.push(`<div class="roNotice"><b>${esc(i.caso.rotulo)}</b> · ${esc(i.etapa.nome)}<br>Não executado (piloto interrompido).</div>`); continue; }
-    desenhar('Executando: ' + i.caso.rotulo + ' — ' + i.etapa.nome + '…');
+  for (const i of alvo) {
+    const ev = i.ev; const rot = `${rotuloModulo(ev.modulo)} · ${(ev.titulo_fato || ev.id_evento).slice(0, 70)}`;
+    if (parou) { linhas.push(`<div class="roNotice"><b>${esc(rot)}</b><br>Não executado (execução interrompida).</div>`); continue; }
+    if (usarReal && chamadasReais >= limiteIa) { linhas.push(`<div class="roNotice"><b>${esc(rot)}</b><br>Não executado: limite_ia (${limiteIa}) atingido.</div>`); continue; }
+    desenhar('Executando: ' + rot + '…');
     try {
-      const ev = i.caso.ev;
-      const versaoRegra = /^[A-Za-z0-9][A-Za-z0-9._\-:]{0,59}$/.test(ev.regra_evento_versao || '') ? ev.regra_evento_versao : 'sem_regra';
+      // 1 chamada por caso, SEM nova tentativa. O servidor monta o dossiê e confere a elegibilidade de novo.
       const r = await chamarFuncao('executar-ai', {
-        empresa_id: d.empresaId, carteira_id: pilotoState.carteira, event_id: ev.id, execucao_id: ev.execucao_criacao_id,
-        operacao: i.etapa.operacao, modulo: i.caso.modulo, prompt: i.etapa.prompt, reasoning_effort: 'none',
-        versao_regra: versaoRegra, motivo_chamada: 'piloto_primeira_consulta', referencia_evento: ev.id_evento,
-        status_evento: /^[a-z0-9_]{1,40}$/.test(ev.status_editorial || '') ? ev.status_editorial : undefined,
-        pre_ia: {}, payload: { input: i.texto },
+        empresa_id: d.empresaId, carteira_id: ev.carteira_id, event_id: ev.id, execucao_id: ev.execucao_criacao_id,
+        operacao: 'analise_editorial', modulo: moduloCurtoUI(ev.modulo), prompt: PILOTO_PROMPT[moduloCurtoUI(ev.modulo)], reasoning_effort: 'none',
+        usar_api_real: usarReal, limite_ia: limiteIa, motivo_chamada: 'operacao_assistida_piloto', referencia_evento: ev.id_evento,
       });
+      if (r.execucao_id) ids.push(r.execucao_id);
+      if (r.chamou_provider) chamadasReais++;
       const u = r.uso || {}; totalUsd += Number(r.custo_estimado_usd || 0); totalTok += Number(u.total_tokens || 0);
-      let json = r.texto || '';
-      try { json = JSON.stringify(JSON.parse(r.texto), null, 2); } catch (_) { /* mostra como veio */ }
-      linhas.push(`<div class="roNotice"><b>${esc(i.caso.rotulo)}</b> · ${esc(i.etapa.nome)}<br>
-        ${r.chamou_provider === false ? 'Reaproveitado do cache do Radar (sem custo)' : 'Chamada ao provedor feita'} · modelo ${esc(r.modelo)} · ${esc(r.latencia_ms)} ms · tokens: entrada ${fmtNum(u.input_tokens)} / saída ${fmtNum(u.output_tokens)} · custo ${esc(fmtUsd(r.custo_estimado_usd))} · execução ${esc(r.execucao_id)}
-        <pre style="white-space:pre-wrap;margin:8px 0 0">${esc(json)}</pre></div>`);
+      linhas.push(`<div class="roNotice"><b>${esc(rot)}</b><br>Concluída · modelo ${esc(r.modelo)} · ${esc(r.latencia_ms)} ms · tokens: entrada ${fmtNum(u.input_tokens)} / saída ${fmtNum(u.output_tokens)} · custo ${esc(fmtUsd(r.custo_estimado_usd))} · revisão humana: ${esc(r.revisao_humana || 'Pendente')}</div>`);
     } catch (e) {
+      const det = e.detalhe || {};
+      if (det.execucao_id) ids.push(det.execucao_id);
+      if (det.chamou_provider === true) { chamadasReais++; totalUsd += Number(det.custo_estimado_usd || 0); totalTok += Number((det.uso || {}).total_tokens || 0); }
       const fatal = PILOTO_FATAIS.includes(e.code);
       if (fatal) parou = e.code;
-      linhas.push(`<div class="authMsg erro"><b>${esc(i.caso.rotulo)}</b> · ${esc(i.etapa.nome)}<br>${esc(e.message)}${e.code ? ' <span class="sub">(' + esc(e.code) + ')</span>' : ''}${fatal ? '<br><b>Piloto interrompido.</b>' : ''}${e.code === 'prompt_desconhecido' ? '<br>Este prompt ainda não foi publicado no servidor (nenhuma chamada à IA foi feita).' : ''}</div>`);
+      linhas.push(`<div class="authMsg erro"><b>${esc(rot)}</b><br>${esc(e.message)}${e.code ? ' <span class="sub">(' + esc(e.code) + ')</span>' : ''}${Array.isArray(det.erros) ? '<br><span class="sub">' + det.erros.map(esc).join('; ') + '</span>' : ''}${fatal ? '<br><b>Execução interrompida (sem nova tentativa).</b>' : ''}</div>`);
     }
   }
   pilotoState.rodando = false;
-  desenhar(null);
+  desenhar('Concluída.');
+  try { await pilotoConferencia(ids, alvo, limiteIa); } catch (e) { const c = document.getElementById('pilConferencia'); if (c) c.innerHTML = `<div class="authMsg erro">Não consegui ler o resultado registrado: ${esc(e.message)}</div>`; }
+  pilotoState.resultado = out.innerHTML;
+}
+
+// Resumo de aceite: lê o que ficou REGISTRADO (api_execucoes + eventos) e confere os limites.
+async function pilotoConferencia(ids, alvo, limiteIa){
+  const box = document.getElementById('pilConferencia'); if (!box) return;
+  const d = pilotoState.dados;
+  const [ar, er] = await Promise.all([
+    ids.length ? sb.from('api_execucoes').select('id, event_id, modulo, status, modelo, versao_prompt, versao_regra, reasoning_effort, data_inicio, latencia_ms, input_tokens, cached_input_tokens, output_tokens, reasoning_tokens, total_tokens, custo_estimado_usd, request_id_provider, erro, motivo_bloqueio, hash_entrada, hash_chamada, resposta_texto, metadata').in('id', ids) : Promise.resolve({ data: [] }),
+    sb.from('events').select('id, revisao_humana, status_editorial').in('id', alvo.map(i => i.ev.id)),
+  ]);
+  if (ar.error) throw ar.error; if (er.error) throw er.error;
+  const lote = await sb.from('api_execucoes').select('id', { count: 'exact', head: true }).eq('empresa_id', d.empresaId).eq('operacao', 'analise_editorial')
+    .eq('metadata->>lote_id', pilotoState.loteId).in('status', ['pendente', 'sucesso', 'erro']);
+  if (lote.error) throw lote.error;
+  const porEv = {}; (ar.data || []).forEach(x => { (porEv[x.event_id] = porEv[x.event_id] || []).push(x); });
+  const evNovo = {}; (er.data || []).forEach(x => { evNovo[x.id] = x; });
+  const reais = (ar.data || []).filter(x => ['sucesso', 'erro', 'pendente'].includes(x.status));
+  const todasMeta = alvo.every(i => { const rs = porEv[i.ev.id] || []; return rs.length === 1; });
+  const revPend = alvo.every(i => (evNovo[i.ev.id] || {}).revisao_humana === 'Pendente');
+  const statusInalterado = alvo.every(i => (evNovo[i.ev.id] || {}).status_editorial === i.ev.status_editorial);
+  const sem = reais.filter(x => x.status === 'sucesso').length;
+  const tot = (ar.data || []).reduce((s, x) => ({ usd: s.usd + Number(x.custo_estimado_usd || 0), tok: s.tok + Number(x.total_tokens || 0), ms: s.ms + Number(x.latencia_ms || 0) }), { usd: 0, tok: 0, ms: 0 });
+  const ok = (c, t) => `<li>${c ? '✔' : '✘'} ${esc(t)}</li>`;
+  const linha = i => {
+    const r = (porEv[i.ev.id] || [])[0]; const sc = i.el.score_antes || {};
+    if (!r) return `<tr><td>${esc(rotuloModulo(i.ev.modulo))}</td><td>${esc(i.ev.id_evento)}<br><span class="sub">${esc(i.ev.id)}</span></td><td colspan="6">Sem chamada registrada.</td></tr>`;
+    return `<tr><td>${esc(rotuloModulo(i.ev.modulo))}</td><td>${esc(i.ev.id_evento)}<br><span class="sub">${esc(i.ev.id)}</span></td>
+      <td>${esc(sc.score_relevancia ?? '—')} / ${esc(sc.prioridade || '—')}</td><td>${esc(i.el.regra_pre_ia || '—')}</td>
+      <td><b>${esc(ptStatusIa[r.status] || r.status)}</b>${r.erro ? '<br><span class="sub">' + esc(r.erro) + '</span>' : ''}<br><span class="sub">${esc(r.modelo || '—')}</span></td>
+      <td>${fmtNum(r.input_tokens)} / ${fmtNum(r.cached_input_tokens)} / ${fmtNum(r.output_tokens)} / ${fmtNum(r.reasoning_tokens)} = ${fmtNum(r.total_tokens)}<br><span class="sub">${esc(fmtUsd(r.custo_estimado_usd))} · ${esc(r.latencia_ms ?? '—')} ms</span></td>
+      <td><span class="sub">req ${esc(r.request_id_provider || '—')}<br>${esc(r.versao_prompt || '')} · ${esc(r.versao_regra || '')}</span></td>
+      <td><details><summary>resposta</summary>${r.status === 'sucesso' ? iaRespostaHTML(r.resposta_texto) : '<div class="sub">Sem resposta válida (bruto preservado no registro).</div>'}</details></td></tr>`;
+  };
+  box.innerHTML = `<div class="card"><strong>4. Resumo de aceite</strong>
+    <div class="sub">${alvo.length} caso(s) · ${reais.length} chamada(s) real(is) · ${sem} concluída(s) · custo ${esc(fmtUsd(tot.usd))} · ${fmtNum(tot.tok)} tokens · tempo somado ${fmtNum(tot.ms)} ms</div>
+    <div style="overflow-x:auto"><table class="miniTable"><thead><tr><th>Mód.</th><th>Evento</th><th>Score / prior. antes</th><th>Regra pré-IA</th><th>Status / modelo</th><th>Tokens (ent/cache/saí/rac = total)</th><th>Rastro</th><th>Resposta</th></tr></thead><tbody>${alvo.map(linha).join('')}</tbody></table></div>
+    <ul style="list-style:none;padding:0;margin:10px 0 0">
+      ${ok(reais.length <= PILOTO_MAX && Number(lote.count || 0) <= PILOTO_MAX, `Chamadas reais do lote: ${lote.count ?? '?'} (máximo ${PILOTO_MAX})`)}
+      ${ok(todasMeta, 'Uma única linha registrada por caso (sem nova tentativa)')}
+      ${ok(revPend, 'Revisão humana continua Pendente em todos os casos')}
+      ${ok(statusInalterado, 'Status editorial dos eventos não foi alterado')}
+      ${ok(alvo.length <= PILOTO_MAX, 'Nenhum 7º caso foi enviado')}
+    </ul>
+    <div class="saveBar"><button class="smallBtn" id="pilPausar">Pausar a API agora</button></div><div id="pilPausaMsg" class="sub"></div></div>`;
+  document.getElementById('pilPausar').onclick = pilotoPausar;
 }
 
 const num0 = v => (v === null || v === undefined || v === '' ? null : Number(v));
@@ -2654,6 +2703,29 @@ async function pilotoPausar(){
     pilotoState.dados.cfg = { ...c, ativo: false };
     msg.textContent = 'API pausada. Nenhuma nova chamada será feita até você ativar de novo.';
   } catch (e) { msg.textContent = 'Não foi possível pausar: ' + e.message + ' — pause em ADMIN > API.'; }
+}
+
+// ---------------------------------------------------------------------------
+// Detalhe do evento (somente master): situação da IA assistida, carregada ao abrir o bloco.
+// ---------------------------------------------------------------------------
+async function iaEventoCarregar(det){
+  const eventId = det.dataset.iaEvent; const box = det.querySelector('.iaBody'); if (!box || det.dataset.carregado === '1') return;
+  box.textContent = 'Carregando…';
+  try {
+    const r = await sb.from('api_execucoes').select('id, status, modelo, custo_estimado_usd, versao_prompt, data_inicio, erro, motivo_bloqueio, resposta_texto, metadata')
+      .eq('event_id', eventId).eq('operacao', 'analise_editorial').order('data_inicio', { ascending: false }).limit(5);
+    if (r.error) throw r.error;
+    const rows = r.data || [];
+    det.dataset.carregado = '1';
+    if (!rows.length) { box.innerHTML = 'Nunca enviado à IA. (Passou no pré-IA? Veja ADMIN &gt; Piloto IA.)'; return; }
+    const real = rows.find(x => ['sucesso', 'erro', 'pendente'].includes(x.status));
+    const ult = real || rows[0];
+    const flags = (ult.metadata && ult.metadata.elegibilidade && ult.metadata.elegibilidade.flags) || {};
+    const passou = ult.status !== 'bloqueado_pre_ia';
+    box.innerHTML = `<div>Passou no pré-IA: <b>${passou ? 'sim' : 'não'}</b>${passou ? '' : ' (' + esc(Object.keys(flags).filter(k => flags[k]).map(k => ptMotivoDispensa[k] || k).join('; ') || ult.motivo_bloqueio || '') + ')'}
+      · Enviado à IA: <b>${real ? 'sim' : 'não'}</b> · Chamada: <b>${esc(ptStatusIa[ult.status] || ult.status)}</b> · Modelo: ${esc(ult.modelo || '—')} · Custo: ${esc(fmtUsd(ult.custo_estimado_usd))} · Prompt: ${esc(ult.versao_prompt || '—')} · Revisão humana: <b>${esc(det.dataset.revisao || '—')}</b></div>
+      ${ult.status === 'sucesso' ? iaRespostaHTML(ult.resposta_texto) : (ult.erro ? '<div class="sub">' + esc(ult.erro) + '</div>' : '')}`;
+  } catch (e) { box.textContent = 'Não foi possível carregar: ' + e.message; }
 }
 
 // ---------------------------------------------------------------------------
