@@ -8,7 +8,7 @@ RAIZ = pathlib.Path(__file__).resolve().parents[2]
 HTML = (RAIZ / 'index.html').read_text(encoding='utf-8')
 STUB = "window.supabase={createClient:()=>({auth:{getSession:async()=>({data:{session:null}}),onAuthStateChange:()=>({data:{subscription:{unsubscribe(){}}}}),signOut:async()=>({})},from(){throw new Error('x')},functions:{invoke:async()=>({data:null,error:{message:'x'}})}})}"
 EMP = '11111111-1111-1111-1111-111111111111'; CART = '22222222-2222-2222-2222-222222222222'; EXE = '33333333-3333-3333-3333-333333333333'
-LOTE = 'PILOTO_M6_M8_M9A_2026_10'
+LOTE = 'PILOTO_M6_M8_M9A_2026_10_R2'
 
 SETUP = """
 (n) => {
