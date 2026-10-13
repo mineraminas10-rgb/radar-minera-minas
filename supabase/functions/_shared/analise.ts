@@ -7,7 +7,7 @@ import type { Dossie, Elegibilidade, Repo } from './types.ts';
 
 // Lote fixo do piloto: o navegador NÃO escolhe (um lote novo por requisição burlaria o teto).
 // Para um novo lote de testes, troque este valor num deploy — nunca por parâmetro.
-export const LOTE_PILOTO_ID = 'PILOTO_M6_M8_M9A_2026_10';
+export const LOTE_PILOTO_ID = 'PILOTO_M6_M8_M9A_2026_10_R2';
 export const LIMITE_MAX_LOTE = 6;
 
 // 'M8_acidentes_ambientais' -> 'm8'; 'M9A_anm_movimentacoes' -> 'm9a'; 'M6_outorgas' -> 'm6'
