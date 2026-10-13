@@ -423,3 +423,13 @@ Deno.test('prompt V1 desativado: pedir a V1 é recusado antes de qualquer custo'
   await assertRejects(() => executarIA(deps, master, pedido(id, { prompt: 'M6_ANALISE_EDITORIAL_V1' })), Error, 'desativada');
   assertEquals(chamadas.length, 0);
 });
+
+Deno.test('evento com análise de IA já concluída não é cobrado de novo, mesmo em lote novo', async () => {
+  const m = new Mem(); const id = novoEvento(m, 1, 'M6_outorgas', { ia_sucesso_previo: true });
+  const { deps, chamadas } = ambiente(m);
+  const r = await executarIA(deps, master, pedido(id));
+  assertEquals(r.body.code, 'evento_ja_analisado');
+  assertEquals(r.status, 409);
+  assertEquals(chamadas.length, 0);
+  assertEquals(m.reais().length, 0);
+});
