@@ -2459,6 +2459,9 @@ async function apiPreco(){
 // O navegador NÃO envia texto nem filtros pré-IA: só escolhe quais eventos consultar.
 // ---------------------------------------------------------------------------
 const PILOTO_MAX = 6;
+const PILOTO_RECENTES = 40;   // eventos mais recentes listados; o servidor aceita no máximo 50 por consulta de elegibilidade
+const PILOTO_EXTRAS_MAX = 10; // eventos incluídos à mão pelo código (id_evento)
+const PILOTO_CODIGO_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{2,79}$/;
 const PILOTO_MODULOS = ['M6_outorgas', 'M8_acidentes_ambientais', 'M9A_anm_movimentacoes'];
 const PILOTO_PROMPT = { m6: 'M6_ANALISE_EDITORIAL_V2', m8: 'M8_ANALISE_EDITORIAL_V2', m9a: 'M9A_ANALISE_EDITORIAL_V2' };
 // recusas que interrompem o lote inteiro (as demais só encerram aquele caso — e nunca há nova tentativa)
@@ -2466,7 +2469,7 @@ const PILOTO_FATAIS = ['api_pausada', 'api_nao_configurada', 'credencial_ausente
   'limite_ia_do_lote', 'limite_ia_zero', 'usar_api_real_desligado', 'sem_permissao', 'nao_autenticado', 'trocar_senha', 'erro_provider', 'operacao_desconhecida', 'prompt_desconhecido'];
 const PILOTO_SECOES = [['fato_confirmado', 'Fato confirmado'], ['contexto_documental', 'Contexto documental'], ['avaliacao_editorial', 'Avaliação editorial'],
   ['hipotese_apuracao', 'Hipótese de apuração'], ['lacunas', 'Lacunas'], ['perguntas_redacao', 'Perguntas para a redação'], ['proposta_abordagem', 'Proposta de abordagem']];
-const pilotoState = { dados: null, itens: [], sel: new Set(), rodando: false, usarReal: true, limite: PILOTO_MAX, loteId: null, resultado: null };
+const pilotoState = { dados: null, itens: [], sel: new Set(), rodando: false, usarReal: true, limite: PILOTO_MAX, loteId: null, resultado: null, extras: [], extrasMsg: '' };
 
 const moduloCurtoUI = m => { const x = /^(M\d+[A-Z]?)_/.exec(String(m || '')); return x ? x[1].toLowerCase() : ''; };
 const rotuloModulo = m => ({ m6: 'M6', m8: 'M8', m9a: 'M9A' }[moduloCurtoUI(m)] || String(m || '—'));
@@ -2499,18 +2502,30 @@ function iaRespostaHTML(texto){
 async function adminPiloto(){
   const body = document.getElementById('adminBody'); const meu = adminState.seq; const empresaId = adminState.empresaId;
   if (!empresaId) { body.innerHTML = '<div class="empty">Escolha a empresa ativa.</div>'; return; }
-  if (pilotoState.dados && pilotoState.dados.empresaId !== empresaId) { pilotoState.sel = new Set(); pilotoState.resultado = null; }
+  if (pilotoState.dados && pilotoState.dados.empresaId !== empresaId) { pilotoState.sel = new Set(); pilotoState.resultado = null; pilotoState.extras = []; pilotoState.extrasMsg = ''; }
   body.innerHTML = '<div class="empty">Verificando elegibilidade dos eventos (sem custo)…</div>';
   try {
     const [cfgR, evR, carR] = await Promise.all([
       chamarFuncao('admin-api', { acao: 'obter_config', empresa_id: empresaId }),
       sb.from('events').select('id, id_evento, modulo, titulo_fato, municipio, status_editorial, revisao_humana, execucao_criacao_id, carteira_id, created_at')
-        .eq('empresa_id', empresaId).in('modulo', PILOTO_MODULOS).order('created_at', { ascending: false }).limit(50),
+        .eq('empresa_id', empresaId).in('modulo', PILOTO_MODULOS).order('created_at', { ascending: false }).limit(PILOTO_RECENTES),
       sb.from('carteiras').select('id, nome, ativa').eq('empresa_id', empresaId),
     ]);
     if (meu !== adminState.seq || empresaId !== adminState.empresaId) return;
     if (evR.error) throw evR.error; if (carR.error) throw carR.error;
-    const evs = evR.data || [];
+    // eventos incluídos à mão pelo código: leitura do banco, só da empresa ativa e dos módulos do piloto (sem custo)
+    let extrasEv = [];
+    if (pilotoState.extras.length) {
+      const xr = await sb.from('events').select('id, id_evento, modulo, titulo_fato, municipio, status_editorial, revisao_humana, execucao_criacao_id, carteira_id, created_at')
+        .eq('empresa_id', empresaId).in('modulo', PILOTO_MODULOS).in('id_evento', pilotoState.extras);
+      if (xr.error) throw xr.error;
+      extrasEv = xr.data || [];
+      const achados = new Set(extrasEv.map(x => x.id_evento));
+      pilotoState.extras = pilotoState.extras.filter(c => achados.has(c));
+    }
+    const vistos = new Set(); const evs = [];
+    [...extrasEv, ...(evR.data || [])].forEach(e => { if (!vistos.has(e.id)) { vistos.add(e.id); evs.push(e); } });
+    const idsExtras = new Set(extrasEv.map(e => e.id));
     const carteiras = (carR.data || []).filter(c => c.ativa !== false);
     // carteira de cada evento: a própria ou, se o evento não tem, a da execução que o criou (o servidor exige que batam)
     const exIds = [...new Set(evs.map(e => e.execucao_criacao_id).filter(Boolean))];
@@ -2535,7 +2550,7 @@ async function adminPiloto(){
       const motivos = (el.motivos_dispensa || []).map(m => ptMotivoDispensa[m] || m);
       const cartEfetiva = ev.carteira_id || exCart[ev.execucao_criacao_id] || '';
       const executavel = !!el.elegivel && !el.ja_analisado_pela_ia && !jaNoLote.has(ev.id) && !!ev.execucao_criacao_id && (!!cartEfetiva || carteiras.length > 0);
-      return { ev, el, motivos, jaNoLote: jaNoLote.has(ev.id), executavel, cartEfetiva };
+      return { ev, el, motivos, jaNoLote: jaNoLote.has(ev.id), executavel, cartEfetiva, extra: idsExtras.has(ev.id) };
     }).sort((a, b) => (b.executavel - a.executavel) || String(a.ev.modulo).localeCompare(String(b.ev.modulo)));
     pilotoState.dados = { empresaId, cfg, preco, carteiras };
     if (!pilotoState.carteira || !carteiras.some(c => c.id === pilotoState.carteira)) {
@@ -2545,7 +2560,8 @@ async function adminPiloto(){
     }
     pilotoState.itens = itens; pilotoState.loteId = elig.lote_id; pilotoState.lote = lote;
     pilotoState.sel = new Set([...pilotoState.sel].filter(id => itens.some(i => i.executavel && i.ev.id === id)));
-    if (!pilotoState.sel.size && !pilotoState.resultado) itens.filter(i => i.executavel).slice(0, PILOTO_MAX).forEach(i => pilotoState.sel.add(i.ev.id));
+    // nenhuma pré-seleção automática: só entra na seleção o que a pessoa marca ou inclui pelo código
+    if (pilotoState.marcarExtras) { itens.filter(i => i.extra && i.executavel && pilotoState.marcarExtras.has(i.ev.id_evento) && pilotoState.sel.size < PILOTO_MAX).forEach(i => pilotoState.sel.add(i.ev.id)); pilotoState.marcarExtras = null; }
     pilotoDesenhar();
   } catch (e) { if (meu === adminState.seq) body.innerHTML = '<div class="empty">Não consegui carregar a operação assistida: ' + esc(e.message) + (e.code ? ' (' + esc(e.code) + ')' : '') + '</div>'; }
 }
@@ -2559,7 +2575,7 @@ function pilotoDesenhar(){
     const estado = i.jaNoLote ? 'Já consultado neste lote' : (el.ja_analisado_pela_ia ? 'IA já concluída' : (i.executavel ? 'Elegível' : 'Dispensado'));
     const porque = i.executavel ? `regra ${esc(el.regra_pre_ia || '—')}${el.faixa_vinculo ? ' · vínculo ' + esc(el.faixa_vinculo) : ''}` : esc(i.motivos.join('; ') || (!e.execucao_criacao_id ? 'evento sem execução de origem' : (!e.carteira_id && !d.carteiras.length ? 'empresa sem carteira ativa' : '—')));
     return `<tr><td><input type="checkbox" data-pil="${esc(e.id)}"${i.executavel ? '' : ' disabled'}${pilotoState.sel.has(e.id) ? ' checked' : ''}></td>
-      <td>${esc(rotuloModulo(e.modulo))}</td><td>${esc((e.titulo_fato || e.id_evento).slice(0, 80))}<br><span class="sub">${esc(e.id_evento)} · ${esc(e.municipio || '')}</span></td>
+      <td>${esc(rotuloModulo(e.modulo))}</td><td>${esc((e.titulo_fato || e.id_evento).slice(0, 80))}<br><span class="sub">${esc(e.id_evento)} · ${esc(e.municipio || '')}${i.extra ? ' · incluído pelo código' : ''}</span></td>
       <td>${sc ? esc(sc.score_relevancia ?? '—') + ' / ' + esc(sc.prioridade || '—') + '<br><span class="sub">' + esc(sc.estagio || '') + (sc.versao_score ? ' · ' + esc(sc.versao_score) : '') + '</span>' : '—'}</td>
       <td><b>${esc(estado)}</b><br><span class="sub">${porque}</span></td></tr>`;
   };
@@ -2571,6 +2587,9 @@ function pilotoDesenhar(){
     </div>
     <div class="card"><strong>1. Eventos (${elegiveis} elegível(is) de ${pilotoState.itens.length})</strong>
       <div class="sub">Só aparecem como selecionáveis os eventos que passaram em todos os filtros pré-IA calculados no banco. Os demais mostram o motivo da dispensa.</div>
+      <div class="field" style="max-width:520px;margin-top:8px"><label>Incluir evento pelo código <span class="sub">(a lista mostra só os ${PILOTO_RECENTES} mais recentes; digite o id_evento, ex.: semad-m8-156; vários separados por vírgula)</span></label>
+        <div style="display:flex;gap:6px"><input type="text" id="pilCodigo" autocomplete="off" spellcheck="false" placeholder="id_evento"><button class="smallBtn" id="pilIncluir" type="button">Incluir</button></div>
+        <div class="sub" id="pilCodigoMsg">${esc(pilotoState.extrasMsg || '')}</div></div>
       <div style="overflow-x:auto"><table class="miniTable"><thead><tr><th></th><th>Módulo</th><th>Evento</th><th>Score / prioridade (antes da IA)</th><th>Elegibilidade</th></tr></thead><tbody>
       ${pilotoState.itens.map(linha).join('') || '<tr><td colspan="5" class="empty">Nenhum evento M6/M8/M9A nesta empresa.</td></tr>'}</tbody></table></div>
     </div>
@@ -2607,6 +2626,28 @@ function pilotoDesenhar(){
   document.getElementById('pilCarteira').onchange = e => { pilotoState.carteira = e.target.value; plano(); };
   document.getElementById('pilOk').onchange = plano; document.getElementById('pilDigite').oninput = plano;
   document.getElementById('pilAtualizar').onclick = () => { pilotoState.resultado = null; adminPiloto(); };
+  const incluirPorCodigo = () => {
+    const bruto = String(document.getElementById('pilCodigo').value || '').split(',').map(x => x.trim()).filter(Boolean);
+    if (!bruto.length) return;
+    const invalidos = bruto.filter(c => !PILOTO_CODIGO_RE.test(c));
+    if (invalidos.length) { pilotoState.extrasMsg = 'Código inválido: ' + invalidos.join(', ') + '.'; document.getElementById('pilCodigoMsg').textContent = pilotoState.extrasMsg; return; }
+    const novos = [...new Set([...pilotoState.extras, ...bruto])];
+    if (novos.length > PILOTO_EXTRAS_MAX) { pilotoState.extrasMsg = 'No máximo ' + PILOTO_EXTRAS_MAX + ' eventos incluídos pelo código.'; document.getElementById('pilCodigoMsg').textContent = pilotoState.extrasMsg; return; }
+    pilotoState.extras = novos; pilotoState.marcarExtras = new Set(bruto);
+    pilotoState.resultado = null; pilotoState.extrasMsg = '';
+    adminPiloto().then(() => {
+      const achados = new Set(pilotoState.itens.filter(i => i.extra).map(i => i.ev.id_evento));
+      const faltam = bruto.filter(c => !achados.has(c));
+      const naoExec = pilotoState.itens.filter(i => i.extra && bruto.includes(i.ev.id_evento) && !i.executavel).map(i => i.ev.id_evento);
+      const msgs = [];
+      if (faltam.length) msgs.push('Não encontrado nesta empresa (M6/M8/M9A): ' + faltam.join(', ') + '.');
+      if (naoExec.length) msgs.push('Incluído, mas não elegível agora: ' + naoExec.join(', ') + ' (veja o motivo na lista).');
+      pilotoState.extrasMsg = msgs.join(' ');
+      const m = document.getElementById('pilCodigoMsg'); if (m) m.textContent = pilotoState.extrasMsg;
+    });
+  };
+  document.getElementById('pilIncluir').onclick = incluirPorCodigo;
+  document.getElementById('pilCodigo').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); incluirPorCodigo(); } };
   document.getElementById('pilRodar').onclick = pilotoExecutar;
   plano();
 }
