@@ -33,7 +33,7 @@ REG_OK = {"url_original": "https://dadosabertos.anm.gov.br/SCM/microdados/microd
 
 class TestRodadaM9A(unittest.TestCase):
     def setUp(self):
-        self.o = {k: getattr(db_writer, k) for k in ("buscar_fonte", "criar_execucao", "finalizar_execucao", "registrar_log_coleta")}
+        self.o = {k: getattr(db_writer, k) for k in ("buscar_fonte", "criar_execucao", "finalizar_execucao", "registrar_log_coleta", "listar_ids_evento_m9a", "listar_processos_eventos_m9a")}
         self.final = {}
         db_writer.buscar_fonte = lambda sb, empresa_id=None, carteira_id=None: {"id": "SRC", "empresa_id": "EMP", "carteira_id": "CART"}
         db_writer.criar_execucao = lambda sb, i, ambiente="piloto", empresa_id=None, carteira_id=None: "EXEC"
@@ -78,13 +78,17 @@ class TestRodadaM9A(unittest.TestCase):
             self.chamados.clear()
             orig = db_writer.listar_ids_evento_m9a if hasattr(db_writer, "listar_ids_evento_m9a") else None
             db_writer.listar_ids_evento_m9a = lambda sb, empresa_id, pagina=1000: set(ids[:2])
+            orig_p = db_writer.listar_processos_eventos_m9a
+            db_writer.listar_processos_eventos_m9a = lambda sb, empresa_id, pagina=1000: {a.processo for c in todos[:2] for a in c}
             try:
                 r = m.run(d, sb=SB(), env=ENV_OK, tamanho_bloco=9, piso_criticidade=None, janela_dias=0,
                           registro_download=REG_OK, somente_existentes=True)["resumo"]
             finally:
                 if orig: db_writer.listar_ids_evento_m9a = orig
+                db_writer.listar_processos_eventos_m9a = orig_p
         self.assertEqual(len(self.chamados), 2)
-        self.assertEqual(r["ignorados_por_nao_existirem"], len(todos) - 2)
+        self.assertGreater(r["ingestao"]["fora_por_processo"], 0)     # a leitura já foi cortada pelos processos existentes
+        self.assertEqual(r["ignorados_por_nao_existirem"], r["casos_consolidados"] - 2)
         self.assertEqual(r["chamadas_ia"], 0)
 
     def test_listar_ids_evento_m9a_le_em_paginas(self):
@@ -102,6 +106,34 @@ class TestRodadaM9A(unittest.TestCase):
         self.assertEqual(len(db_writer.listar_ids_evento_m9a(Banco(), "EMP", pagina=10)), 25)
         with self.assertRaises(RuntimeError):
             db_writer.listar_ids_evento_m9a(Banco(), None)
+
+    def test_listar_processos_eventos_m9a_separa_os_processos_do_caso(self):
+        class Q:
+            def __init__(s, l): s.l, s.a, s.b = l, 0, 0
+            def select(s, *a): return s
+            def eq(s, *a): return s
+            def order(s, *a): return s
+            def range(s, a, b): s.a, s.b = a, b; return s
+            def execute(s):
+                class R: pass
+                r = R(); r.data = s.l[s.a:s.b + 1]; return r
+        class Banco:
+            def table(s, n): return Q([{"processo": "830.649/2020; 830.661/2019"}, {"processo": "5.962/1956"}, {"processo": None}])
+        self.assertEqual(db_writer.listar_processos_eventos_m9a(Banco(), "EMP", pagina=2),
+                         {"830.649/2020", "830.661/2019", "5.962/1956"})
+
+    def test_somente_existentes_sem_janela_nem_piso_por_padrao(self):
+        with tempfile.TemporaryDirectory() as d:
+            dump_sintetico(d)
+            r = m.run(d, sb=SB(), env=ENV_OK, tamanho_bloco=9, registro_download=REG_OK, somente_existentes=True)["resumo"] \
+                if self._existentes_vazios() else None
+        self.assertEqual(r["ingestao"]["data_minima"], None)
+        self.assertEqual(r["dispensados_por_criticidade"], {})
+
+    def _existentes_vazios(self):
+        db_writer.listar_ids_evento_m9a = lambda sb, empresa_id, pagina=1000: set()
+        db_writer.listar_processos_eventos_m9a = lambda sb, empresa_id, pagina=1000: set()
+        return True
 
     def test_regua_de_criticidade_filtra_por_data_e_piso_e_ordena_antes_do_limite(self):
         """CRIT-V1.2 no coletor: janela de data (não lê atos velhos), piso (BAIXA/ROTINA ficam fora) e a ordem
