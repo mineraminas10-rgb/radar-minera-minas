@@ -67,6 +67,42 @@ class TestRodadaM9A(unittest.TestCase):
         self.assertEqual([e["ok"] for e in res["diagnostico_etapas"]], [True] * len(res["diagnostico_etapas"]))
         self.assertEqual(len([1 for t, _ in sb.ins if t == "log_busca"]), 1)   # registro do download
 
+    def test_somente_existentes_nao_cria_evento_novo_e_so_atualiza_o_que_ja_esta_no_banco(self):
+        import consolidacao
+        with tempfile.TemporaryDirectory() as d:
+            dump_sintetico(d)
+            m.run(d, sb=SB(), env=ENV_OK, tamanho_bloco=9, piso_criticidade=None, janela_dias=0, registro_download=REG_OK)
+            todos = list(self.chamados)
+            self.assertGreater(len(todos), 2)
+            ids = [m.gerar_id_evento(consolidacao.chave_caso_editorial(a[0])) for a in todos]
+            self.chamados.clear()
+            orig = db_writer.listar_ids_evento_m9a if hasattr(db_writer, "listar_ids_evento_m9a") else None
+            db_writer.listar_ids_evento_m9a = lambda sb, empresa_id, pagina=1000: set(ids[:2])
+            try:
+                r = m.run(d, sb=SB(), env=ENV_OK, tamanho_bloco=9, piso_criticidade=None, janela_dias=0,
+                          registro_download=REG_OK, somente_existentes=True)["resumo"]
+            finally:
+                if orig: db_writer.listar_ids_evento_m9a = orig
+        self.assertEqual(len(self.chamados), 2)
+        self.assertEqual(r["ignorados_por_nao_existirem"], len(todos) - 2)
+        self.assertEqual(r["chamadas_ia"], 0)
+
+    def test_listar_ids_evento_m9a_le_em_paginas(self):
+        class Q:
+            def __init__(s, linhas): s.l, s.a, s.b = linhas, 0, 0
+            def select(s, *a): return s
+            def eq(s, *a): return s
+            def order(s, *a): return s
+            def range(s, a, b): s.a, s.b = a, b; return s
+            def execute(s):
+                class R: pass
+                r = R(); r.data = s.l[s.a:s.b + 1]; return r
+        class Banco:
+            def table(s, n): return Q([{"id_evento": f"anm-m9a-{i:03d}"} for i in range(25)])
+        self.assertEqual(len(db_writer.listar_ids_evento_m9a(Banco(), "EMP", pagina=10)), 25)
+        with self.assertRaises(RuntimeError):
+            db_writer.listar_ids_evento_m9a(Banco(), None)
+
     def test_regua_de_criticidade_filtra_por_data_e_piso_e_ordena_antes_do_limite(self):
         """CRIT-V1.2 no coletor: janela de data (não lê atos velhos), piso (BAIXA/ROTINA ficam fora) e a ordem
         criticidade > pontuação > atualidade vale ANTES de --limite-casos."""

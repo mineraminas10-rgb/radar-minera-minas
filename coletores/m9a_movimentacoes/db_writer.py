@@ -114,6 +114,22 @@ def buscar_evento_por_id_evento(sb: Client, id_evento: str, empresa_id: str) -> 
     return r.data[0] if r.data else None
 
 
+def listar_ids_evento_m9a(sb: Client, empresa_id: str, pagina: int = 1000) -> set:
+    """id_evento de TODOS os casos M9A já existentes da empresa (para o modo --somente-existentes: atualizar o que já
+    está no banco sem criar evento novo). Lê em páginas porque o PostgREST limita o tamanho de cada resposta."""
+    if not empresa_id:
+        raise RuntimeError("listar_ids_evento_m9a exige empresa_id (isolamento por empresa).")
+    ids, inicio = set(), 0
+    while True:
+        r = (sb.table("events").select("id_evento").eq("empresa_id", empresa_id).eq("modulo", MODULO)
+             .order("id_evento").range(inicio, inicio + pagina - 1).execute())
+        linhas = r.data or []
+        ids.update(x["id_evento"] for x in linhas if x.get("id_evento"))
+        if len(linhas) < pagina:
+            return ids
+        inicio += pagina
+
+
 def upsert_caso_editorial(sb: Client, id_evento: str, campos_evento: dict, execucao_id: str,
                            empresa_id: Optional[str] = None) -> tuple:
     existente = buscar_evento_por_id_evento(sb, id_evento, empresa_id)

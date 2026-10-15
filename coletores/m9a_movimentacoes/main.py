@@ -257,12 +257,14 @@ def run(caminho_microdados: str, ambiente: str = "piloto", limite_casos: int = N
         max_linhas_evento: int = None, tamanho_bloco: int = 500_000, registro_download: dict = None,
         sb=None, env=None, empresa_id: str = None, carteira_id: str = None,
         janela_dias: Optional[int] = None, piso_criticidade: Optional[str] = "PADRAO", hoje: Optional[date] = None,
-        parametros: Optional[dict] = None, recalcular_pendentes: bool = True):
+        parametros: Optional[dict] = None, recalcular_pendentes: bool = True, somente_existentes: bool = False):
     """janela_dias: None = parâmetro versionado (m9a.janela_leitura_dias); 0 = sem filtro de data.
     piso_criticidade: 'PADRAO' = piso_selecao dos parâmetros (MEDIA); um nível ('ROTINA', 'BAIXA'...) = aceita esse
     nível ou acima; None = não aplica régua nenhuma (comportamento legado, sem gravar CRIT).
     recalcular_pendentes: ao final, reclassifica deterministicamente (mesma régua, sem IA) os M9A provisórios/pendentes
-    de evidência cujo tipo oficial/evidência estruturada já entrou; os que passam migram sozinhos para SELECIONAVEL_AGORA."""
+    de evidência cujo tipo oficial/evidência estruturada já entrou; os que passam migram sozinhos para SELECIONAVEL_AGORA.
+    somente_existentes: só atualiza casos que JÁ existem no banco (mesma chave id_evento); caso novo é ignorado e
+    contado em `ignorados_por_nao_existirem`. Nenhum evento é criado nesse modo."""
     par = parametros or crit_mod.carregar_parametros()
     referencia = hoje or date.today()
     aplica_regua = piso_criticidade is not None
@@ -377,6 +379,14 @@ def run(caminho_microdados: str, ambiente: str = "piloto", limite_casos: int = N
                 print(f"[M9A] criticidade dos casos consolidados={dist} dispensados abaixo do piso={dispensados}")
             else:
                 crits_lista = [None] * len(itens)
+            if somente_existentes:
+                existentes = db_writer.listar_ids_evento_m9a(sb, empresa_id)
+                manter = [i for i, a_caso in enumerate(itens)
+                          if gerar_id_evento(consolidacao.chave_caso_editorial(a_caso[0])) in existentes]
+                resumo["ignorados_por_nao_existirem"] = len(itens) - len(manter)
+                itens, crits_lista = [itens[i] for i in manter], [crits_lista[i] for i in manter]
+                print(f"[M9A] somente existentes: {len(manter)} casos já no banco serão atualizados; "
+                      f"{resumo['ignorados_por_nao_existirem']} casos novos ignorados (nenhum evento será criado)")
             if limite_casos:
                 itens, crits_lista = itens[:limite_casos], crits_lista[:limite_casos]
 
@@ -436,6 +446,8 @@ if __name__ == "__main__":
                          help="só lê eventos dos últimos N dias (padrão: parâmetro versionado, 1095; 0 = sem filtro de data)")
     parser.add_argument("--piso-criticidade", default="PADRAO", choices=["PADRAO", "ROTINA", "BAIXA", "MEDIA", "ALTA", "CRITICO", "NENHUM"],
                          help="PADRAO = piso_selecao dos parâmetros (MEDIA, ALTA, CRITICO); NENHUM = desliga a régua (legado)")
+    parser.add_argument("--somente-existentes", action="store_true",
+                        help="só atualiza casos que já existem no banco; não cria nenhum evento novo")
     parser.add_argument("--hoje", default=None, help="data de referência AAAA-MM-DD (padrão: hoje; útil em testes)")
     parser.add_argument("--registro-download", default=None, help="JSON do baixar_scm.py (vai para o log_busca)")
     parser.add_argument("--empresa-id", default=os.environ.get("RADAR_EMPRESA_ID"), help="empresa dona desta coleta (obrigatório se a fonte existir em mais de uma)")
@@ -451,6 +463,7 @@ if __name__ == "__main__":
                     empresa_id=args.empresa_id, carteira_id=args.carteira_id,
                     janela_dias=args.janela_dias,
                     piso_criticidade=None if args.piso_criticidade == "NENHUM" else args.piso_criticidade,
+                    somente_existentes=args.somente_existentes,
                     hoje=date.fromisoformat(args.hoje) if args.hoje else None)
     print(f"Execução {resultado['id_execucao']}: {resultado['resumo']}")
     for r in resultado["resultados"]:
