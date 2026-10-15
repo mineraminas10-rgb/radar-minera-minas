@@ -1,0 +1,43 @@
+{
+  "versao_parametros": "CRIT-PARAMS-V1.0",
+  "versao_regra": "CRIT-V1.0",
+  "descricao": "Parametros iniciais da regua de criticidade (aprovados em 14/10/2026). Alterar qualquer valor exige NOVA versao (CRIT-PARAMS-V1.1...), nunca editar esta.",
+  "niveis": ["ROTINA", "BAIXA", "MEDIA", "ALTA", "CRITICO"],
+  "prioridade_derivada": {"CRITICO": "A", "ALTA": "B", "MEDIA": "C", "BAIXA": "D", "ROTINA": "D"},
+  "piso_selecao": ["MEDIA", "ALTA", "CRITICO"],
+  "limite_selecao_padrao": 20,
+  "m9a": {
+    "atualidade_dias": {"CRITICO": 180, "ALTA": 365, "MEDIA": 1095},
+    "janela_leitura_dias": 1095,
+    "area_min_ha": 500,
+    "area_grande_ha": 1000,
+    "teto_fase_indefinida": "MEDIA",
+    "teto_sem_data": "BAIXA",
+    "teto_sem_evidencia": "MEDIA",
+    "empresas_relevantes": ["vale", "csn", "anglogold", "anglogold ashanti", "kinross", "anglo american", "usiminas", "samarco", "nexa", "itaminas"],
+    "minerais_estrategicos": ["ferro", "ouro", "litio", "manganes", "niobio", "grafite", "terras raras", "cobalto", "niquel", "fosfato", "titanio"],
+    "rotina": ["tah", "taxa anual*", "documento diverso", "juntada", "exigencia*", "retificacao*", "baixa transcricao", "procuracao", "fob", "comprovante* pagamento", "republicacao", "oficio"],
+    "fase_pedido": ["protoc", "requerimento", "solicitacao*", "pedido*"],
+    "fase_negativa": ["indeferid*", "cancelad*", "devolvid*", "negad*", "anulad*", "revogacao", "arquivad*"],
+    "fase_efetiva": ["publ", "aprov*", "autorizad*", "deferid*", "averbad*", "efetivad*", "concedid*", "instaurad*"],
+    "fase_efetiva_texto_livre": ["instaura*", "autoriza*", "prorroga*", "aprova*", "efetiv*", "concede*", "defere*", "publica*"],
+    "objetos": [
+      {"objeto": "perda_titulo", "palavras": ["decaimento*", "caducidade", "interdicao", "cassacao"]},
+      {"objeto": "gravame", "palavras": ["penhor*", "penhora*", "indisponibilidade", "oneracao", "arresto", "hipoteca"]},
+      {"objeto": "cessao", "palavras": ["cessao", "transf direitos", "transferencia", "arrendamento*"]},
+      {"objeto": "renuncia", "palavras": ["renuncia"]},
+      {"objeto": "autorizacao_extracao", "palavras": ["guia utilizacao", "portaria lavra", "portaria concessao lavra"]},
+      {"objeto": "relatorio_aprovado", "palavras": ["relatorio aprov*", "reavaliacao aprov*", "aprovacao relatorio*"]},
+      {"objeto": "alvara_outorga", "palavras": ["alvara pesquisa"]},
+      {"objeto": "servidao", "palavras": ["servidao"]},
+      {"objeto": "edital_disponibilidade", "palavras": ["edital"]}
+    ],
+    "marcadores_lavra": ["concessao", "conc lav", "portaria lavra"]
+  },
+  "m8": {
+    "atualidade_dias": {"CRITICO": 15, "ALTA": 30, "MEDIA": 90},
+    "teto_sem_data": "BAIXA",
+    "teto_vinculo_provavel": "MEDIA",
+    "faixas_vinculo_validas": ["provavel", "confirmado"]
+  }
+}

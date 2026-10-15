@@ -1,0 +1,409 @@
+{
+  "versao_parametros": "CRIT-PARAMS-V1.2",
+  "versao_regra": "CRIT-V1.2",
+  "descricao": "Parametros da regua de criticidade, versao 1.2 (ajustes finais de 14/10/2026 antes de qualquer aplicacao em producao): estados intermediarios POTENCIAL_CRITICO_PENDENTE_EVIDENCIA e POTENCIAL_ALTA_PENDENTE_EVIDENCIA (falta de evidencia nao rebaixa em silencio), classificacao provisoria (casos curados e agravante M8 so por palavra-chave) nunca selecionavel, selecao so de casos novos com criticidade consolidada, objetos propostos (desativados por padrao). CRIT-PARAMS-V1.2 nunca foi aplicada. Alterar qualquer valor exige NOVA versao.",
+  "niveis": [
+    "ROTINA",
+    "BAIXA",
+    "MEDIA",
+    "ALTA",
+    "CRITICO"
+  ],
+  "prioridade_derivada": {
+    "CRITICO": "A",
+    "ALTA": "B",
+    "MEDIA": "C",
+    "BAIXA": "D",
+    "ROTINA": "D",
+    "NAO_AVALIAVEL": null,
+    "POTENCIAL_CRITICO_PENDENTE_EVIDENCIA": null,
+    "POTENCIAL_ALTA_PENDENTE_EVIDENCIA": null
+  },
+  "piso_selecao": [
+    "MEDIA",
+    "ALTA",
+    "CRITICO"
+  ],
+  "limite_selecao_padrao": 20,
+  "m9a": {
+    "atualidade_dias": {
+      "CRITICO": 180,
+      "ALTA": 365,
+      "MEDIA": 1095
+    },
+    "janela_leitura_dias": 1095,
+    "area_min_ha": 500,
+    "area_grande_ha": 1000,
+    "teto_fase_indefinida": "MEDIA",
+    "teto_sem_data": "BAIXA",
+    "teto_sem_evidencia": "MEDIA",
+    "empresas_relevantes": [
+      "vale",
+      "csn",
+      "anglogold",
+      "anglogold ashanti",
+      "kinross",
+      "anglo american",
+      "usiminas",
+      "samarco",
+      "nexa",
+      "itaminas"
+    ],
+    "minerais_estrategicos": [
+      "ferro",
+      "ouro",
+      "litio",
+      "manganes",
+      "niobio",
+      "grafite",
+      "terras raras",
+      "cobalto",
+      "niquel",
+      "fosfato",
+      "titanio"
+    ],
+    "rotina": [
+      "tah",
+      "taxa anual*",
+      "documento diverso",
+      "juntada",
+      "exigencia*",
+      "retificacao*",
+      "baixa transcricao",
+      "procuracao",
+      "fob",
+      "comprovante* pagamento",
+      "republicacao",
+      "oficio",
+      "anotacao responsabilidade tecnica",
+      "recolhimento art",
+      "art recolhida"
+    ],
+    "fase_pedido": [
+      "protoc",
+      "requerimento",
+      "solicitacao*",
+      "pedido*"
+    ],
+    "fase_negativa": [
+      "indeferid*",
+      "cancelad*",
+      "devolvid*",
+      "negad*",
+      "anulad*",
+      "revogacao",
+      "arquivad*"
+    ],
+    "fase_efetiva": [
+      "publ",
+      "aprov*",
+      "autorizad*",
+      "deferid*",
+      "averbad*",
+      "efetivad*",
+      "concedid*",
+      "instaurad*"
+    ],
+    "fase_efetiva_texto_livre": [
+      "instaura*",
+      "autoriza*",
+      "prorroga*",
+      "aprova*",
+      "efetiv*",
+      "concede*",
+      "defere*",
+      "publica*"
+    ],
+    "objetos": [
+      {
+        "objeto": "prorrogacao_prazo_requerer_lavra",
+        "palavras": [
+          "prorrogacao prazo req lavra",
+          "prorrogacao prazo requerer lavra",
+          "prorrogacao prazo requerer concessao lavra",
+          "prazo para requerer a concessao lavra"
+        ]
+      },
+      {
+        "objeto": "perda_titulo",
+        "palavras": [
+          "decaimento*",
+          "caducidade",
+          "interdicao",
+          "cassacao"
+        ]
+      },
+      {
+        "objeto": "gravame",
+        "palavras": [
+          "penhor*",
+          "penhora*",
+          "indisponibilidade",
+          "oneracao",
+          "arresto",
+          "hipoteca"
+        ]
+      },
+      {
+        "objeto": "cessao",
+        "palavras": [
+          "cessao",
+          "transf direitos",
+          "transferencia",
+          "arrendamento*"
+        ]
+      },
+      {
+        "objeto": "renuncia",
+        "palavras": [
+          "renuncia"
+        ]
+      },
+      {
+        "objeto": "autorizacao_extracao",
+        "palavras": [
+          "guia utilizacao",
+          "portaria lavra",
+          "portaria concessao lavra"
+        ]
+      },
+      {
+        "objeto": "relatorio_aprovado",
+        "palavras": [
+          "relatorio aprov*",
+          "reavaliacao aprov*",
+          "aprovacao relatorio*"
+        ]
+      },
+      {
+        "objeto": "alvara_outorga",
+        "palavras": [
+          "alvara pesquisa"
+        ]
+      },
+      {
+        "objeto": "servidao",
+        "palavras": [
+          "servidao"
+        ]
+      },
+      {
+        "objeto": "edital_disponibilidade",
+        "palavras": [
+          "edital"
+        ]
+      }
+    ],
+    "marcadores_lavra": [
+      "concessao",
+      "conc lav",
+      "portaria lavra"
+    ],
+    "prorrogacao_prazo_lavra": {
+      "nivel_decisao_recente": "MEDIA",
+      "nivel_decisao_antiga": "BAIXA",
+      "nivel_pedido": "BAIXA",
+      "atualidade_dias_recente": 365,
+      "observacao": "pedido=BAIXA; decisao concedendo recente (ate atualidade_dias_recente) = MEDIA por consequencia material (preserva a janela para requerer a lavra); decisao antiga ou de fase indefinida = BAIXA. Empresa, mineral e area so entram como reforco (pontuacao/desempate), nunca como gatilho."
+    },
+    "pendencia_evidencia": {
+      "descricao": "Sem evidencia estruturada, um caso que a regua reconhece como ALTA ou CRITICO (depois da idade) NAO desce para MEDIA em silencio: vira estado intermediario, fora da fila e da IA, e recalculado quando a evidencia chegar.",
+      "estado_por_nivel": {
+        "CRITICO": "POTENCIAL_CRITICO_PENDENTE_EVIDENCIA",
+        "ALTA": "POTENCIAL_ALTA_PENDENTE_EVIDENCIA"
+      }
+    },
+    "origem_curada": "curada",
+    "campo_tipo_oficial_evidencia": "descricao_tipo_evento",
+    "usar_objetos_propostos": false,
+    "fase_efetiva_adicional_propostos": [
+      "emitid*"
+    ],
+    "objetos_propostos": [
+      {
+        "objeto": "plano_aproveitamento_economico",
+        "palavras": [
+          "modificacao pae*",
+          "pae aprov*",
+          "plano aproveitamento economico*"
+        ],
+        "nivel_com_reforco": "MEDIA",
+        "nivel_sem_reforco": "BAIXA",
+        "reforco_condicoes": [
+          "empresa",
+          "mineral",
+          "area_min"
+        ],
+        "justificativa": "Modificacao de PAE aprovado muda a escala ou o plano da lavra; so vira pauta com reforco."
+      },
+      {
+        "objeto": "suspensao_analise",
+        "palavras": [
+          "suspensao analise*"
+        ],
+        "nivel_com_reforco": "MEDIA",
+        "nivel_sem_reforco": "BAIXA",
+        "reforco_condicoes": [
+          "empresa",
+          "mineral",
+          "area_grande"
+        ],
+        "justificativa": "Suspensao de analise por conflito com outro projeto publico trava o processo; relevante em area grande ou titular/mineral relevante."
+      },
+      {
+        "objeto": "disponibilidade_area",
+        "palavras": [
+          "area disponivel*"
+        ],
+        "nivel_com_reforco": "MEDIA",
+        "nivel_sem_reforco": "BAIXA",
+        "reforco_condicoes": [
+          "empresa",
+          "mineral",
+          "area_grande"
+        ],
+        "justificativa": "Area que fica disponivel (art. 26) abre oportunidade a terceiros; relevante em area grande ou mineral/titular relevante."
+      },
+      {
+        "objeto": "recurso_decisao",
+        "palavras": [
+          "reconsideracao*",
+          "recurso*"
+        ],
+        "desfecho_baixo": [
+          "nao conhece*",
+          "improvid*",
+          "negad*"
+        ],
+        "nivel_com_reforco": "MEDIA",
+        "nivel_sem_reforco": "BAIXA",
+        "reforco_condicoes": [
+          "empresa",
+          "mineral"
+        ],
+        "justificativa": "Recurso/reconsideracao decidido: nao conhecido ou improvido mantem a decisao anterior (BAIXA); provido com reforco reverte decisao (MEDIA). Pedido de recurso continua pedido (BAIXA)."
+      },
+      {
+        "objeto": "aptidao_licenciamento",
+        "palavras": [
+          "declaracao aptidao*"
+        ],
+        "nivel_com_reforco": "BAIXA",
+        "nivel_sem_reforco": "BAIXA",
+        "reforco_condicoes": [],
+        "justificativa": "Declaracao de aptidao no regime de licenciamento e informativa; nomeada para rastreio, sem efeito de nivel."
+      },
+      {
+        "objeto": "requerimento_pesquisa",
+        "palavras": [
+          "requerimento pesquisa*"
+        ],
+        "nivel_com_reforco": "BAIXA",
+        "nivel_sem_reforco": "BAIXA",
+        "reforco_condicoes": [],
+        "justificativa": "Pedido: nomeado para rastreio; pedido nunca passa de BAIXA."
+      },
+      {
+        "objeto": "prorrogacao_prazo_alvara",
+        "palavras": [
+          "prorrogacao prazo alvara*"
+        ],
+        "nivel_com_reforco": "BAIXA",
+        "nivel_sem_reforco": "BAIXA",
+        "reforco_condicoes": [],
+        "justificativa": "Prorrogacao de alvara de pesquisa (pedido, indeferimento ou decisao): nomeado; sem efeito de nivel."
+      },
+      {
+        "objeto": "reducao_area",
+        "palavras": [
+          "reducao area*"
+        ],
+        "nivel_com_reforco": "BAIXA",
+        "nivel_sem_reforco": "BAIXA",
+        "reforco_condicoes": [],
+        "justificativa": "Pedido de reducao de area: nomeado; sem efeito de nivel."
+      },
+      {
+        "objeto": "licenca_ambiental_ou_registro",
+        "palavras": [
+          "licenca ambiental*",
+          "registro licenca*",
+          "requerimento licenciamento*"
+        ],
+        "nivel_com_reforco": "BAIXA",
+        "nivel_sem_reforco": "BAIXA",
+        "reforco_condicoes": [],
+        "justificativa": "Licenciamento junto a ANM: nomeado; sem efeito de nivel."
+      },
+      {
+        "objeto": "lavra_garimpeira",
+        "palavras": [
+          "requerimento lavra garimpeira*"
+        ],
+        "nivel_com_reforco": "BAIXA",
+        "nivel_sem_reforco": "BAIXA",
+        "reforco_condicoes": [],
+        "justificativa": "Pedido de lavra garimpeira: nomeado; sem efeito de nivel."
+      },
+      {
+        "objeto": "relatorio_final_pesquisa",
+        "palavras": [
+          "relatorio final pesquisa*"
+        ],
+        "nivel_com_reforco": "BAIXA",
+        "nivel_sem_reforco": "BAIXA",
+        "reforco_condicoes": [],
+        "justificativa": "Protocolo de relatorio final (positivo ou negativo): so o relatorio APROVADO ja tem objeto proprio; protocolo e pedido."
+      },
+      {
+        "objeto": "defesa_ou_comunicado",
+        "palavras": [
+          "defesa",
+          "inicio pesquisa comunicado*"
+        ],
+        "nivel_com_reforco": "BAIXA",
+        "nivel_sem_reforco": "BAIXA",
+        "reforco_condicoes": [],
+        "justificativa": "Defesa e comunicado de inicio de pesquisa: nomeados; sem efeito de nivel."
+      }
+    ]
+  },
+  "m8": {
+    "atualidade_dias": {
+      "CRITICO": 15,
+      "ALTA": 30,
+      "MEDIA": 90
+    },
+    "teto_sem_data": "BAIXA",
+    "teto_vinculo_provavel": "MEDIA",
+    "faixas_vinculo_validas": [
+      "provavel",
+      "confirmado"
+    ],
+    "agravante_textual_provisorio": true,
+    "origem_agravante_textual": "agravante_por_palavra_chave"
+  },
+  "estados_fora_da_escala": [
+    "NAO_AVALIAVEL",
+    "POTENCIAL_CRITICO_PENDENTE_EVIDENCIA",
+    "POTENCIAL_ALTA_PENDENTE_EVIDENCIA"
+  ],
+  "selecao": {
+    "somente_novos": true,
+    "status_editorial_novos": [
+      "em_apuracao",
+      "pendente"
+    ],
+    "exige_avaliavel": true,
+    "exige_evidencia_suficiente": true,
+    "exclui_provisoria": true,
+    "exclui_ja_analisado_ia": true,
+    "observacao": "Para disputar os ate 20: criticidade em piso_selecao, avaliavel, evidencia suficiente, classificacao nao provisoria, sem analise de IA concluida e (somente_novos) fora do fluxo editorial ja iniciado. O limite e um teto, nao uma cota. Os quatro grupos (grupos_selecao) sao DERIVADOS por regra (funcao criticidade_grupo_selecao e view v_criticidade_selecao), nunca preenchidos a mao."
+  },
+  "grupos_selecao": [
+    "SELECIONAVEL_AGORA",
+    "PENDENTE_DE_EVIDENCIA",
+    "NAO_AVALIAVEL",
+    "FORA_DA_SELECAO"
+  ]
+}

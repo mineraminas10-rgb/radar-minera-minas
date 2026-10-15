@@ -1,0 +1,224 @@
+{
+ "versao_parametros": "CRIT-PARAMS-V1.1",
+ "versao_regra": "CRIT-V1.1",
+ "descricao": "Parametros da regua de criticidade, versao 1.1 (revisao de 14/10/2026 antes de qualquer aplicacao em producao): estado NAO_AVALIAVEL fora da escala (nunca ROTINA), objeto proprio para prorrogacao de prazo para requerer lavra, classificacao provisoria para casos curados. CRIT-PARAMS-V1.0 nunca foi aplicada. Alterar qualquer valor exige NOVA versao.",
+ "niveis": [
+  "ROTINA",
+  "BAIXA",
+  "MEDIA",
+  "ALTA",
+  "CRITICO"
+ ],
+ "prioridade_derivada": {
+  "CRITICO": "A",
+  "ALTA": "B",
+  "MEDIA": "C",
+  "BAIXA": "D",
+  "ROTINA": "D",
+  "NAO_AVALIAVEL": null
+ },
+ "piso_selecao": [
+  "MEDIA",
+  "ALTA",
+  "CRITICO"
+ ],
+ "limite_selecao_padrao": 20,
+ "m9a": {
+  "atualidade_dias": {
+   "CRITICO": 180,
+   "ALTA": 365,
+   "MEDIA": 1095
+  },
+  "janela_leitura_dias": 1095,
+  "area_min_ha": 500,
+  "area_grande_ha": 1000,
+  "teto_fase_indefinida": "MEDIA",
+  "teto_sem_data": "BAIXA",
+  "teto_sem_evidencia": "MEDIA",
+  "empresas_relevantes": [
+   "vale",
+   "csn",
+   "anglogold",
+   "anglogold ashanti",
+   "kinross",
+   "anglo american",
+   "usiminas",
+   "samarco",
+   "nexa",
+   "itaminas"
+  ],
+  "minerais_estrategicos": [
+   "ferro",
+   "ouro",
+   "litio",
+   "manganes",
+   "niobio",
+   "grafite",
+   "terras raras",
+   "cobalto",
+   "niquel",
+   "fosfato",
+   "titanio"
+  ],
+  "rotina": [
+   "tah",
+   "taxa anual*",
+   "documento diverso",
+   "juntada",
+   "exigencia*",
+   "retificacao*",
+   "baixa transcricao",
+   "procuracao",
+   "fob",
+   "comprovante* pagamento",
+   "republicacao",
+   "oficio",
+   "anotacao responsabilidade tecnica",
+   "recolhimento art",
+   "art recolhida"
+  ],
+  "fase_pedido": [
+   "protoc",
+   "requerimento",
+   "solicitacao*",
+   "pedido*"
+  ],
+  "fase_negativa": [
+   "indeferid*",
+   "cancelad*",
+   "devolvid*",
+   "negad*",
+   "anulad*",
+   "revogacao",
+   "arquivad*"
+  ],
+  "fase_efetiva": [
+   "publ",
+   "aprov*",
+   "autorizad*",
+   "deferid*",
+   "averbad*",
+   "efetivad*",
+   "concedid*",
+   "instaurad*"
+  ],
+  "fase_efetiva_texto_livre": [
+   "instaura*",
+   "autoriza*",
+   "prorroga*",
+   "aprova*",
+   "efetiv*",
+   "concede*",
+   "defere*",
+   "publica*"
+  ],
+  "objetos": [
+   {
+    "objeto": "prorrogacao_prazo_requerer_lavra",
+    "palavras": [
+     "prorrogacao prazo req lavra",
+     "prorrogacao prazo requerer lavra",
+     "prorrogacao prazo requerer concessao lavra",
+     "prazo para requerer a concessao lavra"
+    ]
+   },
+   {
+    "objeto": "perda_titulo",
+    "palavras": [
+     "decaimento*",
+     "caducidade",
+     "interdicao",
+     "cassacao"
+    ]
+   },
+   {
+    "objeto": "gravame",
+    "palavras": [
+     "penhor*",
+     "penhora*",
+     "indisponibilidade",
+     "oneracao",
+     "arresto",
+     "hipoteca"
+    ]
+   },
+   {
+    "objeto": "cessao",
+    "palavras": [
+     "cessao",
+     "transf direitos",
+     "transferencia",
+     "arrendamento*"
+    ]
+   },
+   {
+    "objeto": "renuncia",
+    "palavras": [
+     "renuncia"
+    ]
+   },
+   {
+    "objeto": "autorizacao_extracao",
+    "palavras": [
+     "guia utilizacao",
+     "portaria lavra",
+     "portaria concessao lavra"
+    ]
+   },
+   {
+    "objeto": "relatorio_aprovado",
+    "palavras": [
+     "relatorio aprov*",
+     "reavaliacao aprov*",
+     "aprovacao relatorio*"
+    ]
+   },
+   {
+    "objeto": "alvara_outorga",
+    "palavras": [
+     "alvara pesquisa"
+    ]
+   },
+   {
+    "objeto": "servidao",
+    "palavras": [
+     "servidao"
+    ]
+   },
+   {
+    "objeto": "edital_disponibilidade",
+    "palavras": [
+     "edital"
+    ]
+   }
+  ],
+  "marcadores_lavra": [
+   "concessao",
+   "conc lav",
+   "portaria lavra"
+  ],
+  "prorrogacao_prazo_lavra": {
+   "nivel_decisao_recente": "MEDIA",
+   "nivel_decisao_antiga": "BAIXA",
+   "nivel_pedido": "BAIXA",
+   "atualidade_dias_recente": 365,
+   "observacao": "pedido=BAIXA; decisao concedendo recente (ate atualidade_dias_recente) = MEDIA por consequencia material (preserva a janela para requerer a lavra); decisao antiga ou de fase indefinida = BAIXA. Empresa, mineral e area so entram como reforco (pontuacao/desempate), nunca como gatilho."
+  }
+ },
+ "m8": {
+  "atualidade_dias": {
+   "CRITICO": 15,
+   "ALTA": 30,
+   "MEDIA": 90
+  },
+  "teto_sem_data": "BAIXA",
+  "teto_vinculo_provavel": "MEDIA",
+  "faixas_vinculo_validas": [
+   "provavel",
+   "confirmado"
+  ]
+ },
+ "estados_fora_da_escala": [
+  "NAO_AVALIAVEL"
+ ]
+}
