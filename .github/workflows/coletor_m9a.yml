@@ -21,6 +21,14 @@ on:
         description: 'Modo amostra: ler só as N primeiras linhas de ProcessoEvento.txt (ex.: 200000)'
         required: false
         default: ''
+      somente_existentes:
+        description: 'Só atualiza casos que JÁ existem no banco; não cria nenhum evento novo (digite sim; vazio = comportamento normal)'
+        required: false
+        default: ''
+      piso_criticidade:
+        description: 'Menor criticidade aceita (vazio = padrão MEDIA; ROTINA = todos os níveis, use junto com somente_existentes para atualizar todos os casos que já estão no banco)'
+        required: false
+        default: ''
 
 jobs:
   coletar:
@@ -79,5 +87,11 @@ jobs:
           fi
           if [ -n "${{ github.event.inputs.max_linhas_evento }}" ]; then
             ARGS="$ARGS --max-linhas-evento ${{ github.event.inputs.max_linhas_evento }}"
+          fi
+          if [ "${{ github.event.inputs.somente_existentes }}" = "sim" ]; then
+            ARGS="$ARGS --somente-existentes"
+          fi
+          if [ -n "${{ github.event.inputs.piso_criticidade }}" ]; then
+            ARGS="$ARGS --piso-criticidade ${{ github.event.inputs.piso_criticidade }}"
           fi
           python main.py $ARGS
