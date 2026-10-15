@@ -228,12 +228,27 @@ def conferir_cabecalhos(diretorio: str, avisos: Optional[list] = None) -> None:
             avisos.append(f"{arq}: nomes de coluna diferentes do esperado ({cab} vs {esperadas})")
 
 
+def _datas_do_bloco(serie: pd.Series) -> pd.Series:
+    """DTEvento -> datetime (NaT quando não interpretável). Aceita AAAA-MM-DD[...] e DD/MM/AAAA."""
+    s = serie.astype("string").str.strip()
+    iso = pd.to_datetime(s.str.slice(0, 10), format="%Y-%m-%d", errors="coerce")
+    br = pd.to_datetime(s.str.slice(0, 10), format="%d/%m/%Y", errors="coerce")
+    return iso.fillna(br)
+
+
 def carregar_recorte_m9a_em_blocos(diretorio_microdados: str, tamanho_bloco: int = 500_000,
-                                   max_linhas_evento: Optional[int] = None) -> tuple:
+                                   max_linhas_evento: Optional[int] = None,
+                                   data_minima: Optional[str] = None) -> tuple:
     """Lê ProcessoEvento.txt em blocos e aplica o recorte (presença em MG + exclusão de famílias fora do
     escopo) ANTES de juntar as demais tabelas — só o que está no recorte vira DataFrame enriquecido.
     Retorna (df_recorte, estatisticas). `max_linhas_evento` = modo amostra (primeiras N linhas de eventos),
-    sem IA, para o primeiro teste pequeno. Resultado == aplicar_recorte_m9a(carregar_microdados_scm())."""
+    sem IA, para o primeiro teste pequeno. Resultado == aplicar_recorte_m9a(carregar_microdados_scm()).
+
+    `data_minima` (AAAA-MM-DD, opcional): descarta, JÁ NO BLOCO CRU e antes de qualquer junção, os eventos com
+    DTEvento anterior a essa data (ou sem data interpretável). É o que impede o coletor de gastar tempo
+    enriquecendo e gravando atos antigos que a régua de criticidade já classifica como BAIXA/ROTINA por idade
+    (janela de atualidade, ver comum/criticidade_parametros_v1.json). Nada é apagado do banco: o filtro só
+    decide o que ESTA rodada traz. Sem `data_minima` o comportamento é o de sempre."""
     avisos: list = []
     conferir_cabecalhos(diretorio_microdados, avisos)
     t = TabelasAuxiliares(diretorio_microdados)
@@ -242,7 +257,8 @@ def carregar_recorte_m9a_em_blocos(diretorio_microdados: str, tamanho_bloco: int
     colunas = COLUNAS_POR_ARQUIVO["ProcessoEvento.txt"]
     caminho = os.path.join(diretorio_microdados, "ProcessoEvento.txt")
 
-    brutos = fora_mg = fora_familia = blocos = 0
+    brutos = fora_mg = fora_familia = blocos = fora_data = 0
+    limite_data = pd.Timestamp(data_minima) if data_minima else None
     partes = []
     with pd.read_csv(caminho, sep=";", encoding="latin-1", dtype=str, header=0, names=colunas,
                      chunksize=tamanho_bloco) as leitor:
@@ -253,6 +269,10 @@ def carregar_recorte_m9a_em_blocos(diretorio_microdados: str, tamanho_bloco: int
                 bloco = bloco.iloc[: max_linhas_evento - brutos]
             blocos += 1
             brutos += len(bloco)
+            if limite_data is not None:
+                recente = (_datas_do_bloco(bloco["DTEvento"]) >= limite_data).fillna(False).astype(bool).to_numpy()  # NaT -> False
+                fora_data += int((~recente).sum())
+                bloco = bloco[recente]
             em_mg = bloco["DSProcesso"].isin(mg)
             fora_mg += int((~em_mg).sum())
             bloco = bloco[em_mg]
@@ -266,7 +286,7 @@ def carregar_recorte_m9a_em_blocos(diretorio_microdados: str, tamanho_bloco: int
         df = pd.concat(partes, ignore_index=True)
     else:
         df = _enriquecer(pd.DataFrame(columns=colunas), t)
-    est = {"brutos": brutos, "fora_de_mg": fora_mg, "fora_por_familia": fora_familia, "dentro_recorte": len(df),
+    est = {"brutos": brutos, "fora_por_data": fora_data, "data_minima": data_minima, "fora_de_mg": fora_mg, "fora_por_familia": fora_familia, "dentro_recorte": len(df),
            "blocos_lidos": blocos, "tamanho_bloco": tamanho_bloco, "amostra": max_linhas_evento is not None,
            "max_linhas_evento": max_linhas_evento, "avisos_cabecalho": avisos}
     return df, est

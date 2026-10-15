@@ -39,6 +39,11 @@ import signals
 import scoring
 import checklist_editorial
 import db_writer
+import criticidade as crit_mod
+import criticidade_db
+import criticidade_caso
+import recalcular_criticidade
+from datetime import date
 
 
 def gerar_id_evento(chave_caso: str) -> str:
@@ -46,7 +51,7 @@ def gerar_id_evento(chave_caso: str) -> str:
 
 
 def processar_caso(sb, execucao_id: str, atos: list, empresa_id=None, fonte_id=None,
-                    universo_atos: Optional[list] = None) -> dict:
+                    universo_atos: Optional[list] = None, crit=None) -> dict:
     t0 = time.monotonic()
     primeiro = atos[0]
     contagem_municipios = len({a.municipio for a in atos if a.municipio})
@@ -168,6 +173,12 @@ def processar_caso(sb, execucao_id: str, atos: list, empresa_id=None, fonte_id=N
         piso_aplicado=memoria["piso_aplicado"],
         teto_aplicado=memoria["teto_aplicado"],
     )
+    # Régua de criticidade CRIT-V1.0: NOVA versão de score (a linha legada acima NÃO é apagada; só deixa de
+    # ser a vigente). A prioridade A-D passa a ser derivada da criticidade.
+    crit_gravacao = None
+    if crit is not None:
+        crit_gravacao = criticidade_db.gravar_criticidade(sb, event_id, crit, empresa_id=empresa_id)
+        prioridade = crit.prioridade or prioridade
 
     # Pergunta 11 do checklist ('histórico relevante') — achado/correção de
     # 28/09/2026: busca em DUAS camadas, não só na tabela `events` (que só
@@ -211,6 +222,7 @@ def processar_caso(sb, execucao_id: str, atos: list, empresa_id=None, fonte_id=N
 
     return {"id_evento": id_evento, "processos": processos_envolvidos, "score": score,
             "faixa": faixa, "criado": criado, "grau_completude": grau,
+            "criticidade": crit.nivel if crit is not None else None, "criticidade_gravacao": crit_gravacao,
             "checklist_respostas_finais": respostas_finais}
 
 
@@ -243,12 +255,31 @@ def _limpo(v):
 
 def run(caminho_microdados: str, ambiente: str = "piloto", limite_casos: int = None,
         max_linhas_evento: int = None, tamanho_bloco: int = 500_000, registro_download: dict = None,
-        sb=None, env=None, empresa_id: str = None, carteira_id: str = None):
+        sb=None, env=None, empresa_id: str = None, carteira_id: str = None,
+        janela_dias: Optional[int] = None, piso_criticidade: Optional[str] = "PADRAO", hoje: Optional[date] = None,
+        parametros: Optional[dict] = None, recalcular_pendentes: bool = True):
+    """janela_dias: None = parâmetro versionado (m9a.janela_leitura_dias); 0 = sem filtro de data.
+    piso_criticidade: 'PADRAO' = piso_selecao dos parâmetros (MEDIA); um nível ('ROTINA', 'BAIXA'...) = aceita esse
+    nível ou acima; None = não aplica régua nenhuma (comportamento legado, sem gravar CRIT).
+    recalcular_pendentes: ao final, reclassifica deterministicamente (mesma régua, sem IA) os M9A provisórios/pendentes
+    de evidência cujo tipo oficial/evidência estruturada já entrou; os que passam migram sozinhos para SELECIONAVEL_AGORA."""
+    par = parametros or crit_mod.carregar_parametros()
+    referencia = hoje or date.today()
+    aplica_regua = piso_criticidade is not None
+    if piso_criticidade == "PADRAO":
+        niveis_aceitos = set(par["piso_selecao"])
+    elif piso_criticidade:
+        niveis_aceitos = set(par["niveis"][par["niveis"].index(piso_criticidade):])
+    else:
+        niveis_aceitos = set(par["niveis"])
     etapas = diagnostico.Etapas("M9A")
     contador = pre_ia.ContadorPreIa()
     resumo = {"brutos": 0, "dentro_recorte": 0, "casos_consolidados": 0,
               "novos": 0, "atualizados": 0, "erros": 0,
-              "chamadas_ia": 0, "tokens_ia": 0, "custo_estimado_reais": 0.0}
+              "chamadas_ia": 0, "tokens_ia": 0, "custo_estimado_reais": 0.0,
+              "versao_regra_criticidade": par["versao_regra"] if aplica_regua else None,
+              "versao_parametros_criticidade": par["versao_parametros"] if aplica_regua else None,
+              "criticidade_dos_casos": {}, "dispensados_por_criticidade": {}}
     resultados = []
     execucao_id = None
 
@@ -288,11 +319,13 @@ def run(caminho_microdados: str, ambiente: str = "piloto", limite_casos: int = N
                 print(f"[M9A] aviso: log_busca do download não gravado ({e})")
 
         with etapas.etapa("leitura_em_blocos_e_recorte"):
+            data_minima = criticidade_caso.janela_data_minima(par, referencia, janela_dias) if aplica_regua else None
             df_recorte, est = ingestao_scm.carregar_recorte_m9a_em_blocos(
-                caminho_microdados, tamanho_bloco=tamanho_bloco, max_linhas_evento=max_linhas_evento)
+                caminho_microdados, tamanho_bloco=tamanho_bloco, max_linhas_evento=max_linhas_evento,
+                data_minima=data_minima)
             resumo["brutos"], resumo["dentro_recorte"] = est["brutos"], est["dentro_recorte"]
             resumo["ingestao"] = est
-            print(f"[M9A] eventos lidos={est['brutos']} fora de MG={est['fora_de_mg']} "
+            print(f"[M9A] eventos lidos={est['brutos']} fora da janela de data (>= {data_minima})={est.get('fora_por_data', 0)} fora de MG={est['fora_de_mg']} "
                   f"família fora do escopo={est['fora_por_familia']} no recorte={est['dentro_recorte']}"
                   + (" (AMOSTRA)" if est["amostra"] else ""))
 
@@ -320,20 +353,54 @@ def run(caminho_microdados: str, ambiente: str = "piloto", limite_casos: int = N
             casos = consolidacao.consolidar_atos(atos)
             resumo["casos_consolidados"] = len(casos)
             itens = list(casos.values())
+            crits = {}
+            if aplica_regua:
+                # Ordem determinística ANTES do limite: criticidade (maior primeiro) > ato mais recente >
+                # primeira chave do caso (estável). Sem isso, --limite-casos pegaria os casos na ordem do arquivo.
+                for i, a_caso in enumerate(itens):
+                    crits[i] = criticidade_caso.criticidade_do_caso(a_caso, par, referencia)
+                ordem = sorted(range(len(itens)), key=lambda i: (
+                    -(par["niveis"].index(crits[i].nivel) if crits[i].nivel in par["niveis"] else -1), -crits[i].pontuacao,
+                    (crits[i].idade_dias if crits[i].idade_dias is not None else 10 ** 9),
+                    consolidacao.chave_caso_editorial(itens[i][0])))
+                itens_ord, crits_ord = [itens[i] for i in ordem], [crits[i] for i in ordem]
+                dist, dispensados, aceitos, aceitos_crit = {}, {}, [], []
+                for a_caso, c in zip(itens_ord, crits_ord):
+                    dist[c.nivel] = dist.get(c.nivel, 0) + 1
+                    if c.nivel in niveis_aceitos:
+                        aceitos.append(a_caso)
+                        aceitos_crit.append(c)
+                    else:
+                        dispensados[c.nivel] = dispensados.get(c.nivel, 0) + 1
+                resumo["criticidade_dos_casos"], resumo["dispensados_por_criticidade"] = dist, dispensados
+                itens, crits_lista = aceitos, aceitos_crit
+                print(f"[M9A] criticidade dos casos consolidados={dist} dispensados abaixo do piso={dispensados}")
+            else:
+                crits_lista = [None] * len(itens)
             if limite_casos:
-                itens = itens[:limite_casos]
+                itens, crits_lista = itens[:limite_casos], crits_lista[:limite_casos]
 
         with etapas.etapa("processamento"):
-            for atos_do_caso in itens:
+            for atos_do_caso, crit_caso in zip(itens, crits_lista):
                 contador.registrar(_flags_caso(atos_do_caso))
                 try:
                     r = processar_caso(sb, execucao_id, atos_do_caso, empresa_id=empresa_id, fonte_id=source_id,
-                                        universo_atos=atos)
+                                        universo_atos=atos, crit=crit_caso)
                     resultados.append(r)
                     resumo["novos" if r.get("criado") else "atualizados"] += 1
                 except Exception as e:
                     resumo["erros"] += 1
                     resultados.append({"erro": str(e)})
+
+        if aplica_regua and recalcular_pendentes and sb is not None:
+            with etapas.etapa("recalculo_pendentes"):
+                try:
+                    rec = recalcular_criticidade.recalcular_pendentes(sb, par, referencia)
+                    resumo["recalculo_pendentes"] = {k: rec[k] for k in ("examinados", "gravados", "inalterados", "erros")}
+                    resumo["recalculo_pendentes"]["mudancas"] = rec.get("mudancas", [])
+                except Exception as e:  # o recálculo nunca derruba a coleta; o erro fica visível no resumo
+                    resumo["recalculo_pendentes"] = {"erro": str(e)}
+                    print(f"[M9A] recálculo de pendentes não executado: {e}")
 
         with etapas.etapa("registro_final"):
             db_writer.registrar_log_coleta(sb, execucao_id, source_id, {
@@ -365,6 +432,11 @@ if __name__ == "__main__":
     parser.add_argument("--max-linhas-evento", type=int, default=None,
                          help="modo amostra: lê só as N primeiras linhas de ProcessoEvento.txt (primeiro teste pequeno)")
     parser.add_argument("--tamanho-bloco", type=int, default=500_000)
+    parser.add_argument("--janela-dias", type=int, default=None,
+                         help="só lê eventos dos últimos N dias (padrão: parâmetro versionado, 1095; 0 = sem filtro de data)")
+    parser.add_argument("--piso-criticidade", default="PADRAO", choices=["PADRAO", "ROTINA", "BAIXA", "MEDIA", "ALTA", "CRITICO", "NENHUM"],
+                         help="PADRAO = piso_selecao dos parâmetros (MEDIA, ALTA, CRITICO); NENHUM = desliga a régua (legado)")
+    parser.add_argument("--hoje", default=None, help="data de referência AAAA-MM-DD (padrão: hoje; útil em testes)")
     parser.add_argument("--registro-download", default=None, help="JSON do baixar_scm.py (vai para o log_busca)")
     parser.add_argument("--empresa-id", default=os.environ.get("RADAR_EMPRESA_ID"), help="empresa dona desta coleta (obrigatório se a fonte existir em mais de uma)")
     parser.add_argument("--carteira-id", default=os.environ.get("RADAR_CARTEIRA_ID"), help="carteira da empresa (padrão: a única que usa a fonte)")
@@ -376,7 +448,10 @@ if __name__ == "__main__":
             reg = json.load(f)
     resultado = run(args.microdados, ambiente=args.ambiente, limite_casos=args.limite_casos,
                     max_linhas_evento=args.max_linhas_evento, tamanho_bloco=args.tamanho_bloco, registro_download=reg,
-                    empresa_id=args.empresa_id, carteira_id=args.carteira_id)
+                    empresa_id=args.empresa_id, carteira_id=args.carteira_id,
+                    janela_dias=args.janela_dias,
+                    piso_criticidade=None if args.piso_criticidade == "NENHUM" else args.piso_criticidade,
+                    hoje=date.fromisoformat(args.hoje) if args.hoje else None)
     print(f"Execução {resultado['id_execucao']}: {resultado['resumo']}")
     for r in resultado["resultados"]:
         print(" -", r)

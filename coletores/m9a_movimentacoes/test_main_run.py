@@ -27,6 +27,10 @@ def confere_regra_do_banco(teste, logs):
         teste.assertEqual(c["analisados"], soma, f"log_coleta violaria chk_analisados_soma: {c}")
 
 
+REG_OK = {"url_original": "https://dadosabertos.anm.gov.br/SCM/microdados/microdados-scm.zip",
+          "status_http": 200, "resultado": "ok", "hash": "h", "metodo_acesso": "m9a_scm_zip"}
+
+
 class TestRodadaM9A(unittest.TestCase):
     def setUp(self):
         self.o = {k: getattr(db_writer, k) for k in ("buscar_fonte", "criar_execucao", "finalizar_execucao", "registrar_log_coleta")}
@@ -49,7 +53,7 @@ class TestRodadaM9A(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             dump_sintetico(d)
             sb = SB()
-            r = m.run(d, sb=sb, env=ENV_OK, tamanho_bloco=9,
+            r = m.run(d, sb=sb, env=ENV_OK, tamanho_bloco=9, piso_criticidade=None, janela_dias=0,
                       registro_download={"url_original": "https://dadosabertos.anm.gov.br/SCM/microdados/microdados-scm.zip",
                                          "status_http": 200, "resultado": "ok", "hash": "h", "metodo_acesso": "m9a_scm_zip"})
         res = r["resumo"]
@@ -62,6 +66,58 @@ class TestRodadaM9A(unittest.TestCase):
         self.assertEqual(len(self.chamados), res["casos_consolidados"])
         self.assertEqual([e["ok"] for e in res["diagnostico_etapas"]], [True] * len(res["diagnostico_etapas"]))
         self.assertEqual(len([1 for t, _ in sb.ins if t == "log_busca"]), 1)   # registro do download
+
+    def test_regua_de_criticidade_filtra_por_data_e_piso_e_ordena_antes_do_limite(self):
+        """CRIT-V1.2 no coletor: janela de data (não lê atos velhos), piso (BAIXA/ROTINA ficam fora) e a ordem
+        criticidade > pontuação > atualidade vale ANTES de --limite-casos."""
+        from datetime import date
+        reg = {"url_original": "https://dadosabertos.anm.gov.br/SCM/microdados/microdados-scm.zip",
+               "status_http": 200, "resultado": "ok", "hash": "h", "metodo_acesso": "m9a_scm_zip"}
+        with tempfile.TemporaryDirectory() as d:
+            dump_sintetico(d)
+            sem_regua = m.run(d, sb=SB(), env=ENV_OK, tamanho_bloco=50, piso_criticidade=None, janela_dias=0, registro_download=reg)["resumo"]
+            padrao = m.run(d, sb=SB(), env=ENV_OK, tamanho_bloco=50, hoje=date(2026, 10, 14), registro_download=reg)["resumo"]
+            # referência muito no futuro: tudo cai fora da janela de leitura de 1.095 dias
+            velho = m.run(d, sb=SB(), env=ENV_OK, tamanho_bloco=50, hoje=date(2035, 1, 1), registro_download=reg)["resumo"]
+            limitado = m.run(d, sb=SB(), env=ENV_OK, tamanho_bloco=50, hoje=date(2026, 10, 14), limite_casos=3, registro_download=reg)["resumo"]
+        self.assertEqual(sem_regua["casos_consolidados"], 41)
+        self.assertEqual(padrao["casos_consolidados"], 41)
+        dispensados = sum(padrao["dispensados_por_criticidade"].values())
+        self.assertGreater(dispensados, 0)
+        self.assertTrue(set(padrao["dispensados_por_criticidade"]) <= {"BAIXA", "ROTINA", "NAO_AVALIAVEL"})
+        self.assertEqual(padrao["novos"] + padrao["atualizados"], 41 - dispensados)
+        self.assertEqual(padrao["versao_regra_criticidade"], "CRIT-V1.2")
+        self.assertEqual(velho["dentro_recorte"], 0)
+        self.assertEqual(velho["ingestao"]["fora_por_data"] + velho["ingestao"]["fora_de_mg"] + velho["ingestao"]["fora_por_familia"], velho["brutos"])
+        self.assertEqual(limitado["novos"] + limitado["atualizados"], 3)
+        # os 3 escolhidos são os 3 primeiros da ordem de criticidade (todos aceitos pelo piso)
+        self.assertEqual(len(self.chamados[-3:]), 3)
+
+    def test_recalculo_de_pendentes_roda_no_fim_da_rodada_sem_derrubar_a_coleta(self):
+        import recalcular_criticidade as rc
+        orig = rc.recalcular_pendentes
+        chamadas = []
+        try:
+            rc.recalcular_pendentes = lambda sb, par, hoje: chamadas.append(hoje) or {
+                "examinados": 4, "gravados": 1, "inalterados": 3, "erros": 0, "mudancas": [{"id_evento": "x", "criticidade": "MEDIA", "provisoria": False}]}
+            with tempfile.TemporaryDirectory() as d:
+                dump_sintetico(d)
+                r = m.run(d, sb=SB(), env=ENV_OK, tamanho_bloco=50, registro_download=REG_OK)
+            self.assertEqual(len(chamadas), 1)
+            self.assertEqual(r["resumo"]["recalculo_pendentes"]["gravados"], 1)
+            self.assertEqual(r["resumo"]["chamadas_ia"], 0)
+            rc.recalcular_pendentes = lambda sb, par, hoje: (_ for _ in ()).throw(RuntimeError("falha simulada"))
+            with tempfile.TemporaryDirectory() as d:
+                dump_sintetico(d)
+                r = m.run(d, sb=SB(), env=ENV_OK, tamanho_bloco=50, registro_download=REG_OK)
+            self.assertEqual(self.final["status"], "concluída")
+            self.assertIn("falha simulada", r["resumo"]["recalculo_pendentes"]["erro"])
+            with tempfile.TemporaryDirectory() as d:
+                dump_sintetico(d)
+                r = m.run(d, sb=SB(), env=ENV_OK, tamanho_bloco=50, registro_download=REG_OK, recalcular_pendentes=False)
+            self.assertNotIn("recalculo_pendentes", r["resumo"])
+        finally:
+            rc.recalcular_pendentes = orig
 
     def test_valores_ausentes_do_scm_nao_quebram_a_consolidacao(self):
         """Regressão da execução real de 09/10/2026: IDEvento fora do dicionário (DSEvento ausente) e
