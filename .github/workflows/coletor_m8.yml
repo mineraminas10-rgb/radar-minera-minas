@@ -24,6 +24,10 @@ on:
         description: 'Reabrir também os comunicados já processados, para preencher os campos estruturados (digite sim; vazio = não). Use junto com janela_dias 90 e max_requisicoes 450'
         required: false
         default: ''
+      somente_existentes:
+        description: 'Só atualiza comunicados que JÁ existem no banco; não cria nenhum evento novo (digite sim; vazio = comportamento normal)'
+        required: false
+        default: ''
       max_requisicoes:
         description: 'Teto de requisições HTTP da rodada (vazio = 200, cerca de 37 comunicados; para reprocessar os pendentes use 450)'
         required: false
@@ -87,5 +91,8 @@ jobs:
           fi
           if [ "${{ github.event.inputs.reverificar }}" = "sim" ]; then
             ARGS="$ARGS --reverificar"
+          fi
+          if [ "${{ github.event.inputs.somente_existentes }}" = "sim" ]; then
+            ARGS="$ARGS --somente-existentes"
           fi
           python main.py $ARGS
