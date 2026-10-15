@@ -267,6 +267,13 @@ def run(caminho_microdados: str, ambiente: str = "piloto", limite_casos: int = N
     contado em `ignorados_por_nao_existirem`. Nenhum evento é criado nesse modo."""
     par = parametros or crit_mod.carregar_parametros()
     referencia = hoje or date.today()
+    if somente_existentes:
+        # Atualizar o que já existe NÃO depende da idade nem da criticidade de hoje: sem janela de data e sem piso
+        # (a leitura é limitada aos processos dos casos existentes, então continua rápida). Valores explícitos valem.
+        if janela_dias is None:
+            janela_dias = 0
+        if piso_criticidade == "PADRAO":
+            piso_criticidade = "ROTINA"
     aplica_regua = piso_criticidade is not None
     if piso_criticidade == "PADRAO":
         niveis_aceitos = set(par["piso_selecao"])
@@ -322,9 +329,15 @@ def run(caminho_microdados: str, ambiente: str = "piloto", limite_casos: int = N
 
         with etapas.etapa("leitura_em_blocos_e_recorte"):
             data_minima = criticidade_caso.janela_data_minima(par, referencia, janela_dias) if aplica_regua else None
+            processos_permitidos = None
+            if somente_existentes:
+                processos_permitidos = db_writer.listar_processos_eventos_m9a(sb, empresa_id)
+                resumo["processos_dos_existentes"] = len(processos_permitidos)
+                print(f"[M9A] somente existentes: lendo só {len(processos_permitidos)} processo(s) dos casos já no banco "
+                      f"(janela de data: {data_minima or 'sem filtro'})")
             df_recorte, est = ingestao_scm.carregar_recorte_m9a_em_blocos(
                 caminho_microdados, tamanho_bloco=tamanho_bloco, max_linhas_evento=max_linhas_evento,
-                data_minima=data_minima)
+                data_minima=data_minima, processos_permitidos=processos_permitidos)
             resumo["brutos"], resumo["dentro_recorte"] = est["brutos"], est["dentro_recorte"]
             resumo["ingestao"] = est
             print(f"[M9A] eventos lidos={est['brutos']} fora da janela de data (>= {data_minima})={est.get('fora_por_data', 0)} fora de MG={est['fora_de_mg']} "

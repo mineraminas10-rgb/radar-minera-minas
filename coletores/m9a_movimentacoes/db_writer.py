@@ -114,6 +114,25 @@ def buscar_evento_por_id_evento(sb: Client, id_evento: str, empresa_id: str) -> 
     return r.data[0] if r.data else None
 
 
+def listar_processos_eventos_m9a(sb: Client, empresa_id: str, pagina: int = 1000) -> set:
+    """Números de processo dos casos M9A já existentes (coluna events.processo guarda 'p1; p2; ...'). Usado pelo modo
+    --somente-existentes para ler do arquivo ANM só esses processos, sem janela de data."""
+    if not empresa_id:
+        raise RuntimeError("listar_processos_eventos_m9a exige empresa_id (isolamento por empresa).")
+    procs, inicio = set(), 0
+    while True:
+        r = (sb.table("events").select("processo").eq("empresa_id", empresa_id).eq("modulo", MODULO)
+             .order("id_evento").range(inicio, inicio + pagina - 1).execute())
+        linhas = r.data or []
+        for x in linhas:
+            for pr in str(x.get("processo") or "").split(";"):
+                if pr.strip():
+                    procs.add(pr.strip())
+        if len(linhas) < pagina:
+            return procs
+        inicio += pagina
+
+
 def amostra_processos_eventos_m9a(sb: Client, empresa_id: str, ids_evento: list) -> dict:
     """{id_evento: [processos]} lidos da pontuação vigente (componentes.processos) — só para DIAGNÓSTICO do modo
     --somente-existentes (descobrir por que a chave do caso de hoje não bate com a gravada). Só leitura."""

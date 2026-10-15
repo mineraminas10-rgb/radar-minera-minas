@@ -238,7 +238,8 @@ def _datas_do_bloco(serie: pd.Series) -> pd.Series:
 
 def carregar_recorte_m9a_em_blocos(diretorio_microdados: str, tamanho_bloco: int = 500_000,
                                    max_linhas_evento: Optional[int] = None,
-                                   data_minima: Optional[str] = None) -> tuple:
+                                   data_minima: Optional[str] = None,
+                                   processos_permitidos: Optional[set] = None) -> tuple:
     """Lê ProcessoEvento.txt em blocos e aplica o recorte (presença em MG + exclusão de famílias fora do
     escopo) ANTES de juntar as demais tabelas — só o que está no recorte vira DataFrame enriquecido.
     Retorna (df_recorte, estatisticas). `max_linhas_evento` = modo amostra (primeiras N linhas de eventos),
@@ -257,7 +258,7 @@ def carregar_recorte_m9a_em_blocos(diretorio_microdados: str, tamanho_bloco: int
     colunas = COLUNAS_POR_ARQUIVO["ProcessoEvento.txt"]
     caminho = os.path.join(diretorio_microdados, "ProcessoEvento.txt")
 
-    brutos = fora_mg = fora_familia = blocos = fora_data = 0
+    brutos = fora_mg = fora_familia = blocos = fora_data = fora_processo = 0
     limite_data = pd.Timestamp(data_minima) if data_minima else None
     partes = []
     with pd.read_csv(caminho, sep=";", encoding="latin-1", dtype=str, header=0, names=colunas,
@@ -273,6 +274,11 @@ def carregar_recorte_m9a_em_blocos(diretorio_microdados: str, tamanho_bloco: int
                 recente = (_datas_do_bloco(bloco["DTEvento"]) >= limite_data).fillna(False).astype(bool).to_numpy()  # NaT -> False
                 fora_data += int((~recente).sum())
                 bloco = bloco[recente]
+            if processos_permitidos is not None:
+                # modo --somente-existentes: só os processos dos casos que já estão no banco (cortado ANTES das junções)
+                no_conjunto = bloco["DSProcesso"].isin(processos_permitidos)
+                fora_processo += int((~no_conjunto).sum())
+                bloco = bloco[no_conjunto]
             em_mg = bloco["DSProcesso"].isin(mg)
             fora_mg += int((~em_mg).sum())
             bloco = bloco[em_mg]
@@ -286,7 +292,7 @@ def carregar_recorte_m9a_em_blocos(diretorio_microdados: str, tamanho_bloco: int
         df = pd.concat(partes, ignore_index=True)
     else:
         df = _enriquecer(pd.DataFrame(columns=colunas), t)
-    est = {"brutos": brutos, "fora_por_data": fora_data, "data_minima": data_minima, "fora_de_mg": fora_mg, "fora_por_familia": fora_familia, "dentro_recorte": len(df),
+    est = {"brutos": brutos, "fora_por_data": fora_data, "data_minima": data_minima, "fora_por_processo": fora_processo, "fora_de_mg": fora_mg, "fora_por_familia": fora_familia, "dentro_recorte": len(df),
            "blocos_lidos": blocos, "tamanho_bloco": tamanho_bloco, "amostra": max_linhas_evento is not None,
            "max_linhas_evento": max_linhas_evento, "avisos_cabecalho": avisos}
     return df, est
