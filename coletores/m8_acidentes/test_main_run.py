@@ -131,6 +131,40 @@ class TestRodadaM8(unittest.TestCase):
         self.assertTrue(all(l["parametros"]["registro"]["resultado"] == "ok" for l in logs))
         self.assertEqual(out["resumo"]["pre_ia_elegiveis"], 2)
 
+    def test_teto_de_requisicoes_para_a_rodada_sem_marcar_falha(self):
+        """Regressão da rodada real: 153 comunicados viraram 'falha_extracao' só porque o teto de 200 requisições acabou."""
+        def proc(sb, execucao_id, source_id, item, empresa_id=None, acessador=None):
+            if item.protocolo == "180":
+                return {"protocolo": item.protocolo, "acao": "adiado_por_limite", "motivo": "limite:limite de 200 requisições por rodada", "criado": False}
+            return {"protocolo": item.protocolo, "acao": "processado", "faixa": "provavel", "criado": True}
+        m.processar_item = proc
+        mapa = {LISTA: Resp(body=HTML_LISTA)}
+        out, s, sb, err = self.rodar(mapa)
+        self.assertIsNone(err)
+        self.assertEqual(out["resumo"]["processados"], 1)
+        self.assertEqual(out["resumo"]["adiados_por_limite"], 1)
+        self.assertEqual(out["resumo"]["erros"], 0)                      # não conta como erro/falha
+        self.assertEqual([r["protocolo"] for r in out["resultados"]], ["179"])
+
+    def test_janela_de_dias_nao_abre_comunicado_antigo(self):
+        from datetime import date
+        abertos = []
+        def proc(sb, execucao_id, source_id, item, empresa_id=None, acessador=None):
+            abertos.append(item.protocolo)
+            return {"protocolo": item.protocolo, "acao": "processado", "faixa": "provavel", "criado": True}
+        m.processar_item = proc
+        # 179 = 01/10/2026 (dentro de 30 dias de 14/10); 180 = 02/10/2026 também; força um antigo
+        html = ("<dl>" + cartao("179", "/comunicados/179-2026", "Itabira", "01/10/2026", "11")
+                + cartao("180", "/comunicados/180-2026", "Mariana", "02/04/2026", "12") + "</dl>")
+        out, s, sb, err = self.rodar({LISTA: Resp(body=html)}, janela_dias=90, hoje=date(2026, 10, 14))
+        self.assertIsNone(err)
+        self.assertEqual(abertos, ["179"])
+        self.assertEqual(out["resumo"]["fora_da_janela"], 1)
+
+    def test_max_requisicoes_e_configuravel(self):
+        out, s, sb, err = self.rodar({LISTA: Resp(body=HTML_LISTA)}, max_requisicoes=1)
+        self.assertIsNone(err)   # com teto 1 a descoberta (1 requisição) passa; os itens não chegam a ser abertos
+
     def test_barreira_403_na_pagina_anual_para_e_registra(self):
         out, s, sb, err = self.rodar({LISTA: Resp(status=403, body="Forbidden")})
         self.assertIsNotNone(err)

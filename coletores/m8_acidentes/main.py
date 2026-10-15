@@ -34,10 +34,13 @@ import pre_ia
 import rotas
 import discovery
 import extractor
+import campos_comunicado
 import signals
 import scoring
 import checklist_editorial
 import db_writer
+import criticidade as crit_mod
+import criticidade_db
 
 from dateutil import parser as dateutil_parser
 
@@ -90,6 +93,55 @@ def resolver_protocolo(sb, item, texto: str, empresa_id: str, execucao_id=None):
     return replace(item, protocolo=protocolo, ano=ano, protocolo_origem="texto_do_comunicado")
 
 
+_PARAMETROS_CRIT = None
+
+
+def _data_do_titulo(titulo: Optional[str]) -> Optional[str]:
+    """Data da ocorrência quando o título do comunicado traz uma dd/mm/aaaa; senão None (sem data => teto BAIXA)."""
+    m = re.search(r"(\d{2}/\d{2}/\d{4})", titulo or "")
+    return m.group(1) if m else None
+
+
+def _gravar_criticidade_m8(sb, event_id: str, item, empresa_id, status: str, faixa: str,
+                           sig_gravidade=None, score_g=None, tem_evidencia: bool = True,
+                           hoje=None, motivo_falha: Optional[str] = None,
+                           data_ocorrencia: Optional[str] = None) -> Optional[str]:
+    """Régua CRIT-V1.2 (nova versão de score; o score legado SCORE-M8-V1.0 não é apagado). Falha aqui NUNCA
+    derruba a coleta: o score legado já está gravado e a criticidade pode ser recalculada depois."""
+    global _PARAMETROS_CRIT
+    try:
+        from datetime import date
+        if _PARAMETROS_CRIT is None:
+            _PARAMETROS_CRIT = crit_mod.carregar_parametros()
+        sinais = {}
+        if sig_gravidade is not None:
+            sinais = {
+                "curso_dagua": sig_gravidade.atingiu_ou_pode_atingir_curso_dagua,
+                "rejeito": sig_gravidade.rejeito_ou_produto_perigoso_ou_volume_significativo,
+                "risco_estrutural": sig_gravidade.risco_estrutural_ou_interrupcao_abastecimento,
+                "vitimas_ou_comunidade": sig_gravidade.vitimas_evacuacao_bloqueio_ou_risco_comunidade,
+                "ultrapassou_limites": sig_gravidade.ultrapassou_limites_operacao,
+            }
+        res = crit_mod.classificar_m8({
+            "status_processamento": status, "faixa_vinculo": faixa,
+            # data lida do cabeçalho do comunicado (campo estruturado) tem preferência sobre a do título
+            "data_ocorrencia": data_ocorrencia or _data_do_titulo(item.titulo_fonte) or item.data_publicada,
+            # nenhum fato grave/ambiental é confirmado em campo estruturado hoje: só palavra-chave (=> MEDIA no máximo)
+            "confirmados": {}, "sinais_textuais": sinais,
+            "score_gravidade": score_g, "tem_evidencia": tem_evidencia, "motivo_falha": motivo_falha,
+        }, _PARAMETROS_CRIT, hoje or date.today())
+        return criticidade_db.gravar_criticidade(sb, event_id, res, empresa_id=empresa_id)
+    except Exception as e:  # noqa: BLE001
+        print(f"[M8] aviso: criticidade não gravada para {item.protocolo}: {e}")
+        return None
+
+
+def _parou_por_limite(motivo: Optional[str]) -> bool:
+    """True se a leitura parou porque o teto de requisições da rodada (Acessador.max_requisicoes) acabou."""
+    m = str(motivo or "")
+    return m.startswith("limite:") or "limite:limite de" in m
+
+
 def processar_item(sb, execucao_id: str, source_id: str, item: discovery.ItemInventario,
                     empresa_id: Optional[str] = None, acessador=None) -> dict:
     """Processa um item novo/alterado do inventário. Retorna um resumo da
@@ -109,6 +161,12 @@ def processar_item(sb, execucao_id: str, source_id: str, item: discovery.ItemInv
         )
 
     id_evento = construir_id_evento(item.protocolo)
+
+    if resultado_extracao.status_processamento == "falha_extracao" and _parou_por_limite(resultado_extracao.motivo_falha):
+        # O teto de requisições da rodada acabou antes de o documento ser aberto: isto NÃO é falha de extração.
+        # Não cria evento nem registra "falha"; o item continua pendente e volta na próxima rodada.
+        return {"protocolo": item.protocolo, "acao": "adiado_por_limite", "motivo": resultado_extracao.motivo_falha,
+                "criado": False, "paginas_ocr": 0}
 
     if resultado_extracao.status_processamento == "falha_extracao":
         # Carta §16: documento não abre -> preservar alerta básico, não
@@ -133,6 +191,8 @@ def processar_item(sb, execucao_id: str, source_id: str, item: discovery.ItemInv
         # nem a procurar no texto; checklist §Regra central). Nenhuma é
         # 'confirmado'/'nao_localizado', então não precisa de evidencia_id/
         # observacao aqui.
+        _gravar_criticidade_m8(sb, event_id, item, empresa_id, "falha_extracao", "contextual", tem_evidencia=False,
+                               motivo_falha=resultado_extracao.motivo_falha)
         respostas = checklist_editorial.derivar_checklist_m8(extracao_falhou=True, faixa_vinculo="contextual")
         db_writer.gravar_checklist_editorial(sb, event_id, respostas, empresa_id=empresa_id)
         # grau_completude explícito: 'Baixa' sempre que a extração falhou —
@@ -182,6 +242,11 @@ def processar_item(sb, execucao_id: str, source_id: str, item: discovery.ItemInv
         "versao_regra_score": scoring.VERSAO_REGRA_SCORE,
         "data_ultima_verificacao": datetime.now(timezone.utc).isoformat(),
     }
+    # Campos estruturados do cabeçalho do comunicado (determinístico, sem IA). Só preenche o que foi lido e validado;
+    # a narrativa livre não vira fato confirmado.
+    campos = campos_comunicado.extrair_campos(resultado_extracao.texto)
+    detalhe_m8.update(campos_comunicado.para_detalhe(campos))
+    data_oc = campos["data_hora_ocorrencia"]
 
     # Checklist §Inventário de documentos: um `documentos` por comunicado,
     # com proveniência própria (URL, hash, páginas) — não só o hash solto
@@ -237,6 +302,7 @@ def processar_item(sb, execucao_id: str, source_id: str, item: discovery.ItemInv
         detalhe_m8["motivo_descarte"] = "; ".join(justificativa_v) or "score de vínculo abaixo de 2"
         event_id, criado = db_writer.upsert_evento(sb, id_evento, campos_evento, execucao_id, empresa_id=empresa_id)
         db_writer.upsert_m8_detalhe(sb, event_id, item.protocolo, item.ano, detalhe_m8, empresa_id=empresa_id)
+        _gravar_criticidade_m8(sb, event_id, item, empresa_id, "descartado", faixa_v, data_ocorrencia=data_oc)
         evidencia_padrao_id = _finalizar_evidencias_e_checklist(event_id)
         respostas = checklist_editorial.derivar_checklist_m8(
             extracao_falhou=False, faixa_vinculo=faixa_v,
@@ -288,6 +354,8 @@ def processar_item(sb, execucao_id: str, source_id: str, item: discovery.ItemInv
             piso_aplicado=memoria_vinculo["piso_aplicado"],
             teto_aplicado=memoria_vinculo["teto_aplicado"],
         )
+        _gravar_criticidade_m8(sb, event_id, item, empresa_id, "processado", faixa_v,
+                                        sig_gravidade=sig_gravidade, score_g=score_g, data_ocorrencia=data_oc)
         evidencia_padrao_id = _finalizar_evidencias_e_checklist(event_id)
 
         antecedentes = db_writer.buscar_antecedentes_m8(
@@ -318,6 +386,7 @@ def processar_item(sb, execucao_id: str, source_id: str, item: discovery.ItemInv
     # contextual
     event_id, criado = db_writer.upsert_evento(sb, id_evento, campos_evento, execucao_id, empresa_id=empresa_id)
     db_writer.upsert_m8_detalhe(sb, event_id, item.protocolo, item.ano, detalhe_m8, empresa_id=empresa_id)
+    _gravar_criticidade_m8(sb, event_id, item, empresa_id, "processado", faixa_v, data_ocorrencia=data_oc)
     evidencia_padrao_id = _finalizar_evidencias_e_checklist(event_id)
     respostas = checklist_editorial.derivar_checklist_m8(
         extracao_falhou=False, faixa_vinculo=faixa_v,
@@ -395,11 +464,12 @@ def contagens_log_coleta(resumo: dict, resultados: list, filtrados: int) -> dict
 
 
 def run(ambiente: str = "piloto", limite: int = None, reverificar: bool = False, sb=None,
-        sessao_http=None, env=None, empresa_id: str = None, carteira_id: str = None):
+        sessao_http=None, env=None, empresa_id: str = None, carteira_id: str = None,
+        max_requisicoes: Optional[int] = None, janela_dias: Optional[int] = None, hoje=None):
     etapas = diagnostico.Etapas("M8")
     contador = pre_ia.ContadorPreIa()
     resumo = {"brutos": 0, "novos": 0, "atualizados": 0, "identicos": 0,
-              "descartados": 0, "erros": 0, "processados": 0,
+              "descartados": 0, "erros": 0, "processados": 0, "adiados_por_limite": 0, "fora_da_janela": 0,
               # Custo/processamento — este coletor não chama IA (classificação por sinais/regex);
               # os contadores pre_ia_* dizem quantos registros SERIAM elegíveis e por que os demais foram dispensados.
               "documentos_processados": 0, "paginas_ocr_total": 0,
@@ -446,7 +516,8 @@ def run(ambiente: str = "piloto", limite: int = None, reverificar: bool = False,
             except Exception as e:
                 print(f"[M8] aviso: log_busca não gravado ({e})")
 
-        acessador = acesso.Acessador("M8", source_id=source_id, sink=sink, session=sessao_http)
+        acessador = acesso.Acessador("M8", source_id=source_id, sink=sink, session=sessao_http,
+                                     **({"max_requisicoes": max_requisicoes} if max_requisicoes else {}))
 
         with etapas.etapa("descoberta"):
             resp = acessador.get(discovery.URL_PAGINA_ANUAL, metodo_acesso="m8_descoberta")
@@ -488,6 +559,19 @@ def run(ambiente: str = "piloto", limite: int = None, reverificar: bool = False,
             for _ in conhecidos:
                 contador.registrar(pre_ia.flags_m8(extracao_falhou=False, faixa_vinculo="provavel", hash_documento=None,
                                                    hash_documento_anterior=None, ja_processado=True))
+            if janela_dias:
+                # Opcional (--janela-dias): não gasta requisições abrindo comunicados mais velhos que a janela
+                # (a régua CRIT já os deixaria abaixo de MEDIA). Item sem data legível é mantido. Nada é apagado.
+                from datetime import date, timedelta
+                corte = (hoje or date.today()) - timedelta(days=janela_dias)
+                dentro = []
+                for it in a_proc:
+                    d = crit_mod._para_data(_data_do_titulo(it.titulo_fonte) or it.data_publicada)
+                    if d is None or d >= corte:
+                        dentro.append(it)
+                resumo["fora_da_janela"] = len(a_proc) - len(dentro)
+                a_proc = dentro
+                print(f"[M8] janela de {janela_dias} dias: {resumo['fora_da_janela']} comunicados mais antigos que {corte} não serão abertos")
             itens_a_processar = a_proc[:limite] if limite else a_proc
             resumo["identicos"] = len(comparacao["identicos"]) + len(conhecidos)
 
@@ -495,6 +579,13 @@ def run(ambiente: str = "piloto", limite: int = None, reverificar: bool = False,
             for item in itens_a_processar:
                 try:
                     r = processar_item(sb, execucao_id, source_id, item, empresa_id=empresa_id, acessador=acessador)
+                    if r["acao"] == "adiado_por_limite":
+                        # sem requisições sobrando: os demais também ficariam sem abrir. Para a rodada sem criar
+                        # "falhas" falsas; o restante entra na próxima (ver --max-requisicoes).
+                        resumo["adiados_por_limite"] = 1 + sum(1 for _ in itens_a_processar[itens_a_processar.index(item) + 1:])
+                        print(f"[M8] teto de {acessador.max_requisicoes} requisições da rodada atingido; "
+                              f"{resumo['adiados_por_limite']} comunicados ficam para a próxima rodada (nenhum marcado como falha)")
+                        break
                     resultados.append(r)
                     contador.registrar(_flags_do_resultado(r))
                     if r["acao"] == "falha_extracao":
@@ -535,12 +626,17 @@ if __name__ == "__main__":
     parser.add_argument("--ambiente", default="piloto", choices=["piloto", "homologacao", "producao"])
     parser.add_argument("--limite", type=int, default=None, help="processar só os N primeiros itens novos/alterados (teste)")
     parser.add_argument("--reverificar", action="store_true", help="reabrir também os comunicados já processados")
+    parser.add_argument("--janela-dias", type=int, default=None,
+                        help="só abre comunicados dos últimos N dias (ex.: 90 = limite de MEDIA do M8); padrão: sem filtro")
+    parser.add_argument("--max-requisicoes", type=int, default=None,
+                        help="teto de requisições HTTP desta rodada (padrão 200 ≈ 37 comunicados; cada comunicado usa ~5)")
     parser.add_argument("--empresa-id", default=os.environ.get("RADAR_EMPRESA_ID"), help="empresa dona desta coleta (obrigatório se a fonte existir em mais de uma)")
     parser.add_argument("--carteira-id", default=os.environ.get("RADAR_CARTEIRA_ID"), help="carteira da empresa (padrão: a única que usa a fonte)")
     args = parser.parse_args()
 
     resultado = run(ambiente=args.ambiente, limite=args.limite, reverificar=args.reverificar,
-                    empresa_id=args.empresa_id, carteira_id=args.carteira_id)
+                    empresa_id=args.empresa_id, carteira_id=args.carteira_id,
+                    max_requisicoes=args.max_requisicoes, janela_dias=args.janela_dias)
     print(f"Execução {resultado['id_execucao']}: {resultado['resumo']}")
     for r in resultado["resultados"]:
         print(" -", r)
