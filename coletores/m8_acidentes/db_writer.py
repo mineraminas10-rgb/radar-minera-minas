@@ -20,6 +20,7 @@ from typing import Optional
 from supabase import create_client, Client
 
 MODULO = "M8_acidentes_ambientais"
+CAMPOS_DA_REVISAO_HUMANA = ("status_editorial", "revisao_humana")
 VERSAO_COLETOR = "m8-acidentes-v0.1"
 
 def _escopo():
@@ -185,6 +186,9 @@ def upsert_evento(sb: Client, id_evento: str, campos: dict, execucao_id: str,
         r = sb.table("events").insert(payload).execute()
         return r.data[0]["id"], True
 
+    # status_editorial e revisao_humana pertencem à pessoa que revisa: valem só na criação. Reprocessar um comunicado
+    # (reverificar) NUNCA reabre um evento que alguém descartou/aprovou.
+    campos = {k: v for k, v in campos.items() if k not in CAMPOS_DA_REVISAO_HUMANA}
     diffs = {}
     for campo, valor_novo in campos.items():
         valor_anterior = existente.get(campo)
@@ -203,6 +207,22 @@ def upsert_evento(sb: Client, id_evento: str, campos: dict, execucao_id: str,
                 "versao_regra": "SCORE-M8-V1.0",
             }).execute()
     return existente["id"], False
+
+
+CAMPOS_CONFIRMAVEIS_POR_REVISAO = ("atingiu_curso_agua", "vitimas", "risco_estrutura", "risco_abastecimento", "saiu_limite_operacao")
+
+
+def revisoes_confirmadas(sb: Client, event_id: str) -> dict:
+    """{campo: True} dos fatos que uma PESSOA confirmou (tabela revisoes_humanas_criticidade, decisao='confirmado').
+    É a única via para um fato entrar na régua como confirmado: o coletor nunca confirma por texto livre. Só lê as
+    decisões mais recentes por campo; 'manter_pendente' e 'fora_do_escopo' não confirmam nada."""
+    r = (sb.table("revisoes_humanas_criticidade").select("campo,decisao,created_at")
+         .eq("event_id", event_id).order("created_at").execute().data or [])
+    ultimo = {}
+    for x in r:
+        if x.get("campo") in CAMPOS_CONFIRMAVEIS_POR_REVISAO:
+            ultimo[x["campo"]] = x.get("decisao")
+    return {campo: True for campo, dec in ultimo.items() if dec == "confirmado"}
 
 
 def upsert_m8_detalhe(sb: Client, event_id: str, protocolo: str, ano: int, detalhe: dict,

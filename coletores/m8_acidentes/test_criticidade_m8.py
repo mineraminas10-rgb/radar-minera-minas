@@ -118,6 +118,73 @@ class TestCriticidadeM8(unittest.TestCase):
             extractor.extrair = orig
         self.assertEqual(r["acao"], "adiado_por_limite")
 
+    def test_fato_confirmado_por_revisao_humana_deixa_de_ser_provisorio_e_sem_revisao_continua_provisorio(self):
+        import db_writer
+        sig = SignaisGravidade(atingiu_ou_pode_atingir_curso_dagua=True)
+        orig = db_writer.revisoes_confirmadas
+        try:
+            db_writer.revisoes_confirmadas = lambda sb, event_id: {}
+            sb0 = SB()
+            m._gravar_criticidade_m8(sb0, "E9", item("Comunicado 05/10/2026"), "EMP", "processado", "confirmado",
+                                     sig_gravidade=sig, score_g=3, hoje=date(2026, 10, 14))
+            self.assertTrue(sb0.rows[0]["componentes"]["provisoria"])
+            db_writer.revisoes_confirmadas = lambda sb, event_id: {"atingiu_curso_agua": True}
+            sb1 = SB()
+            m._gravar_criticidade_m8(sb1, "E9", item("Comunicado 05/10/2026"), "EMP", "processado", "confirmado",
+                                     sig_gravidade=sig, score_g=3, hoje=date(2026, 10, 14))
+            comp = sb1.rows[0]["componentes"]
+            self.assertFalse(comp["provisoria"])
+            self.assertIn("impacto_ambiental_confirmado", comp["motivos"])
+        finally:
+            db_writer.revisoes_confirmadas = orig
+
+    def test_revisoes_confirmadas_usa_a_decisao_mais_recente_por_campo_e_ignora_campo_desconhecido(self):
+        import db_writer
+        class Q:
+            def __init__(s, l): s.l = l
+            def select(s, *a): return s
+            def eq(s, *a): return s
+            def order(s, *a): return s
+            def execute(s):
+                class R: pass
+                r = R(); r.data = s.l; return r
+        class Banco:
+            def table(s, n): return Q([
+                {"campo": "atingiu_curso_agua", "decisao": "confirmado", "created_at": "1"},
+                {"campo": "vitimas", "decisao": "confirmado", "created_at": "1"},
+                {"campo": "vitimas", "decisao": "manter_pendente", "created_at": "2"},
+                {"campo": "qualquer_coisa", "decisao": "confirmado", "created_at": "1"}])
+        self.assertEqual(db_writer.revisoes_confirmadas(Banco(), "E"), {"atingiu_curso_agua": True})
+
+    def test_reprocessar_nao_reabre_evento_descartado_nem_apaga_revisao_humana(self):
+        import db_writer
+        class Q:
+            def __init__(s, b, n): s.b, s.n, s.f, s.op, s.p = b, n, {}, "select", None
+            def select(s, *a): return s
+            def eq(s, k, v): s.f[k] = v; return s
+            def limit(s, *a): return s
+            def update(s, p): s.op, s.p = "update", p; return s
+            def insert(s, p): s.op, s.p = "insert", p; return s
+            def execute(s):
+                class R: data = []
+                r = R()
+                if s.n == "events" and s.op == "select": r.data = [dict(s.b.ev)]
+                if s.n == "events" and s.op == "update": s.b.ev.update(s.p)
+                if s.n == "auditoria_correcoes": s.b.audit.append(s.p)
+                return r
+        class B:
+            ev = {"id": "E1", "id_evento": "semad-m8-160", "status_editorial": "descartado", "revisao_humana": "Revisado", "titulo_fato": "antigo"}
+            audit = []
+            def table(s, n): return Q(s, n)
+        b = B()
+        eid, criado = db_writer.upsert_evento(b, "semad-m8-160", {"titulo_fato": "novo", "status_editorial": "em_apuracao",
+                                                                   "revisao_humana": "Pendente"}, "X", empresa_id="EMP")
+        self.assertFalse(criado)
+        self.assertEqual(b.ev["status_editorial"], "descartado")
+        self.assertEqual(b.ev["revisao_humana"], "Revisado")
+        self.assertEqual(b.ev["titulo_fato"], "novo")
+        self.assertEqual({a["campo_alterado"] for a in b.audit}, {"titulo_fato"})
+
     def test_erro_de_gravacao_nao_derruba_a_coleta(self):
         class Quebrado:
             def table(self, n): raise RuntimeError("banco fora")

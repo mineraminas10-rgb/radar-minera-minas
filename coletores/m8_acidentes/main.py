@@ -102,6 +102,15 @@ def _data_do_titulo(titulo: Optional[str]) -> Optional[str]:
     return m.group(1) if m else None
 
 
+def _confirmados_por_revisao(sb, event_id: str) -> dict:
+    """Fatos confirmados por revisão humana. Tabela ausente/erro => nada confirmado (nunca derruba a coleta)."""
+    try:
+        return db_writer.revisoes_confirmadas(sb, event_id)
+    except Exception as e:  # noqa: BLE001
+        print(f"[M8] aviso: revisões humanas não lidas para o evento {event_id}: {type(e).__name__}")
+        return {}
+
+
 def _gravar_criticidade_m8(sb, event_id: str, item, empresa_id, status: str, faixa: str,
                            sig_gravidade=None, score_g=None, tem_evidencia: bool = True,
                            hoje=None, motivo_falha: Optional[str] = None,
@@ -126,8 +135,9 @@ def _gravar_criticidade_m8(sb, event_id: str, item, empresa_id, status: str, fai
             "status_processamento": status, "faixa_vinculo": faixa,
             # data lida do cabeçalho do comunicado (campo estruturado) tem preferência sobre a do título
             "data_ocorrencia": data_ocorrencia or _data_do_titulo(item.titulo_fonte) or item.data_publicada,
-            # nenhum fato grave/ambiental é confirmado em campo estruturado hoje: só palavra-chave (=> MEDIA no máximo)
-            "confirmados": {}, "sinais_textuais": sinais,
+            # Fato grave/ambiental só vale como confirmado se uma PESSOA o confirmou (revisoes_humanas_criticidade);
+            # o texto livre do comunicado nunca confirma (só palavra-chave => MEDIA provisória no máximo)
+            "confirmados": _confirmados_por_revisao(sb, event_id), "sinais_textuais": sinais,
             "score_gravidade": score_g, "tem_evidencia": tem_evidencia, "motivo_falha": motivo_falha,
         }, _PARAMETROS_CRIT, hoje or date.today())
         return criticidade_db.gravar_criticidade(sb, event_id, res, empresa_id=empresa_id)
