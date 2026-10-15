@@ -20,6 +20,10 @@ on:
         description: 'Só abre comunicados dos últimos N dias (para reprocessar os pendentes use 90; vazio = sem filtro)'
         required: false
         default: ''
+      reverificar:
+        description: 'Reabrir também os comunicados já processados, para preencher os campos estruturados (digite sim; vazio = não). Use junto com janela_dias 90 e max_requisicoes 450'
+        required: false
+        default: ''
       max_requisicoes:
         description: 'Teto de requisições HTTP da rodada (vazio = 200, cerca de 37 comunicados; para reprocessar os pendentes use 450)'
         required: false
@@ -80,5 +84,8 @@ jobs:
           fi
           if [ -n "${{ github.event.inputs.janela_dias }}" ]; then
             ARGS="$ARGS --janela-dias ${{ github.event.inputs.janela_dias }}"
+          fi
+          if [ "${{ github.event.inputs.reverificar }}" = "sim" ]; then
+            ARGS="$ARGS --reverificar"
           fi
           python main.py $ARGS
