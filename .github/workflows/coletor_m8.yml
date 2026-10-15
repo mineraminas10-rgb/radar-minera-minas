@@ -1,0 +1,84 @@
+name: Coletor M8 - Acidentes SEMAD
+
+# Carta Operacional M8 §4: "duas verificações diárias da página anual em
+# dias úteis". Horários abaixo são 09h e 15h no horário de Brasília
+# (UTC-3) -> 12:00 e 18:00 UTC, segunda a sexta. Ajustar se a Rapha
+# preferir outro horário.
+# SEM AGENDAMENTO: só roda quando alguém clica em "Run workflow" (decisão da Rapha, 09/10/2026).
+on:
+  workflow_dispatch:
+    inputs:
+      ambiente:
+        description: 'Ambiente (piloto | homologacao | producao)'
+        required: false
+        default: 'piloto'
+      limite:
+        description: 'Processar só os N primeiros itens novos/alterados (deixar vazio para todos)'
+        required: false
+        default: ''
+      janela_dias:
+        description: 'Só abre comunicados dos últimos N dias (para reprocessar os pendentes use 90; vazio = sem filtro)'
+        required: false
+        default: ''
+      max_requisicoes:
+        description: 'Teto de requisições HTTP da rodada (vazio = 200, cerca de 37 comunicados; para reprocessar os pendentes use 450)'
+        required: false
+        default: ''
+
+jobs:
+  coletar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # OCR (carta §5 passo 5) — precisa do binário, não só da lib Python
+      - name: Instalar tesseract-ocr
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr tesseract-ocr-por poppler-utils
+
+      - name: Instalar dependências
+        run: pip install -r coletores/m8_acidentes/requirements.txt
+
+      - name: Rodar testes (não pode divergir da carta nem da trava de identidade do evento)
+        working-directory: coletores/m8_acidentes
+        run: |
+          python -m unittest test_scoring.py -v
+          python -m unittest test_signals.py -v
+          python -m unittest test_checklist_editorial.py -v
+          python -m unittest test_identidade_evento.py -v
+          python -m unittest test_main_run.py -v
+          python -m unittest test_criticidade_m8.py -v
+          python -m unittest test_campos_comunicado.py -v
+
+      - name: Rodar testes comuns (rotas de fontes, acesso/barreiras, diagnóstico, pré-IA)
+        working-directory: coletores/comum
+        run: |
+          python -m unittest test_acesso.py test_diagnostico.py test_pre_ia.py -v
+
+      - name: Rodar coletor
+        working-directory: coletores/m8_acidentes
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          # Escopo da coleta (isolamento por empresa). Definir em Settings > Variables > Actions.
+          # Sem RADAR_EMPRESA_ID a coleta só roda se a fonte existir em UMA única empresa.
+          RADAR_EMPRESA_ID: ${{ vars.RADAR_EMPRESA_ID }}
+          RADAR_CARTEIRA_ID: ${{ vars.RADAR_CARTEIRA_ID }}
+        run: |
+          ARGS="--ambiente ${{ github.event.inputs.ambiente || 'piloto' }}"
+          if [ -n "${{ github.event.inputs.limite }}" ]; then
+            ARGS="$ARGS --limite ${{ github.event.inputs.limite }}"
+          fi
+          if [ -n "${{ github.event.inputs.max_requisicoes }}" ]; then
+            ARGS="$ARGS --max-requisicoes ${{ github.event.inputs.max_requisicoes }}"
+          fi
+          if [ -n "${{ github.event.inputs.janela_dias }}" ]; then
+            ARGS="$ARGS --janela-dias ${{ github.event.inputs.janela_dias }}"
+          fi
+          python main.py $ARGS
