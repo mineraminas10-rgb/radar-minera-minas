@@ -383,6 +383,17 @@ def run(caminho_microdados: str, ambiente: str = "piloto", limite_casos: int = N
                 existentes = db_writer.listar_ids_evento_m9a(sb, empresa_id)
                 ids_casos = [gerar_id_evento(consolidacao.chave_caso_editorial(a_caso[0])) for a_caso in itens]
                 resumo["existentes_no_banco"] = len(existentes)
+                try:    # diagnóstico: para 4 eventos antigos, mostra os atos de hoje do MESMO processo e a chave que cada um gera
+                    amostra = db_writer.amostra_processos_eventos_m9a(sb, empresa_id, sorted(existentes)[:4])
+                    for id_antigo, procs in amostra.items():
+                        for proc in procs[:1]:
+                            do_proc = [a for a in atos if a.processo == proc][:3]
+                            print(f"[M9A] diag evento antigo {id_antigo} processo={proc}: {len(do_proc)} ato(s) de hoje (até 3)")
+                            for a in do_proc:
+                                print(f"[M9A]   ato: desc={a.descricao[:60]!r} data={a.data_evento!r} empresa={a.empresa!r} "
+                                      f"subst={a.substancia!r} mun={a.municipio!r} chave_hoje={consolidacao.chave_caso_editorial(a)[:16]}")
+                except Exception as exc:    # diagnóstico nunca derruba a coleta
+                    print(f"[M9A] diag evento antigo: falhou ({type(exc).__name__}: {exc})")
                 resumo["existentes_com_id_atual"] = len(existentes & set(ids_casos))
                 print(f"[M9A] diagnóstico: empresa={empresa_id}; eventos M9A listados no banco={len(existentes)}; "
                       f"exemplos no banco={sorted(existentes)[:3]}; exemplos de id gerado={ids_casos[:3]}")

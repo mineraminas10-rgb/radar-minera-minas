@@ -114,6 +114,24 @@ def buscar_evento_por_id_evento(sb: Client, id_evento: str, empresa_id: str) -> 
     return r.data[0] if r.data else None
 
 
+def amostra_processos_eventos_m9a(sb: Client, empresa_id: str, ids_evento: list) -> dict:
+    """{id_evento: [processos]} lidos da pontuação vigente (componentes.processos) — só para DIAGNÓSTICO do modo
+    --somente-existentes (descobrir por que a chave do caso de hoje não bate com a gravada). Só leitura."""
+    if not empresa_id or not ids_evento:
+        return {}
+    ev = sb.table("events").select("id,id_evento").eq("empresa_id", empresa_id).in_("id_evento", ids_evento).execute().data or []
+    por_id = {e["id"]: e["id_evento"] for e in ev}
+    if not por_id:
+        return {}
+    sc = (sb.table("event_scores").select("event_id,componentes").eq("vigente", True)
+          .in_("event_id", list(por_id)).execute().data or [])
+    saida = {}
+    for r in sc:
+        comp = r.get("componentes") or {}
+        saida[por_id[r["event_id"]]] = list(comp.get("processos") or [])
+    return saida
+
+
 def listar_ids_evento_m9a(sb: Client, empresa_id: str, pagina: int = 1000) -> set:
     """id_evento de TODOS os casos M9A já existentes da empresa (para o modo --somente-existentes: atualizar o que já
     está no banco sem criar evento novo). Lê em páginas porque o PostgREST limita o tamanho de cada resposta."""
