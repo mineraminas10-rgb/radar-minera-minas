@@ -381,6 +381,11 @@ def run(caminho_microdados: str, ambiente: str = "piloto", limite_casos: int = N
                 crits_lista = [None] * len(itens)
             if somente_existentes:
                 existentes = db_writer.listar_ids_evento_m9a(sb, empresa_id)
+                ids_casos = [gerar_id_evento(consolidacao.chave_caso_editorial(a_caso[0])) for a_caso in itens]
+                resumo["existentes_no_banco"] = len(existentes)
+                resumo["existentes_com_id_atual"] = len(existentes & set(ids_casos))
+                print(f"[M9A] diagnóstico: empresa={empresa_id}; eventos M9A listados no banco={len(existentes)}; "
+                      f"exemplos no banco={sorted(existentes)[:3]}; exemplos de id gerado={ids_casos[:3]}")
                 manter = [i for i, a_caso in enumerate(itens)
                           if gerar_id_evento(consolidacao.chave_caso_editorial(a_caso[0])) in existentes]
                 resumo["ignorados_por_nao_existirem"] = len(itens) - len(manter)
