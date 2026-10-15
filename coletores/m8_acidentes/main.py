@@ -428,6 +428,23 @@ def carregar_processados(sb, empresa_id: str) -> set:
     return saida
 
 
+def carregar_existentes(sb, empresa_id: str) -> set:
+    """(protocolo, ano) de TODOS os comunicados M8 que já existem no banco para esta empresa, em qualquer status
+    (inclusive falha de extração). Serve ao modo --somente-existentes: atualizar o que já está lá, sem criar evento
+    novo. Como em carregar_processados, o id do arquivo na url_detalhe também vale (identificador provisório arq<id>)."""
+    if not empresa_id:
+        raise RuntimeError("carregar_existentes exige empresa_id (isolamento por empresa).")
+    r = sb.table("m8_acidentes_detalhe").select("protocolo_semad, ano, url_detalhe").eq("empresa_id", empresa_id).execute()
+    saida = set()
+    for x in (r.data or []):
+        if x.get("protocolo_semad") is not None and x.get("ano") is not None:
+            saida.add((str(x["protocolo_semad"]), x["ano"]))
+        m_id = re.search(r"view_file/(\d+)", x.get("url_detalhe") or "")
+        if m_id and x.get("ano") is not None:
+            saida.add((f"arq{m_id.group(1)}", x["ano"]))
+    return saida
+
+
 def separar_conhecidos(itens, processados: set):
     novos, conhecidos = [], []
     for it in itens:
@@ -465,11 +482,14 @@ def contagens_log_coleta(resumo: dict, resultados: list, filtrados: int) -> dict
 
 def run(ambiente: str = "piloto", limite: int = None, reverificar: bool = False, sb=None,
         sessao_http=None, env=None, empresa_id: str = None, carteira_id: str = None,
-        max_requisicoes: Optional[int] = None, janela_dias: Optional[int] = None, hoje=None):
+        max_requisicoes: Optional[int] = None, janela_dias: Optional[int] = None, hoje=None,
+        somente_existentes: bool = False):
+    """somente_existentes: só atualiza comunicados que JÁ existem no banco; comunicado novo da lista é ignorado
+    (contado em `ignorados_por_nao_existirem`) e nenhum evento é criado."""
     etapas = diagnostico.Etapas("M8")
     contador = pre_ia.ContadorPreIa()
     resumo = {"brutos": 0, "novos": 0, "atualizados": 0, "identicos": 0,
-              "descartados": 0, "erros": 0, "processados": 0, "adiados_por_limite": 0, "fora_da_janela": 0,
+              "descartados": 0, "erros": 0, "processados": 0, "adiados_por_limite": 0, "fora_da_janela": 0, "ignorados_por_nao_existirem": 0,
               # Custo/processamento — este coletor não chama IA (classificação por sinais/regex);
               # os contadores pre_ia_* dizem quantos registros SERIAM elegíveis e por que os demais foram dispensados.
               "documentos_processados": 0, "paginas_ocr_total": 0,
@@ -559,6 +579,13 @@ def run(ambiente: str = "piloto", limite: int = None, reverificar: bool = False,
             for _ in conhecidos:
                 contador.registrar(pre_ia.flags_m8(extracao_falhou=False, faixa_vinculo="provavel", hash_documento=None,
                                                    hash_documento_anterior=None, ja_processado=True))
+            if somente_existentes:
+                existentes = carregar_existentes(sb, empresa_id)
+                mantidos = [it for it in a_proc if (it.protocolo, it.ano) in existentes]
+                resumo["ignorados_por_nao_existirem"] = len(a_proc) - len(mantidos)
+                a_proc = mantidos
+                print(f"[M8] somente existentes: {len(mantidos)} comunicados já no banco serão atualizados; "
+                      f"{resumo['ignorados_por_nao_existirem']} novos ignorados (nenhum evento será criado)")
             if janela_dias:
                 # Opcional (--janela-dias): não gasta requisições abrindo comunicados mais velhos que a janela
                 # (a régua CRIT já os deixaria abaixo de MEDIA). Item sem data legível é mantido. Nada é apagado.
@@ -626,6 +653,8 @@ if __name__ == "__main__":
     parser.add_argument("--ambiente", default="piloto", choices=["piloto", "homologacao", "producao"])
     parser.add_argument("--limite", type=int, default=None, help="processar só os N primeiros itens novos/alterados (teste)")
     parser.add_argument("--reverificar", action="store_true", help="reabrir também os comunicados já processados")
+    parser.add_argument("--somente-existentes", action="store_true",
+                        help="só atualiza comunicados que já existem no banco; não cria nenhum evento novo")
     parser.add_argument("--janela-dias", type=int, default=None,
                         help="só abre comunicados dos últimos N dias (ex.: 90 = limite de MEDIA do M8); padrão: sem filtro")
     parser.add_argument("--max-requisicoes", type=int, default=None,
@@ -636,7 +665,8 @@ if __name__ == "__main__":
 
     resultado = run(ambiente=args.ambiente, limite=args.limite, reverificar=args.reverificar,
                     empresa_id=args.empresa_id, carteira_id=args.carteira_id,
-                    max_requisicoes=args.max_requisicoes, janela_dias=args.janela_dias)
+                    max_requisicoes=args.max_requisicoes, janela_dias=args.janela_dias,
+                    somente_existentes=args.somente_existentes)
     print(f"Execução {resultado['id_execucao']}: {resultado['resumo']}")
     for r in resultado["resultados"]:
         print(" -", r)

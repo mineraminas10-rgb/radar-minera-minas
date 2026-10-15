@@ -161,6 +161,32 @@ class TestRodadaM8(unittest.TestCase):
         self.assertEqual(abertos, ["179"])
         self.assertEqual(out["resumo"]["fora_da_janela"], 1)
 
+    def test_somente_existentes_ignora_comunicado_novo_e_nao_cria_evento(self):
+        abertos = []
+        def proc(sb, execucao_id, source_id, item, empresa_id=None, acessador=None):
+            abertos.append(item.protocolo)
+            return {"protocolo": item.protocolo, "acao": "processado", "faixa": "provavel", "criado": False}
+        m.processar_item = proc
+        # só o 179 já existe (com falha de extração); o 180 é novo na lista
+        sb = SB({"m8_acidentes_detalhe": [{"protocolo_semad": "179", "ano": 2026, "status_processamento": "falha_extracao",
+                                           "url_detalhe": "https://x/view_file/11", "empresa_id": "EMP"}]})
+        mapa = {LISTA: Resp(body=HTML_LISTA)}
+        out, s, sb, err = self.rodar(mapa, sb=sb, somente_existentes=True)
+        self.assertIsNone(err)
+        self.assertEqual(abertos, ["179"])
+        self.assertEqual(out["resumo"]["ignorados_por_nao_existirem"], 1)
+        self.assertEqual(out["resumo"]["novos"], 0)
+        self.assertEqual(out["resumo"]["chamadas_ia"], 0)
+
+    def test_carregar_existentes_vale_qualquer_status_e_reconhece_id_do_arquivo(self):
+        sb = SB({"m8_acidentes_detalhe": [
+            {"protocolo_semad": "210", "ano": 2026, "status_processamento": "falha_extracao", "url_detalhe": "https://x/view_file/777", "empresa_id": "A"},
+            {"protocolo_semad": "211", "ano": 2026, "status_processamento": "processado", "url_detalhe": None, "empresa_id": "A"},
+            {"protocolo_semad": "999", "ano": 2026, "status_processamento": "processado", "url_detalhe": None, "empresa_id": "B"}]})
+        self.assertEqual(m.carregar_existentes(sb, "A"), {("210", 2026), ("arq777", 2026), ("211", 2026)})
+        with self.assertRaises(RuntimeError):
+            m.carregar_existentes(sb, None)
+
     def test_max_requisicoes_e_configuravel(self):
         out, s, sb, err = self.rodar({LISTA: Resp(body=HTML_LISTA)}, max_requisicoes=1)
         self.assertIsNone(err)   # com teto 1 a descoberta (1 requisição) passa; os itens não chegam a ser abertos
