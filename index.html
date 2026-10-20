@@ -1271,7 +1271,7 @@ function fonteTexto(e){
 function passaFiltro(item){
   const e = item.event;
   const mostrarTodos = document.getElementById('mostrarTodos').checked;
-  if(!mostrarTodos && ['publicado','arquivado','descartado'].includes(e.status_editorial)) return false;
+  if(!mostrarTodos && (['publicado','arquivado','descartado'].includes(e.status_editorial) || (item.score != null && Number(item.score) === 0))) return false;
 
   const empresa = document.getElementById('fEmpresa').value;
   const municipio = document.getElementById('fMunicipio').value;
