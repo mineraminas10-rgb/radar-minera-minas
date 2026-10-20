@@ -1464,14 +1464,14 @@ function cardHTML(item){
       <div class="grow"></div>
       <span class="sub">${esc(e.empresa||'')}${e.municipio?' · '+esc(e.municipio):''}</span>
     </div>
-    <div class="titulo">${esc(e.titulo_fato || e.id_evento)}</div><div class="editorialContext" style="margin:7px 0;padding:8px 10px;background:var(--accent-weak);border-left:3px solid var(--accent);border-radius:5px;font-size:13px;line-height:1.45;">${(e.justificativa_editorial || item.justificativaScore)?'<strong>Por que importa para a pauta:</strong> '+esc(e.justificativa_editorial || item.justificativaScore):'<strong>Relevância editorial:</strong> ainda não justificada neste registro.'}</div>
+    <div class="titulo" title="${esc(e.titulo_fato || e.id_evento)}" style="max-width:68ch;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${(()=>{const bruto=String(e.titulo_fato||e.id_evento||'').trim();const pedido=/\b(?:REQ\.?\s*PESQ|REQUERIMENTO\s+(?:DE\s+)?PESQUISA)\b/i.test(bruto);const titulo=pedido?( /\bPROTOC\w*\b/i.test(bruto)?'Pedido de autorização de pesquisa protocolado':'Pedido de autorização de pesquisa'):bruto;return esc(titulo.length>68?titulo.slice(0,67).replace(/\s+\S*$/,'')+'…':titulo)})()}</div><div class="editorialSubtitulo" style="margin:3px 0 8px;font-size:13px;color:var(--muted);line-height:1.45;">${(e.justificativa_editorial || item.justificativaScore)?'<strong>Relevância para o editor:</strong> '+esc(e.justificativa_editorial || item.justificativaScore):'<strong>Relevância editorial:</strong> ainda não justificada neste registro.'}</div>
     ${(e.processo||e.tipo_evento||e.decisao||e.situacao_processual)?`<div class="sub">${[e.processo?('Processo: '+e.processo):'',e.tipo_evento?('Tipo: '+e.tipo_evento):'',e.decisao?('Decisão: '+e.decisao):'',e.situacao_processual?('Situação: '+e.situacao_processual):''].filter(Boolean).map(esc).join(' · ')}</div>`:''}
     ${e.resumo_factual?`<div class="resumo">${esc(e.resumo_factual)}</div>`:''}
 
     ${chkResumoHTML}
 
     ${e.pre_release
-      ? `<div class="prerelease"><span class="lbl">PRÉ-RELEASE · RASCUNHO JORNALÍSTICO · NÃO PUBLICADO</span><div class="sub" style="margin-bottom:6px;">Proposta de texto jornalístico do caso; o editor revisa e decide se publica.</div>${esc(e.pre_release)}</div>`
+      ? `<div class="prerelease"><span class="lbl">PRÉ-RELEASE · RASCUNHO JORNALÍSTICO · NÃO PUBLICADO</span><div class="sub" style="margin-bottom:6px;">Proposta de release do caso para revisão do editor, que decide se publica.</div>${esc(e.pre_release)}</div>`
       : `<div class="prerelease empty"><span class="lbl">PRÉ-RELEASE · RASCUNHO JORNALÍSTICO</span>Ainda não há proposta de texto jornalístico gerada para este caso.</div>`}
 
     <details>
