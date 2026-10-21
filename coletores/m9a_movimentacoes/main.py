@@ -43,6 +43,7 @@ import criticidade as crit_mod
 import criticidade_db
 import criticidade_caso
 import recalcular_criticidade
+import carteira_config
 from datetime import date
 
 
@@ -50,8 +51,38 @@ def gerar_id_evento(chave_caso: str) -> str:
     return f"anm-m9a-{chave_caso[:16]}"
 
 
+def _preclassificar_carteira(atos: list, config: dict) -> dict:
+    """Pré-score sem escrita para ordenar o lote pelo score/bandas da carteira."""
+    primeiro = atos[0]
+    municipios = len({a.municipio for a in atos if a.municipio})
+    sinais = scoring.SignaisM9A()
+    for ato in atos:
+        linha = {"processo": ato.processo, "evento_tipo": ato.texto_narrativo or ato.descricao,
+                 "descricao_tipo_evento": ato.descricao, "id_tipo_evento": ato.id_tipo_evento,
+                 "substancia": ato.substancia, "titular": ato.empresa,
+                 "municipio": ato.municipio, "data_evento": ato.data_evento, "area_ha": ato.area_ha}
+        achados = signals.extrair_signais_m9a(linha, contagem_municipios_processo=municipios)
+        for campo in sinais.__dataclass_fields__:
+            if getattr(achados, campo):
+                setattr(sinais, campo, True)
+    bruto, _, _ = scoring.score_m9a(sinais)
+    base = scoring.calcular_score_normalizado(bruto)
+    score, pesos_nao_aplicados = carteira_config.score_ponderado(base, {"score_m9a": base}, config)
+    processos = sorted({a.processo for a in atos})
+    contexto = {"processo": "; ".join(processos),
+                "titulo_fato": primeiro.texto_narrativo or primeiro.descricao,
+                "empresa": primeiro.empresa,
+                "municipio": "; ".join(sorted({a.municipio for a in atos if a.municipio})),
+                "tipo_evento": "movimentacao_scm_anm"}
+    criterio_ok, _ = carteira_config.criterios_atendidos(contexto, config)
+    prioridade = carteira_config.prioridade_por_score(score, config)
+    return {"score": score, "prioridade": prioridade, "criterio_ok": criterio_ok,
+            "componentes_disponiveis": not pesos_nao_aplicados,
+            "pesos_nao_aplicados": pesos_nao_aplicados}
+
+
 def processar_caso(sb, execucao_id: str, atos: list, empresa_id=None, fonte_id=None,
-                    universo_atos: Optional[list] = None, crit=None) -> dict:
+                    universo_atos: Optional[list] = None, crit=None, config_carteira=None) -> dict:
     t0 = time.monotonic()
     primeiro = atos[0]
     contagem_municipios = len({a.municipio for a in atos if a.municipio})
@@ -95,7 +126,31 @@ def processar_caso(sb, execucao_id: str, atos: list, empresa_id=None, fonte_id=N
     evidencias_caso = [ev for grupo in evidencias_por_ato for ev in grupo]
 
     score, faixa, justificativa = scoring.score_m9a(sig_agregado)
-    prioridade = faixa  # já é A/B/C/D
+    score_norm_base = scoring.calcular_score_normalizado(score)
+    score_carteira, pesos_nao_aplicados = carteira_config.score_ponderado(
+        score_norm_base, {"score_m9a": score_norm_base}, config_carteira)
+    if pesos_nao_aplicados:
+        print(f"[M9A] componentes ponderados não disponíveis: {pesos_nao_aplicados}; caso fica fora da fila ativa")
+    prioridade = carteira_config.prioridade_por_score(score_carteira, config_carteira)
+    processos_envolvidos = sorted({a.processo for a in atos})
+    contexto_carteira = {
+        "processo": "; ".join(processos_envolvidos),
+        "titulo_fato": primeiro.texto_narrativo or primeiro.descricao,
+        "empresa": primeiro.empresa,
+        "municipio": "; ".join(sorted({a.municipio for a in atos if a.municipio})),
+        "tipo_evento": "movimentacao_scm_anm",
+    }
+    criterio_ok, criterios_pendentes = carteira_config.criterios_atendidos(contexto_carteira, config_carteira)
+    elegivel_fila = prioridade in {"A", "B"} and criterio_ok and not pesos_nao_aplicados
+    if not criterio_ok:
+        motivo_fila = "criterio_da_carteira_nao_atendido:" + ",".join(criterios_pendentes)
+    elif prioridade not in {"A", "B"}:
+        motivo_fila = "abaixo_das_bandas_A_B_da_carteira"
+    elif pesos_nao_aplicados:
+        motivo_fila = "componentes_ponderados_indisponiveis:" + ",".join(pesos_nao_aplicados)
+    else:
+        motivo_fila = "prioridade_A_B_pelas_bandas_da_carteira"
+    prioridade_final = prioridade
 
     chave_caso = consolidacao.chave_caso_editorial(primeiro)
     id_evento = gerar_id_evento(chave_caso)
@@ -105,7 +160,6 @@ def processar_caso(sb, execucao_id: str, atos: list, empresa_id=None, fonte_id=N
     # há um valor único natural por ato aqui ainda.
     regra = db_writer.buscar_regra_evento(sb, fonte_id, "movimentacao_scm_anm") if fonte_id else None
 
-    processos_envolvidos = sorted({a.processo for a in atos})
     campos_evento = {
         "processo": "; ".join(processos_envolvidos),
         "titulo_fato": primeiro.texto_narrativo or primeiro.descricao,
@@ -162,10 +216,15 @@ def processar_caso(sb, execucao_id: str, atos: list, empresa_id=None, fonte_id=N
     memoria = scoring.montar_memoria_calculo(sig_agregado, justificativa)
     db_writer.gravar_score(
         sb, event_id, score_bruto=score, prioridade=prioridade,
-        componentes={"score_m9a": score, "faixa": faixa, "justificativa": justificativa,
-                     "processos": processos_envolvidos},
+        componentes={"score_m9a": score, "score_normalizado_carteira": round(score_carteira, 2),
+                     "prioridade_carteira": prioridade, "criterios_carteira_atendidos": criterio_ok,
+                     "criterios_carteira_pendentes": criterios_pendentes,
+                     "pesos_carteira_nao_aplicados": pesos_nao_aplicados,
+                     "faixa": faixa, "justificativa": justificativa,
+                     "processos": processos_envolvidos,
+                     "elegibilidade_fila_editorial": {"selecionavel": elegivel_fila, "motivo": motivo_fila}},
         empresa_id=empresa_id,
-        score_normalizado=scoring.calcular_score_normalizado(score),
+        score_normalizado=score_carteira,
         regra_evento_id=regra["id"] if regra else None,
         regra_evento_versao=regra["versao"] if regra else None,
         gatilhos_aplicados=memoria["gatilhos_aplicados"],
@@ -178,7 +237,13 @@ def processar_caso(sb, execucao_id: str, atos: list, empresa_id=None, fonte_id=N
     crit_gravacao = None
     if crit is not None:
         crit_gravacao = criticidade_db.gravar_criticidade(sb, event_id, crit, empresa_id=empresa_id)
-        prioridade = crit.prioridade or prioridade
+    # Registros novos C/D continuam com score, prioridade e evidências no histórico,
+    # mas não ocupam a fila ativa. Em atualizações, preserva o status decidido pelo editor.
+    if criado and not elegivel_fila:
+        db_writer.upsert_caso_editorial(sb, id_evento, {
+            "status_editorial": "arquivado",
+            "status_enriquecimento": f"Fora da fila ativa: {motivo_fila}. Score bruto M9A={score}/10; prioridade={prioridade_final}.",
+        }, execucao_id, empresa_id=empresa_id)
 
     # Pergunta 11 do checklist ('histórico relevante') — achado/correção de
     # 28/09/2026: busca em DUAS camadas, não só na tabela `events` (que só
@@ -222,6 +287,7 @@ def processar_caso(sb, execucao_id: str, atos: list, empresa_id=None, fonte_id=N
 
     return {"id_evento": id_evento, "processos": processos_envolvidos, "score": score,
             "faixa": faixa, "criado": criado, "grau_completude": grau,
+            "prioridade": prioridade_final, "selecionavel_fila": elegivel_fila, "motivo_fila": motivo_fila,
             "criticidade": crit.nivel if crit is not None else None, "criticidade_gravacao": crit_gravacao,
             "checklist_respostas_finais": respostas_finais}
 
@@ -259,8 +325,8 @@ def run(caminho_microdados: str, ambiente: str = "piloto", limite_casos: int = N
         janela_dias: Optional[int] = None, piso_criticidade: Optional[str] = "PADRAO", hoje: Optional[date] = None,
         parametros: Optional[dict] = None, recalcular_pendentes: bool = True, somente_existentes: bool = False):
     """janela_dias: None = parâmetro versionado (m9a.janela_leitura_dias); 0 = sem filtro de data.
-    piso_criticidade: 'PADRAO' = piso_selecao dos parâmetros (MEDIA); um nível ('ROTINA', 'BAIXA'...) = aceita esse
-    nível ou acima; None = não aplica régua nenhuma (comportamento legado, sem gravar CRIT).
+    piso_criticidade: PADRAO/NENHUM = calcula e registra criticidade para todos, mas deixa bandas e critérios da
+    carteira decidirem a fila. Um nível explícito ('ROTINA', 'BAIXA'...) restringe o lote a esse nível ou acima.
     recalcular_pendentes: ao final, reclassifica deterministicamente (mesma régua, sem IA) os M9A provisórios/pendentes
     de evidência cujo tipo oficial/evidência estruturada já entrou; os que passam migram sozinhos para SELECIONAVEL_AGORA.
     somente_existentes: só atualiza casos que JÁ existem no banco (mesma chave id_evento); caso novo é ignorado e
@@ -272,12 +338,11 @@ def run(caminho_microdados: str, ambiente: str = "piloto", limite_casos: int = N
         # (a leitura é limitada aos processos dos casos existentes, então continua rápida). Valores explícitos valem.
         if janela_dias is None:
             janela_dias = 0
-        if piso_criticidade == "PADRAO":
-            piso_criticidade = "ROTINA"
-    aplica_regua = piso_criticidade is not None
-    if piso_criticidade == "PADRAO":
-        niveis_aceitos = set(par["piso_selecao"])
-    elif piso_criticidade:
+    # A régua técnica continua calculada e registrada para ordenação/evidência,
+    # mas seu piso global não descarta casos antes das bandas da carteira.
+    # Só um piso explicitamente solicitado pela CLI/API pode estreitar o recorte.
+    aplica_regua = True
+    if piso_criticidade and piso_criticidade not in ("PADRAO", "NENHUM"):
         niveis_aceitos = set(par["niveis"][par["niveis"].index(piso_criticidade):])
     else:
         niveis_aceitos = set(par["niveis"])
@@ -315,7 +380,10 @@ def run(caminho_microdados: str, ambiente: str = "piloto", limite_casos: int = N
         with etapas.etapa("cadastro_de_fontes"):
             fonte = db_writer.buscar_fonte(sb, empresa_id=empresa_id, carteira_id=carteira_id)
             source_id, empresa_id, carteira_id = fonte["id"], fonte["empresa_id"], fonte["carteira_id"]
+            config_carteira = carteira_config.carregar(sb, empresa_id=empresa_id, carteira_id=carteira_id,
+                                                       source_id=source_id)
             print(f"[M9A] escopo: empresa={empresa_id} carteira={carteira_id}")
+            print(f"[M9A] regras da carteira={config_carteira['nome']!r}; bandas={config_carteira['bandas']}; pesos={len(config_carteira['pesos'])}")
             print("[M9A] rota:", rotas.descricao_da_rota("M9A"))
         with etapas.etapa("criar_execucao"):
             id_execucao = f"M9A-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
@@ -417,6 +485,18 @@ def run(caminho_microdados: str, ambiente: str = "piloto", limite_casos: int = N
                 print(f"[M9A] somente existentes: {len(manter)} casos já no banco serão atualizados; "
                       f"{resumo['ignorados_por_nao_existirem']} casos novos ignorados (nenhum evento será criado)")
             if limite_casos:
+                # Seleção de amostra limitada prioriza primeiro os casos que
+                # passam os critérios configurados e depois o score da carteira.
+                # A criticidade global deixa de ordenar a fila deste cliente.
+                pre = [_preclassificar_carteira(caso, config_carteira) for caso in itens]
+                ordem = sorted(range(len(itens)), key=lambda i: (
+                    not pre[i]["criterio_ok"],
+                    not pre[i]["componentes_disponiveis"],
+                    pre[i]["prioridade"] not in {"A", "B"},
+                    -pre[i]["score"],
+                    consolidacao.chave_caso_editorial(itens[i][0])))
+                itens = [itens[i] for i in ordem]
+                crits_lista = [crits_lista[i] for i in ordem]
                 itens, crits_lista = itens[:limite_casos], crits_lista[:limite_casos]
 
         with etapas.etapa("processamento"):
@@ -424,7 +504,7 @@ def run(caminho_microdados: str, ambiente: str = "piloto", limite_casos: int = N
                 contador.registrar(_flags_caso(atos_do_caso))
                 try:
                     r = processar_caso(sb, execucao_id, atos_do_caso, empresa_id=empresa_id, fonte_id=source_id,
-                                        universo_atos=atos, crit=crit_caso)
+                                        universo_atos=atos, crit=crit_caso, config_carteira=config_carteira)
                     resultados.append(r)
                     resumo["novos" if r.get("criado") else "atualizados"] += 1
                 except Exception as e:
@@ -474,7 +554,7 @@ if __name__ == "__main__":
     parser.add_argument("--janela-dias", type=int, default=None,
                          help="só lê eventos dos últimos N dias (padrão: parâmetro versionado, 1095; 0 = sem filtro de data)")
     parser.add_argument("--piso-criticidade", default="PADRAO", choices=["PADRAO", "ROTINA", "BAIXA", "MEDIA", "ALTA", "CRITICO", "NENHUM"],
-                         help="PADRAO = piso_selecao dos parâmetros (MEDIA, ALTA, CRITICO); NENHUM = desliga a régua (legado)")
+                         help="PADRAO/NENHUM = registra criticidade sem piso global; um nível explícito restringe o lote")
     parser.add_argument("--somente-existentes", action="store_true",
                         help="só atualiza casos que já existem no banco; não cria nenhum evento novo")
     parser.add_argument("--hoje", default=None, help="data de referência AAAA-MM-DD (padrão: hoje; útil em testes)")
@@ -499,3 +579,4 @@ if __name__ == "__main__":
         print(" -", r)
     if resultado["resumo"]["erros"] > 0:
         sys.exit(1)
+
