@@ -8,11 +8,11 @@ IMPORTANTE — leia antes de rodar contra a fonte real:
    NÃO foram validados contra a página/documento reais (sandbox sem acesso
    de rede — ver avisos nos dois arquivos). scoring.py está testado e
    correto; db_writer.py segue os padrões já usados no resto do Radar.
-2. Por segurança, TODO evento criado ou atualizado por este coletor entra
-   com revisao_humana='Pendente' e status_editorial='em_apuracao' —
-   mesmo os classificados como faixa_vinculo='confirmado'. Nada é
-   publicado automaticamente (carta §14 já exige isso; aqui é reforçado
-   no código, não só na regra).
+2. Todo evento criado ou atualizado mantém revisao_humana='Pendente'. Só
+   casos com vínculo provável/confirmado e prioridade A/B entram na fila
+   ativa. Casos C/D e contextuais ficam arquivados; vínculos descartados
+   ficam descartados, sempre com score, prioridade e evidências preservados.
+   Nada é publicado automaticamente (carta §14).
 3. Rodar primeiro em ambiente='piloto' contra uma amostra pequena e revisar
    manualmente antes de apontar para produção de verdade.
 """
@@ -41,6 +41,7 @@ import checklist_editorial
 import db_writer
 import criticidade as crit_mod
 import criticidade_db
+import carteira_config
 
 from dateutil import parser as dateutil_parser
 
@@ -152,8 +153,19 @@ def _parou_por_limite(motivo: Optional[str]) -> bool:
     return m.startswith("limite:") or "limite:limite de" in m
 
 
+def _retirar_novo_da_fila(sb, id_evento: str, event_id: str, criado: bool,
+                          status: str, motivo: str, execucao_id: str, empresa_id: str):
+    """Marca apenas evento recém-criado fora da fila; preserva decisões editoriais existentes."""
+    if not criado:
+        return
+    db_writer.upsert_evento(sb, id_evento, {
+        "status_editorial": status,
+        "status_enriquecimento": motivo,
+    }, execucao_id, empresa_id=empresa_id)
+
+
 def processar_item(sb, execucao_id: str, source_id: str, item: discovery.ItemInventario,
-                    empresa_id: Optional[str] = None, acessador=None) -> dict:
+                    empresa_id: Optional[str] = None, acessador=None, config_carteira=None) -> dict:
     """Processa um item novo/alterado do inventário. Retorna um resumo da
     ação tomada para o relatório de execução."""
     t0 = time.monotonic()
@@ -189,7 +201,7 @@ def processar_item(sb, execucao_id: str, source_id: str, item: discovery.ItemInv
             "status_enriquecimento": f"[falha de extração] {resultado_extracao.motivo_falha}",
         }, execucao_id, empresa_id=empresa_id)
         db_writer.upsert_m8_detalhe(sb, event_id, item.protocolo, item.ano, {
-            "url_lista": discovery.URL_PAGINA_ANUAL,
+            "url_lista": (config_carteira.get("url_base") or config_carteira.get("url_secundaria")),
             "url_detalhe": item.url_detalhe,
             "status_processamento": "falha_extracao",
             "motivo_descarte": resultado_extracao.motivo_falha,
@@ -240,7 +252,7 @@ def processar_item(sb, execucao_id: str, source_id: str, item: discovery.ItemInv
     }
 
     detalhe_m8 = {
-        "url_lista": discovery.URL_PAGINA_ANUAL,
+        "url_lista": (config_carteira.get("url_base") or config_carteira.get("url_secundaria")),
         "url_detalhe": item.url_detalhe,
         "hash_documento": resultado_extracao.hash_documento,
         "score_vinculo": score_v,
@@ -311,6 +323,9 @@ def processar_item(sb, execucao_id: str, source_id: str, item: discovery.ItemInv
     if faixa_v == "descartado":
         detalhe_m8["motivo_descarte"] = "; ".join(justificativa_v) or "score de vínculo abaixo de 2"
         event_id, criado = db_writer.upsert_evento(sb, id_evento, campos_evento, execucao_id, empresa_id=empresa_id)
+        _retirar_novo_da_fila(sb, id_evento, event_id, criado, "descartado",
+                              "Vínculo minerário abaixo do piso do M8; score e evidências preservados no histórico.",
+                              execucao_id, empresa_id)
         db_writer.upsert_m8_detalhe(sb, event_id, item.protocolo, item.ano, detalhe_m8, empresa_id=empresa_id)
         _gravar_criticidade_m8(sb, event_id, item, empresa_id, "descartado", faixa_v, data_ocorrencia=data_oc)
         evidencia_padrao_id = _finalizar_evidencias_e_checklist(event_id)
@@ -338,11 +353,46 @@ def processar_item(sb, execucao_id: str, source_id: str, item: discovery.ItemInv
         score_g, nivel_g = scoring.score_gravidade(sig_gravidade)
         detalhe_m8["score_gravidade"] = score_g
         detalhe_m8["nivel_gravidade"] = nivel_g
-
-        prioridade = {"alerta_imediato": "A", "pauta_apuracao": "B",
-                       "registro_acompanhamento": "C", "arquivo_contextual": "D"}[nivel_g]
+        score_norm_base = scoring.calcular_score_normalizado(score_g)
+        # A gravidade do acidente é o componente observável de dano/risco neste
+        # coletor. As demais dimensões da carteira não são inferidas a partir
+        # desse score agregado.
+        score_carteira, pesos_nao_aplicados = carteira_config.score_ponderado(
+            score_norm_base, {"score_gravidade": score_norm_base,
+                              "dano_risco": score_norm_base,
+                              "score_dano_risco": score_norm_base}, config_carteira)
+        if pesos_nao_aplicados:
+            print(f"[M8] componentes ponderados não disponíveis: {pesos_nao_aplicados}; caso fica fora da fila ativa")
+        prioridade = carteira_config.prioridade_por_score(score_carteira, config_carteira)
+        criterio_ok, criterios_pendentes = carteira_config.criterios_atendidos({
+            "titulo_fato": item.titulo_fonte,
+            "municipio": item.municipio,
+            "tipo_evento": "comunicado_acidente_ambiental",
+        }, config_carteira)
+        elegivel_fila = (faixa_v in ("provavel", "confirmado") and prioridade in {"A", "B"}
+                         and criterio_ok and not pesos_nao_aplicados)
+        if faixa_v not in ("provavel", "confirmado"):
+            motivo_fila = "vinculo_nao_suficiente"
+        elif not criterio_ok:
+            motivo_fila = "criterio_da_carteira_nao_atendido:" + ",".join(criterios_pendentes)
+        elif prioridade not in {"A", "B"}:
+            motivo_fila = "abaixo_das_bandas_A_B_da_carteira"
+        elif pesos_nao_aplicados:
+            motivo_fila = "componentes_ponderados_indisponiveis:" + ",".join(pesos_nao_aplicados)
+        else:
+            motivo_fila = "prioridade_A_B_pelas_bandas_da_carteira"
+        detalhe_m8.update({"score_normalizado_carteira": round(score_carteira, 2),
+                           "prioridade_carteira": prioridade,
+                           "criterios_carteira_atendidos": criterio_ok,
+                           "criterios_carteira_pendentes": criterios_pendentes,
+                           "pesos_carteira_nao_aplicados": pesos_nao_aplicados})
+        detalhe_m8["elegibilidade_fila_editorial"] = {"selecionavel": elegivel_fila, "motivo": motivo_fila}
 
         event_id, criado = db_writer.upsert_evento(sb, id_evento, campos_evento, execucao_id, empresa_id=empresa_id)
+        if not elegivel_fila:
+            _retirar_novo_da_fila(sb, id_evento, event_id, criado, "arquivado",
+                                  f"Fora da fila ativa: {motivo_fila}. Score de gravidade={score_g}; prioridade={prioridade}.",
+                                  execucao_id, empresa_id)
         db_writer.upsert_m8_detalhe(sb, event_id, item.protocolo, item.ano, detalhe_m8, empresa_id=empresa_id)
 
         memoria_vinculo = scoring.montar_memoria_calculo_vinculo(sig_vinculo, justificativa_v)
@@ -350,9 +400,13 @@ def processar_item(sb, execucao_id: str, source_id: str, item: discovery.ItemInv
         db_writer.gravar_score(
             sb, event_id, score_bruto=score_g, prioridade=prioridade,
             componentes={"score_vinculo": score_v, "faixa_vinculo": faixa_v,
-                         "score_gravidade": score_g, "nivel_gravidade": nivel_g},
+                         "score_gravidade": score_g, "nivel_gravidade": nivel_g,
+                         "dano_risco": round(score_norm_base, 2),
+                         "score_dano_risco": round(score_norm_base, 2),
+                         "pesos_carteira_nao_aplicados": pesos_nao_aplicados,
+                         "elegibilidade_fila_editorial": {"selecionavel": elegivel_fila, "motivo": motivo_fila}},
             empresa_id=empresa_id,
-            score_normalizado=scoring.calcular_score_normalizado(score_g),
+            score_normalizado=score_carteira,
             regra_evento_id=regra["id"] if regra else None,
             regra_evento_versao=regra["versao"] if regra else None,
             # gatilhos/redutores/piso/teto: gravidade não tem redutor/piso/teto
@@ -389,12 +443,16 @@ def processar_item(sb, execucao_id: str, source_id: str, item: discovery.ItemInv
             sb, event_id, hash_entrada=resultado_extracao.hash_documento, status="concluido",
             tempo_gasto_segundos=time.monotonic() - t0, empresa_id=empresa_id,
         )
-        return {"protocolo": item.protocolo, "acao": "processado", "faixa": faixa_v,
-                "prioridade": prioridade, "criado": criado,
+        return {"protocolo": item.protocolo, "acao": "processado" if elegivel_fila else "arquivado", "faixa": faixa_v,
+                "score_vinculo": score_v, "score_gravidade": score_g, "score_normalizado_carteira": score_carteira, "prioridade": prioridade,
+                "selecionavel_fila": elegivel_fila, "motivo_fila": motivo_fila, "criado": criado,
                 "paginas_ocr": resultado_extracao.paginas_processadas or 0}
 
     # contextual
     event_id, criado = db_writer.upsert_evento(sb, id_evento, campos_evento, execucao_id, empresa_id=empresa_id)
+    _retirar_novo_da_fila(sb, id_evento, event_id, criado, "arquivado",
+                          "Vínculo contextual (score abaixo do piso provável do M8); mantido no histórico.",
+                          execucao_id, empresa_id)
     db_writer.upsert_m8_detalhe(sb, event_id, item.protocolo, item.ano, detalhe_m8, empresa_id=empresa_id)
     _gravar_criticidade_m8(sb, event_id, item, empresa_id, "processado", faixa_v, data_ocorrencia=data_oc)
     evidencia_padrao_id = _finalizar_evidencias_e_checklist(event_id)
@@ -412,7 +470,9 @@ def processar_item(sb, execucao_id: str, source_id: str, item: discovery.ItemInv
         sb, event_id, hash_entrada=resultado_extracao.hash_documento, status="concluido",
         tempo_gasto_segundos=time.monotonic() - t0, empresa_id=empresa_id,
     )
-    return {"protocolo": item.protocolo, "acao": "contextual", "faixa": faixa_v, "criado": criado,
+    return {"protocolo": item.protocolo, "acao": "contextual", "faixa": faixa_v,
+            "score_vinculo": score_v, "selecionavel_fila": False,
+            "motivo_fila": "vinculo_contextual", "criado": criado,
             "paginas_ocr": resultado_extracao.paginas_processadas or 0}
 
 
@@ -533,7 +593,10 @@ def run(ambiente: str = "piloto", limite: int = None, reverificar: bool = False,
         with etapas.etapa("cadastro_de_fontes"):
             fonte = db_writer.buscar_fonte(sb, empresa_id=empresa_id, carteira_id=carteira_id)
             source_id, empresa_id, carteira_id = fonte["id"], fonte["empresa_id"], fonte["carteira_id"]
+            config_carteira = carteira_config.carregar(sb, empresa_id=empresa_id, carteira_id=carteira_id,
+                                                       source_id=source_id)
             print(f"[M8] escopo: empresa={empresa_id} carteira={carteira_id}")
+            print(f"[M8] regras da carteira={config_carteira['nome']!r}; bandas={config_carteira['bandas']}; pesos={len(config_carteira['pesos'])}")
             print("[M8] rota:", rotas.descricao_da_rota("M8"))
         with etapas.etapa("criar_execucao"):
             id_execucao = f"M8-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
@@ -550,7 +613,8 @@ def run(ambiente: str = "piloto", limite: int = None, reverificar: bool = False,
                                      **({"max_requisicoes": max_requisicoes} if max_requisicoes else {}))
 
         with etapas.etapa("descoberta"):
-            resp = acessador.get(discovery.URL_PAGINA_ANUAL, metodo_acesso="m8_descoberta")
+            url_lista = config_carteira.get("url_base") or config_carteira.get("url_secundaria")
+            resp = acessador.get(url_lista, metodo_acesso="m8_descoberta")
             print(f"[M8] página anual: status={resp.status} mime={resp.content_type} bytes={len(resp.corpo)} url_final={resp.url_final}")
             inventario = discovery.parse_inventario(resp.texto, base_url=resp.url_final)
             if not inventario:
@@ -615,7 +679,8 @@ def run(ambiente: str = "piloto", limite: int = None, reverificar: bool = False,
         with etapas.etapa("processamento"):
             for item in itens_a_processar:
                 try:
-                    r = processar_item(sb, execucao_id, source_id, item, empresa_id=empresa_id, acessador=acessador)
+                    r = processar_item(sb, execucao_id, source_id, item, empresa_id=empresa_id,
+                                       acessador=acessador, config_carteira=config_carteira)
                     if r["acao"] == "adiado_por_limite":
                         # sem requisições sobrando: os demais também ficariam sem abrir. Para a rodada sem criar
                         # "falhas" falsas; o restante entra na próxima (ver --max-requisicoes).
@@ -627,7 +692,7 @@ def run(ambiente: str = "piloto", limite: int = None, reverificar: bool = False,
                     contador.registrar(_flags_do_resultado(r))
                     if r["acao"] == "falha_extracao":
                         resumo["erros"] += 1
-                    elif r["acao"] == "descartado":
+                    elif r["acao"] in ("descartado", "arquivado"):
                         resumo["descartados"] += 1
                     else:
                         resumo["processados"] += 1
@@ -682,3 +747,4 @@ if __name__ == "__main__":
         print(" -", r)
     if resultado["resumo"]["erros"] > 0:
         sys.exit(1)
+
