@@ -72,6 +72,21 @@
 
   .card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:12px;}
   .cardTop{display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;}
+  .ind{display:inline-flex;flex-direction:column;gap:2px;font-size:13px;}
+  .ind .indLbl{font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);}
+  .ind-score.prov .score{color:#8a5a00;} .ind-score.sem .score{color:#b3241b;font-size:12px;}
+  .badgeProv{background:#fff4d6;color:#8a5a00;border:1px solid #f0d28a;border-radius:20px;padding:1px 7px;font-size:10px;font-weight:700;margin-left:6px;}
+  .faixa,.faixaRef{font-size:10px;margin-left:6px;color:var(--muted);} .faixa-muitoforte{color:#157a3d;font-weight:700;} .faixa-forte{color:#1e4fb8;font-weight:700;} .faixa-avaliar{color:#8a5a00;font-weight:700;} .faixa-foradaseleção{color:#b3241b;font-weight:700;}
+  .ind-prio .prio{align-self:flex-start;min-width:26px;text-align:center;padding:1px 8px;}
+  .motivoPrio{margin:6px 0 0;} .ined-sim{color:#157a3d;} .ined-nao{color:#8a5a00;}
+  .avisoPrio{font-size:10px;font-weight:600;color:#8a5a00;max-width:150px;}
+  .badgeAtualizado{background:#dcf5e3;color:#157a3d;border-radius:20px;padding:1px 7px;font-size:10px;font-weight:700;margin-left:6px;}
+  .scoreMeta{margin:6px 0 2px;}
+  .avisoFila{margin:6px 0;padding:6px 10px;border-radius:8px;font-size:12px;font-weight:600;}
+  .avisoFila.fora{background:#fbdcdb;color:#8c1c13;} .avisoFila.gatilho{background:#fff4d6;color:#8a5a00;} .avisoFila.pendente{background:#e7e9ee;color:#3a4358;}
+  .cardFora{opacity:.78;}
+  .badgePre{background:#e7e9ee;color:#3a4358;border-radius:20px;padding:1px 8px;font-size:10px;font-weight:700;margin-right:6px;} .badgePre.vazio{background:#fbe9d0;color:#8a5a00;}
+  .actions button[disabled]{opacity:.55;cursor:not-allowed;} .motivoBtn{display:block;font-size:10px;font-weight:400;}
   .badge{font-size:11px;padding:2px 8px;border-radius:20px;border:1px solid var(--border);color:var(--muted);white-space:nowrap;}
   .prio{font-weight:700;color:#fff;padding:2px 9px;border-radius:20px;font-size:12px;}
   .prio-A{background:var(--A);} .prio-B{background:var(--B);} .prio-C{background:var(--C);color:#3d2e00;} .prio-D{background:var(--D);color:#fff;}
@@ -319,7 +334,8 @@
   <section id="view-fila" class="view active">
     <div class="toolbar">
       <input type="text" id="busca" placeholder="Busca livre: título, empresa, processo, decisão, palavras-chave…">
-      <label><input type="checkbox" id="mostrarTodos"> mostrar publicados/arquivados/descartados</label>
+      <label><input type="checkbox" id="mostrarTodos"> mostrar publicados/arquivados/descartados e fora da seleção (score &lt; 40)</label>
+      <label id="iaPrimeiroLabel" hidden><input type="checkbox" id="iaPrimeiro"> analisados pela IA primeiro</label>
       <button id="btnRecarregar">↻ Atualizar</button>
     </div>
 
@@ -334,7 +350,7 @@
           <option value="rascunho">Rascunho</option><option value="pendente">Pendente</option>
           <option value="liberado_para_pre_release">Liberado p/ pré-release</option>
         </select></div>
-        <div class="filterField"><label>Prioridade</label><select id="fPrioridade"><option value="">Todas</option><option>A</option><option>B</option><option>C</option><option>D</option></select></div>
+        <div class="filterField"><label>Prioridade editorial</label><select id="fPrioridade"><option value="">Todas</option><option value="A">A — Imediata</option><option value="B">B — Alta</option><option value="C">C — Avaliar</option><option value="D">D — Baixa/fora</option><option value="PENDENTE">Pendente</option></select></div>
 
         <div class="filterField"><label>Score mínimo</label><input type="number" id="fScoreMin" min="0" max="100" step="1" placeholder="0"></div>
         <div class="filterField"><label>Score máximo</label><input type="number" id="fScoreMax" min="0" max="100" step="1" placeholder="100"></div>
@@ -349,7 +365,7 @@
         <div class="filterField"><label>Data inicial</label><input type="date" id="fDataIni"></div>
         <div class="filterField"><label>Data final</label><input type="date" id="fDataFim"></div>
         <div class="filterField"><label>Ordem</label><select id="fOrdenar" disabled>
-          <option value="entrada_desc">Entrada no sistema — mais recente primeiro</option>
+          <option value="entrada_desc">Fila editorial — atualizados, criticidade, prioridade, atualidade, score</option>
         </select></div>
       </div>
       <div class="filterActions">
@@ -470,13 +486,179 @@ function comLimiteDeTempo(promessa, ms, rotulo){
 // score_relevancia ?? score_normalizado ?? score_bruto, para não reabrir o
 // vazamento em um novo trecho de código.
 function scoreParaRanking(vig){
-  if(!vig) return null;
-  if(vig.score_relevancia != null) return vig.score_relevancia;
-  if(vig.estagio !== 'final') return null; // score_normalizado/score_bruto provisórios: não usar
-  return vig.score_normalizado ?? vig.score_bruto ?? null;
+  const d = decisaoScore(vig);
+  return d.score_decisorio ? d.score_valor : null;
+}
+
+// ============================================================================
+// DECISÃO DE SCORE DA FILA — ÚNICO ponto de verdade (entrega fila editorial, out/2026)
+// Ordem de decisão:
+//   1) score_relevancia (nota editorial humana)           -> decisório
+//   2) score com estagio = 'final'                          -> decisório
+//   3) score preliminar (qualquer outro estágio)            -> SÓ exibição/auditoria, NUNCA decide
+//   4) nenhum score                                         -> PENDENTE_DE_SCORE
+// Estrutura devolvida: score_valor, score_decisorio, score_estagio, score_versao, score_motivo
+// ============================================================================
+const SCORE_CORTE = 40;                         // decisório < 40 => fora da seleção (salvo gatilho forte)
+let EXIGE_SCORE_PARA_PUBLICAR = false;        // regra editorial: hoje quase todos os scores são preliminares; ligar só após homologação
+const NIVEIS_GATILHO_FORTE = ['CRITICO','ALTA','POTENCIAL_CRITICO_PENDENTE_EVIDENCIA','POTENCIAL_ALTA_PENDENTE_EVIDENCIA'];
+
+function decisaoScore(vig){
+  const base = { score_valor:null, score_decisorio:false, score_estagio:null, score_versao:null, score_motivo:'PENDENTE_DE_SCORE' };
+  if(!vig) return base;
+  const estagio = vig.estagio || null, versao = vig.versao_score ?? null;
+  if(vig.score_relevancia != null)
+    return { score_valor:Number(vig.score_relevancia), score_decisorio:true, score_estagio:estagio || 'editorial', score_versao:versao, score_motivo:'SCORE_RELEVANCIA_EDITORIAL' };
+  const calc = vig.score_normalizado ?? vig.score_bruto ?? null;
+  if(calc == null) return { ...base, score_estagio:estagio, score_versao:versao };
+  if(estagio === 'final')
+    return { score_valor:Number(calc), score_decisorio:true, score_estagio:'final', score_versao:versao, score_motivo:'SCORE_FINAL_HOMOLOGADO' };
+  return { score_valor:Number(calc), score_decisorio:false, score_estagio:estagio || 'preliminar', score_versao:versao, score_motivo:'SCORE_PRELIMINAR_NAO_DECISORIO' };
+}
+
+function faixaScore(valor){
+  if(valor == null) return null;
+  if(valor >= 80) return 'Muito forte';
+  if(valor >= 60) return 'Forte';
+  if(valor >= SCORE_CORTE) return 'Avaliar';
+  return 'Fora da seleção';
+}
+
+const RANK_CRITICIDADE = { CRITICO:6, POTENCIAL_CRITICO_PENDENTE_EVIDENCIA:5, ALTA:4, POTENCIAL_ALTA_PENDENTE_EVIDENCIA:3, MEDIA:2, BAIXA:1, ROTINA:0 };
+const ROTULO_CRITICIDADE = { CRITICO:'Crítico', POTENCIAL_CRITICO_PENDENTE_EVIDENCIA:'Potencial crítico', ALTA:'Alta', POTENCIAL_ALTA_PENDENTE_EVIDENCIA:'Potencial alta', MEDIA:'Média', BAIXA:'Baixa', ROTINA:'Rotina' };
+const STATUS_COM_TRAVA_EDITORIAL = ['pronto_para_publicar','publicado','arquivado','descartado']; // decisão humana já tomada: o corte automático não mexe
+
+// Situação do item na fila a partir da decisão de score + criticidade já calculada (nunca recalcula criticidade).
+function situacaoFila(decisao, criticidade, statusEditorial){
+  if(!decisao.score_decisorio){
+    return { codigo: decisao.score_valor == null ? 'PENDENTE_DE_SCORE' : 'SCORE_PROVISORIO', foraDaSelecao:false, regra:null, motivo:null };
+  }
+  if(decisao.score_valor >= SCORE_CORTE) return { codigo:'NA_SELECAO', foraDaSelecao:false, regra:null, motivo:null };
+  if(NIVEIS_GATILHO_FORTE.includes(criticidade))
+    return { codigo:'SCORE_BAIXO_COM_GATILHO_FORTE', foraDaSelecao:false, regra:'SCORE_MENOR_40', motivo:'SCORE_BAIXO_COM_GATILHO_FORTE' };
+  if(STATUS_COM_TRAVA_EDITORIAL.includes(statusEditorial))
+    return { codigo:'FORA_DA_SELECAO_MANTIDO_POR_TRAVA', foraDaSelecao:false, regra:'SCORE_MENOR_40', motivo:'TRAVA_EDITORIAL_JA_APLICADA' };
+  return { codigo:'FORA_DA_SELECAO', foraDaSelecao:true, regra:'SCORE_MENOR_40', motivo:'DESCARTADO_POR_SCORE' };
+}
+
+// Data material do caso (não só created_at): última atualização material > data do evento/ato > publicação > entrada.
+function dataMaterial(e, componentes){
+  const v = (componentes && componentes.ultima_atualizacao_material) || e.ultima_atualizacao_material || e.data_evento || e.data_publicacao || e.created_at || null;
+  const t = v ? new Date(v).getTime() : NaN;
+  return { texto: v, ts: Number.isNaN(t) ? 0 : t };
+}
+function casoAtualizado(e, componentes){
+  const u = (componentes && componentes.ultima_atualizacao_material) || e.ultima_atualizacao_material || null;
+  if(!u || !e.created_at) return false;
+  return new Date(u).getTime() > new Date(e.created_at).getTime();
+}
+function qualidadeEvidencia(e){
+  const ev = (e.evidencias||[]).reduce((n,v)=> n + (v.trecho_literal ? 2 : 1), 0);
+  return ev + (e.documentos||[]).length + (e.url_oficial ? 1 : 0);
+}
+
+// ============================================================================
+// PRIORIDADE EDITORIAL — derivada, separada de event_scores.prioridade (que é a prioridade HISTÓRICA/CRIT,
+// derivada só da criticidade e preservada intacta). Esta é a usada no card, na ordenação e no filtro.
+//   A IMEDIATA  : criticidade CRITICO; ou atualização material de impacto crítico; ou score >= 80 com gatilho relevante e evidência suficiente
+//   B ALTA      : ALTA com score >= 40; ou score >= 60 com caso elegível e atual; ou atualização material relevante
+//   C AVALIAR   : MEDIA com score >= 40; ou score 40–59; ou ALTA/CRITICO com score < 40 mantido por SCORE_BAIXO_COM_GATILHO_FORTE
+//   D BAIXA/FORA: score decisório < 40 sem gatilho forte; criticidade BAIXA/ROTINA; fora da seleção
+// Score provisório/ausente NUNCA rebaixa: só valem os critérios que não dependem de score (CRITICO => A, BAIXA/ROTINA => D,
+// atualização material); o resto fica PENDENTE.
+// Contrato opcional de dados (componentes do CRIT): atualizacao_material = { impacto: 'critico'|'relevante' },
+//   evidencia_suficiente (boolean), reforcos (lista de gatilhos). Sem esses campos, os critérios correspondentes simplesmente não disparam.
+// ============================================================================
+const JANELA_ATUALIDADE_DIAS = 90;                 // "atual" para a regra B de score 60–79 (parâmetro a confirmar)
+let agoraMs = () => Date.now();                     // sobrescrevível em teste
+const ROTULO_PRIORIDADE = { A:'IMEDIATA', B:'ALTA', C:'AVALIAR', D:'BAIXA/FORA', PENDENTE:'PENDENTE' };
+const RANK_PRIORIDADE_EDITORIAL = { A:4, B:3, C:2, PENDENTE:1, D:0 };
+const TEXTO_MOTIVO_PRIORIDADE = {
+  ATUALIZACAO_MATERIAL_CRITICA:'atualização material de impacto crítico', CRITICIDADE_CRITICO:'fato crítico ainda com urgência editorial',
+  SCORE_80_COM_GATILHO_E_EVIDENCIA:'score ≥ 80 com gatilho relevante e evidência suficiente', ATUALIZACAO_MATERIAL_RELEVANTE:'atualização material relevante',
+  FORA_DA_SELECAO:'score decisório < 40, fora da seleção', CRITICIDADE_BAIXA_OU_ROTINA:'criticidade baixa ou de rotina',
+  SCORE_BAIXO_COM_GATILHO_FORTE:'score baixo, mantido por gatilho forte', PENDENTE_DE_SCORE:'sem score: prioridade não rebaixada, aguardando score',
+  SCORE_PROVISORIO:'score provisório: não rebaixa nem eleva, aguardando score homologado', CRITICIDADE_ALTA_COM_SCORE:'criticidade alta com score ≥ 40',
+  SCORE_60_ELEGIVEL_E_ATUAL:'score ≥ 60 em caso elegível e atual', CRITICIDADE_MEDIA_COM_SCORE:'criticidade média com score ≥ 40',
+  SCORE_40_A_59_OU_SEM_ATUALIDADE:'score ≥ 40 sem urgência adicional', SCORE_DECISORIO_MENOR_40:'score decisório < 40',
+  JA_PUBLICADO_SEM_NOVIDADE:'já publicado, sem atualização material',
+};
+
+// INEDITISMO: conteúdo ainda não publicado antes. Já publicado = status 'publicado' ou componentes.publicado_antes === true
+// (ou componentes.ineditismo === false). Sem esses sinais, o caso é tratado como inédito.
+function ineditismoDe(e, comp){
+  const ja = e.status_editorial === 'publicado' || Boolean(comp && (comp.publicado_antes === true || comp.ineditismo === false));
+  return { inedito: !ja, texto: ja ? 'Já publicado' : 'Inédito' };
+}
+
+function prioridadeEditorial(item){
+  const dec = item.decisao, sit = item.situacao, crit = item.criticidade, comp = item.componentes || {};
+  const mk = (codigo, motivo, aviso) => ({ codigo, rotulo: ROTULO_PRIORIDADE[codigo], motivo, aviso: aviso || null });
+  const usaScore = dec.score_decisorio;                 // provisório/ausente não participa
+  const s = usaScore ? dec.score_valor : null;
+  const impacto = comp.atualizacao_material && comp.atualizacao_material.impacto;
+  const forte = NIVEIS_GATILHO_FORTE.includes(crit);
+  const gatilhoRelevante = forte || (Array.isArray(comp.reforcos) && comp.reforcos.length > 0);
+  const evidSuf = typeof comp.evidencia_suficiente === 'boolean' ? comp.evidencia_suficiente : item.qualidadeEvidencia >= 2;
+  const diasAtual = item.atual.material.ts ? (agoraMs() - item.atual.material.ts) / 86400000 : Infinity;
+  const atual = diasAtual <= JANELA_ATUALIDADE_DIAS;
+  const baixa = crit === 'BAIXA' || crit === 'ROTINA';
+  const scoreBaixoPreservado = sit.codigo === 'SCORE_BAIXO_COM_GATILHO_FORTE';
+
+  // Novidade = atualização material (impacto informado ou data material posterior à entrada). Perda de urgência editorial:
+  // o fato pode continuar GRAVE (criticidade intacta) e ter prioridade baixa se já foi publicado e nada de novo aconteceu.
+  const semNovidade = !impacto && !item.atual.atualizado;
+  const jaPublicadoSemNovidade = !item.ineditismo.inedito && semNovidade;
+  const complemento = (!atual && semNovidade) ? 'fato antigo' : null;
+  const mk2 = (codigo, motivo, aviso) => {
+    const r = mk(codigo, motivo, aviso);
+    const base = TEXTO_MOTIVO_PRIORIDADE[motivo] || motivo;
+    r.texto = motivo === 'JA_PUBLICADO_SEM_NOVIDADE'
+      ? [complemento, 'já publicado', 'sem atualização material recente'].filter(Boolean).join(', ')
+      : base + ((complemento && item.ineditismo.inedito) ? ' · fato antigo, mas ainda inédito' : '');
+    if(!r.aviso && complemento && item.ineditismo.inedito && ['A','B','C'].includes(codigo)) r.aviso = 'Fato antigo, mas ainda inédito';
+    return r;
+  };
+  // --- A
+  if(impacto === 'critico') return mk2('A', 'ATUALIZACAO_MATERIAL_CRITICA');
+  if(jaPublicadoSemNovidade) return mk2('D', 'JA_PUBLICADO_SEM_NOVIDADE');
+  if(crit === 'CRITICO' && !scoreBaixoPreservado) return mk2('A', 'CRITICIDADE_CRITICO');
+  if(s != null && s >= 80 && gatilhoRelevante && evidSuf) return mk2('A', 'SCORE_80_COM_GATILHO_E_EVIDENCIA');
+  // --- B por atualização material relevante
+  if(impacto === 'relevante') return mk2('B', 'ATUALIZACAO_MATERIAL_RELEVANTE');
+  // --- D
+  if(sit.codigo === 'FORA_DA_SELECAO' || sit.codigo === 'FORA_DA_SELECAO_MANTIDO_POR_TRAVA') return mk2('D', 'FORA_DA_SELECAO');
+  if(baixa) return mk2('D', 'CRITICIDADE_BAIXA_OU_ROTINA');
+  // --- gatilho forte com score baixo: nunca B, mantido para avaliar
+  if(scoreBaixoPreservado) return mk2('C', 'SCORE_BAIXO_COM_GATILHO_FORTE', 'Score baixo, mantido por gatilho forte');
+  // --- sem score decisório: só os critérios acima valem; o resto não é rebaixado
+  if(s == null) return mk2('PENDENTE', dec.score_valor == null ? 'PENDENTE_DE_SCORE' : 'SCORE_PROVISORIO');
+  // --- B
+  if(crit === 'ALTA' && s >= 40) return mk2('B', 'CRITICIDADE_ALTA_COM_SCORE');
+  if(s >= 60 && atual) return mk2('B', 'SCORE_60_ELEGIVEL_E_ATUAL');   // >= 80 sem gatilho/evidência também cai aqui (mais forte que 60–79)
+  // --- C
+  if(s >= 40) return mk2('C', crit === 'MEDIA' ? 'CRITICIDADE_MEDIA_COM_SCORE' : 'SCORE_40_A_59_OU_SEM_ATUALIDADE');
+  return mk2('D', 'SCORE_DECISORIO_MENOR_40');
+}
+
+// Motivos que impedem avançar. Usada pela interface E conferida de novo em atualizarStatus; o banco repete a regra
+// essencial (migration pendente 20261016_fila_editorial_travas.sql) — a interface só reflete.
+function bloqueiosPublicacao(item, acao){
+  const e = item.event, r = [];
+  if(!e.pre_release || !String(e.pre_release).trim()) r.push('sem pré-release');
+  if(item.situacao && item.situacao.codigo === 'FORA_DA_SELECAO') r.push('score decisório < 40 (fora da seleção)');
+  if(EXIGE_SCORE_PARA_PUBLICAR && item.decisao && item.decisao.score_valor == null) r.push('PENDENTE_DE_SCORE');
+  const pend = item.componentes && item.componentes.pendencias_bloqueantes;
+  if(Array.isArray(pend) && pend.length) r.push('pendência editorial bloqueante');
+  if(acao === 'publicado'){
+    if(e.status_editorial !== 'pronto_para_publicar') r.push('aprove antes (Pronto p/ publicar)');
+    if(e.revisao_humana === 'Pendente') r.push('revisão humana pendente');
+  }
+  return r;
 }
 
 let sb, filaData = [];
+let iaAnalisados = {};   // event_id -> data da última análise de IA concluída (só master; vazio para os demais)
 let clientesCache = [], clienteSelecionado = null;
 
 // ============================================================================
@@ -498,23 +680,22 @@ let clientesCache = [], clienteSelecionado = null;
 // ============================================================================
 const ROLES_VALIDOS = ['master', 'admin'];
 const ROTULO_ROLE = { master: 'Master', admin: 'Admin' };
-// Matriz de permissões de INTERFACE (espelha o servidor; quem barra de verdade é o banco/Edge Functions).
-// Só existem DOIS perfis:
-//   master -> tudo: todas as empresas, usuários, API, consumo, limites, auditoria.
-//   admin  -> opera o RADAR (fila, checklist, carteiras) nas empresas que o master liberou
-//             em usuario_empresas. NÃO vê usuários, API, segredos, consumo, limites nem auditoria.
-//   editorial          -> mudar status do evento e marcar checklist
-//   checklist_desmarcar-> apagar linha do checklist
-//   carteiras_editar   -> criar/editar/excluir carteiras, pesos e fontes
-//   cliente_criar      -> botão "+ Novo cliente" (só master)
-//   admin_painel       -> menu ADMIN (empresas, usuários, API, consumo, auditoria) — só master
-const PERMISSOES = {
-  master: { editorial: true, checklist_desmarcar: true, carteiras_editar: true, cliente_criar: true,  admin_painel: true  },
-  admin:  { editorial: true, checklist_desmarcar: true, carteiras_editar: true, cliente_criar: false, admin_painel: false },
+// PERMISSÕES POR PERFIL ficam NO BANCO (tabela public.perfil_permissoes). A interface só LÊ o resultado ao entrar
+// (rpc minhas_permissoes) e usa pode(acao) para mostrar/esconder botões — isto é UX; quem barra de verdade é o banco/Edge Functions.
+// Só existem DOIS perfis hoje (master e admin), mas quem define o que cada um pode é a tabela, não este arquivo.
+// Ações: editorial, checklist_desmarcar, carteiras_editar, cliente_criar, admin_painel, ia_assistida, ia_assistida_custo, todas_empresas.
+// Para mudar uma permissão: UPDATE em public.perfil_permissoes (ver supabase/migrations_pendentes/20261017_permissoes_perfil.sql).
+//
+// TRANSIÇÃO: enquanto a migration 20261017 NÃO estiver aplicada (a função minhas_permissoes não existe), a interface usa
+// esta cópia mínima só para não travar o sistema. Depois de aplicada, o banco manda e esta cópia nunca mais é usada;
+// ela pode ser apagada junto com o ramo "semBanco" de carregarPermissoes().
+const PERMISSOES_TRANSICAO_SEM_BANCO = {
+  master: { editorial: true, checklist_desmarcar: true, carteiras_editar: true, cliente_criar: true,  admin_painel: true,  ia_assistida: true,  ia_assistida_custo: true,  todas_empresas: true  },
+  admin:  { editorial: true, checklist_desmarcar: true, carteiras_editar: true, cliente_criar: false, admin_painel: false, ia_assistida: false, ia_assistida_custo: false, todas_empresas: false },
 };
 const MSG_SEM_PERMISSAO = 'Seu perfil não tem permissão para esta ação (ou o registro não pertence à sua empresa). Nada foi alterado.';
 
-let authState = { user: null, perfil: null, empresas: [] };   // preenchido só depois da validação completa (empresas = as que este usuário pode acessar)
+let authState = { user: null, perfil: null, empresas: [], permissoes: null };   // preenchido só depois da validação completa (empresas = as que este usuário pode acessar)
 let sessaoCarregadaUid = null;   // uid cuja sessão já foi (ou está sendo) processada — evita reprocessar eventos repetidos
 let seqAuth = 0;                 // invalida carregamentos de perfil que ficaram obsoletos (logout no meio)
 let saidaManual = false;         // true quando o próprio usuário clicou em "Sair"
@@ -523,10 +704,22 @@ let telaAtual = 'carregando';
 let ultimaRevalidacao = 0;
 
 function perfilAtual(){ return authState.perfil; }
-function ehMaster(){ return !!authState.perfil && authState.perfil.role === 'master'; }
+function ehMaster(){ return pode('todas_empresas'); }   // "vê todas as empresas" (permissão do banco; hoje só o master)
 function pode(acao){
-  const p = authState.perfil && PERMISSOES[authState.perfil.role];
-  return !!(p && p[acao]);
+  const p = authState.permissoes;     // vem do banco (carregarPermissoes); sem ela, nada é permitido
+  return !!(p && p[acao] === true);
+}
+// Lê do banco as permissões do usuário logado. Se a função ainda não existe (migration pendente), usa a cópia de transição.
+// Qualquer outro erro bloqueia (não libera por engano).
+async function carregarPermissoes(role){
+  try {
+    const r = await comLimiteDeTempo(sb.rpc('minhas_permissoes'), 15000, 'minhas_permissoes');
+    if (!r.error) return { permissoes: r.data || {}, origem: 'banco' };
+    const e = r.error, msg = String(e.message || '');
+    const semFuncao = e.code === 'PGRST202' || e.code === '42883' || (/minhas_permissoes/.test(msg) && /(could not find|does not exist|schema cache)/i.test(msg));
+    if (semFuncao) { console.warn('minhas_permissoes não existe no banco (migration 20261017 pendente): usando cópia de transição.'); return { permissoes: PERMISSOES_TRANSICAO_SEM_BANCO[role] || {}, origem: 'transicao' }; }
+    return { erro: e };
+  } catch (e) { return { erro: e }; }
 }
 function exigirPermissao(acao, mensagem){
   if (pode(acao)) return true;
@@ -585,7 +778,7 @@ function limparEstadoDoApp(){
   filaData = []; clientesCache = []; clienteSelecionado = null;
   carteirasCache = []; sourcesCache = []; camposCriterioCache = []; carteiraSelecionada = null;
   window.__erroFontes = '';
-  authState = { user: null, perfil: null, empresas: [] };
+  authState = { user: null, perfil: null, empresas: [], permissoes: null };
   const set = (id, html)=>{ const el = document.getElementById(id); if (el) el.innerHTML = html; };
   set('filaWrap', ''); set('carteirasList', ''); set('carteiraDetail', '');
   set('clienteSelect', '<option value="">—</option>');
@@ -813,7 +1006,19 @@ async function carregarPerfilEIniciar(user, meuSeq){
     return;
   }
 
-  authState = { user, perfil, empresas: acesso.empresas };
+  const perm = await carregarPermissoes(perfil.role);
+  if (meuSeq !== seqAuth) return;
+  if (perm.erro) {
+    sessaoCarregadaUid = null;
+    exibirBloqueio({
+      titulo: 'Não foi possível verificar suas permissões',
+      msg: 'Houve uma falha ao consultar suas permissões. Tente novamente em instantes.',
+      detalhe: 'Detalhe técnico: ' + (perm.erro.message || String(perm.erro)),
+      acoes: ['retry', 'sair'],
+    });
+    return;
+  }
+  authState = { user, perfil, empresas: acesso.empresas, permissoes: perm.permissoes };
   iniciarApp();
 }
 
@@ -857,6 +1062,13 @@ async function revalidarPerfil(user){
       const ac = await carregarEmpresasDoUsuario(user.id, data.role);
       if (ac.erro) return;
       mudou = assinaturaAcesso(data, ac.empresas) !== assinaturaAcesso(p, authState.empresas);
+    }
+    if (!mudou) {    // as permissões também vêm do banco: se o master mudou a matriz, a tela é refeita
+      const pm = await carregarPermissoes(data.role);
+      if (!pm.erro) {
+        const ass = o => JSON.stringify(Object.keys(o || {}).sort().map(k => [k, o[k]]));
+        mudou = ass(pm.permissoes) !== ass(authState.permissoes);
+      }
     }
     if (mudou) {
       sessaoCarregadaUid = null;
@@ -983,6 +1195,7 @@ function ligarListenersDoApp(){
   document.getElementById('btnRecarregar').addEventListener('click', carregarFila);
   document.getElementById('busca').addEventListener('input', renderFila);
   document.getElementById('mostrarTodos').addEventListener('change', renderFila);
+  document.getElementById('iaPrimeiro').addEventListener('change', renderFila);
 
   ['fEmpresa','fMunicipio','fStatus','fPrioridade','fScoreMin','fScoreMax','fTipoEvento','fProcesso',
    'fDecisao','fSituacao','fPalavra','fFonte','fDataIni','fDataFim','fOrdenar'].forEach(id=>{
@@ -1152,6 +1365,30 @@ async function criarCliente(){
 // ---------------------------------------------------------------------------
 // FILA DO EDITOR
 // ---------------------------------------------------------------------------
+function montarItemFila(e, vig, fontesPorId){
+  const componentes = vig?.componentes ?? null;
+  const decisao = decisaoScore(vig);
+  const criticidade = (componentes && componentes.criticidade) || null;
+  const item = {
+    event: e,
+    fonteOficial: e.fonte_id ? ((fontesPorId||{})[e.fonte_id] || null) : null,
+    decisao,
+    score: decisao.score_decisorio ? decisao.score_valor : null,   // só o decisório alimenta filtro/ordem
+    scoreProvisorio: !decisao.score_decisorio && decisao.score_valor != null,
+    criticidade,
+    situacao: situacaoFila(decisao, criticidade, e.status_editorial),
+    atual: { material: dataMaterial(e, componentes), atualizado: casoAtualizado(e, componentes) },
+    qualidadeEvidencia: qualidadeEvidencia(e),
+    prioridade: vig?.prioridade ?? null,          // HISTÓRICA/CRIT (event_scores.prioridade): preservada, só informativa
+    componentes,
+    justificativaScore: vig?.justificativa_score ?? null,
+    versaoScore: vig?.versao_score ?? null,
+  };
+  item.ineditismo = ineditismoDe(e, componentes);
+  item.prioridadeEditorial = prioridadeEditorial(item);   // derivada: card, ordenação e filtro
+  return item;
+}
+
 async function carregarFila(){
   if(!clienteSelecionado){ mostrarEscolhaDeEmpresa(); return; }
   const esc0 = escopoAtual();
@@ -1194,17 +1431,24 @@ async function carregarFila(){
 
     filaData = (allEvents || []).map(e=>{
       const vig = (e.event_scores||[]).find(s=>s.vigente) || (e.event_scores||[])[0];
-      return {
-        event: e,
-        fonteOficial: e.fonte_id ? (fontesEventoPorId[e.fonte_id] || null) : null,
-        score: scoreParaRanking(vig),
-        scoreProvisorio: Boolean(vig && !vig.score_relevancia && vig.estagio !== 'final'),
-        prioridade: vig?.prioridade ?? null,
-        componentes: vig?.componentes ?? null,
-        justificativaScore: vig?.justificativa_score ?? null,
-        versaoScore: vig?.versao_score ?? null,
-      };
+      return montarItemFila(e, vig, fontesEventoPorId);
     });
+
+    // Selo "IA analisada" (só master): leitura dos registros de chamadas concluídas; falha aqui não derruba a fila.
+    iaAnalisados = {};
+    const lblIa = document.getElementById('iaPrimeiroLabel');
+    const ehMaster = pode('admin_painel');
+    if (lblIa) lblIa.hidden = !ehMaster;
+    if (!ehMaster) { const c = document.getElementById('iaPrimeiro'); if (c) c.checked = false; }
+    if (ehMaster) {
+      try {
+        const ar = await sb.from('api_execucoes').select('event_id, data_inicio')
+          .eq('empresa_id', clienteSelecionado).eq('operacao', 'analise_editorial').eq('status', 'sucesso').not('event_id', 'is', null)
+          .order('data_inicio', { ascending: false }).limit(1000);
+        if (!ar.error) (ar.data || []).forEach(x => { if (!iaAnalisados[x.event_id]) iaAnalisados[x.event_id] = x.data_inicio; });
+      } catch (_) { /* sem selo; a fila segue normal */ }
+    }
+    if (!escopoVigente(esc0)) return;
 
     preencherOpcoesFiltros();
     setEstado('carregado');
@@ -1263,6 +1507,14 @@ function formatarEntradaSistema(valor){
   }).format(d);
 }
 
+function formatarDataCurta(valor){
+  if(!valor) return '—';
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(valor));
+  if(m) return `${m[3]}/${m[2]}/${m[1]}`;       // data pura: sem deslocar por fuso
+  const d = new Date(valor);
+  return Number.isNaN(d.getTime()) ? String(valor) : new Intl.DateTimeFormat('pt-BR').format(d);
+}
+
 function fonteTexto(e){
   const docs = e.documentos || [];
   return [e.url_oficial, ...docs.flatMap(d=>[d.orgao,d.tipo,d.url])].filter(Boolean).join(' ');
@@ -1272,6 +1524,7 @@ function passaFiltro(item){
   const e = item.event;
   const mostrarTodos = document.getElementById('mostrarTodos').checked;
   if(!mostrarTodos && ['publicado','arquivado','descartado'].includes(e.status_editorial)) return false;
+  if(!mostrarTodos && item.situacao && item.situacao.foraDaSelecao) return false;   // fora da seleção (score < 40): continua no banco e aparece em "mostrar todos"
 
   const empresa = document.getElementById('fEmpresa').value;
   const municipio = document.getElementById('fMunicipio').value;
@@ -1291,7 +1544,7 @@ function passaFiltro(item){
   if(empresa && e.empresa !== empresa) return false;
   if(municipio && e.municipio !== municipio) return false;
   if(status && e.status_editorial !== status) return false;
-  if(prioridade && item.prioridade !== prioridade) return false;
+  if(prioridade && item.prioridadeEditorial.codigo !== prioridade) return false;
 
   const score = item.score == null ? null : Number(item.score);
   if(scoreMin !== '' && (score === null || score < Number(scoreMin))) return false;
@@ -1321,11 +1574,26 @@ function passaFiltro(item){
 }
 
 function compararItens(a,b){
-  // Regra global da fila: sempre ordenar pela data de entrada no sistema (events.created_at),
-  // do registro mais recente para o mais antigo. O id garante ordem deterministica em empates.
-  const da = new Date(a.event.created_at || 0).getTime();
-  const db = new Date(b.event.created_at || 0).getTime();
-  if (db !== da) return db - da;
+  // Opcional (só master): eventos com análise de IA concluída primeiro, a análise mais recente no topo.
+  const chk = document.getElementById('iaPrimeiro');
+  if (chk && chk.checked) {
+    const ia = x => iaAnalisados[x.event.id] ? new Date(iaAnalisados[x.event.id]).getTime() : null;
+    const xa = ia(a), xb = ia(b);
+    if ((xa !== null) !== (xb !== null)) return xa !== null ? -1 : 1;
+    if (xa !== null && xb !== null && xa !== xb) return xb - xa;
+  }
+  // Ordem da fila editorial: ATUALIZADO -> prioridade editorial -> criticidade -> atualidade/materialidade -> ineditismo -> score decisório DESC
+  // -> qualidade da evidência -> id estável. Nada é média: cada critério só desempata o anterior.
+  if(a.atual.atualizado !== b.atual.atualizado) return a.atual.atualizado ? -1 : 1;
+  const rpe = x => RANK_PRIORIDADE_EDITORIAL[x.prioridadeEditorial.codigo] ?? -1;
+  if(rpe(a) !== rpe(b)) return rpe(b) - rpe(a);
+  const rc = x => RANK_CRITICIDADE[x.criticidade] ?? -1;
+  if(rc(a) !== rc(b)) return rc(b) - rc(a);
+  if(a.atual.material.ts !== b.atual.material.ts) return b.atual.material.ts - a.atual.material.ts;
+  if(a.ineditismo.inedito !== b.ineditismo.inedito) return a.ineditismo.inedito ? -1 : 1;     // inédito antes de já publicado
+  const sc = x => x.score == null ? -Infinity : x.score;      // preliminar/sem score não pontua na ordem
+  if(sc(a) !== sc(b)) return sc(b) - sc(a);
+  if(a.qualidadeEvidencia !== b.qualidadeEvidencia) return b.qualidadeEvidencia - a.qualidadeEvidencia;
   return String(b.event.id || '').localeCompare(String(a.event.id || ''));
 }
 
@@ -1333,7 +1601,8 @@ function renderFila(){
   const wrap = document.getElementById('filaWrap');
   const itens = filaData.filter(passaFiltro).sort(compararItens);
   const total = filaData.length;
-  document.getElementById('filterSummary').textContent = `${itens.length} de ${total} assunto(s)`;
+  const ocultosScore = document.getElementById('mostrarTodos').checked ? 0 : filaData.filter(i => i.situacao && i.situacao.foraDaSelecao).length;
+  document.getElementById('filterSummary').textContent = `${itens.length} de ${total} assunto(s)` + (ocultosScore ? ` · ${ocultosScore} fora da seleção (score < 40) oculto(s) — marque "mostrar" para ver` : '');
 
   if(itens.length===0){
     wrap.innerHTML = '<div class="empty">Nenhum assunto corresponde aos filtros selecionados.</div>';
@@ -1355,8 +1624,10 @@ function renderFila(){
 
 function cardHTML(item){
   const e = item.event;
-  const prio = item.prioridade || '—';
-  const prioClass = ['A','B','C','D'].includes(prio) ? 'prio-'+prio : '';
+  const pe = item.prioridadeEditorial;                                   // prioridade editorial (derivada)
+  const prio = ['A','B','C','D'].includes(pe.codigo) ? pe.codigo : '—';
+  const prioClass = prio !== '—' ? 'prio-'+prio : '';
+  const prioCrit = item.prioridade || '—';                               // histórica (CRIT) — só em detalhes
   const docs = e.documentos || [];
   const evid = e.evidencias || [];
   const chk = e.checklist_editorial || [];
@@ -1454,29 +1725,59 @@ function cardHTML(item){
     return `<li><label><input type="checkbox" class="checkEditorial" data-event-id="${e.id}" data-pergunta="${num}" ${ok?'checked':''} ${podeOperar?'':'disabled title="Somente leitura"'}> <span>${esc(texto)}${resp&&resp.resposta?' — '+esc(resp.resposta):''}</span></label></li>`;
   }).join('');
 
+  const dec = item.decisao, sit = item.situacao;
+  const critTxt = item.criticidade ? (ROTULO_CRITICIDADE[item.criticidade] || item.criticidade) : '—';
+  const critClass = item.criticidade ? 'crit-' + String(item.criticidade).toLowerCase() : '';
+  const faixa = faixaScore(dec.score_valor);
+  const scoreTxt = dec.score_valor == null ? 'PENDENTE_DE_SCORE' : (dec.score_decisorio ? String(dec.score_valor) : `${dec.score_valor} · Provisório`);
+  const scoreBadge = dec.score_valor == null ? '' : (dec.score_decisorio
+    ? `<span class="faixa faixa-${faixa.replace(/\s/g,'').toLowerCase()}">${esc(faixa)}</span>`
+    : `<span class="badgeProv" title="Score provisório não é decisório: não descarta, não ordena e não habilita publicação">PROVISÓRIO</span><span class="faixaRef" title="Faixa apenas como referência">ref.: ${esc(faixa)}</span>`);
+  const scoreClass = dec.score_valor == null ? 'sem' : (dec.score_decisorio ? 'dec' : 'prov');
+  const scoreTitulo = dec.score_decisorio ? 'Score decisório' : (dec.score_valor == null ? 'Nenhum score registrado' : 'Score provisório (fórmula ainda não homologada): só para consulta e auditoria');
+  const atualTxt = item.atual.material.texto ? formatarDataCurta(item.atual.material.texto) : '—';
+  const justResumo = item.justificativaScore ? (String(item.justificativaScore).length > 140 ? String(item.justificativaScore).slice(0,140)+'…' : String(item.justificativaScore)) : '—';
+  const temPre = Boolean(e.pre_release && String(e.pre_release).trim());
+  const bloqPronto = bloqueiosPublicacao(item, 'pronto_para_publicar');
+  const bloqPub = bloqueiosPublicacao(item, 'publicado');
+  const btnBloq = (lista) => lista.length ? ` disabled title="Bloqueado: ${esc(lista.join('; '))}"` : '';
+  const btnMotivo = (lista) => lista.length ? `<small class="motivoBtn">bloqueado: ${esc(lista.join('; '))}</small>` : '';
   return `
-  <div class="card">
+  <div class="card ${sit.foraDaSelecao?'cardFora':''}" data-situacao="${esc(sit.codigo)}">
     <div class="cardTop">
-      ${prio!=='—'?`<span class="prio ${prioClass}">${prio}</span>`:''}
-      <span class="score">${item.score ?? '—'}</span>${item.scoreProvisorio?'<span class="sub" title="Fórmula de score ainda não homologada (carta de Revisão/Calibração M8/M9A) — não usar para ranking ou priorização"> (provisório)</span>':''}
-      <span class="sub entradaTopo"><strong>Entrada:</strong> ${esc(formatarEntradaSistema(e.created_at))}</span>
-      <span class="statusTag st-${e.status_editorial}">${STATUS_LABEL[e.status_editorial]||e.status_editorial}</span>
+      <span class="ind ind-crit ${critClass}" title="Criticidade já calculada (não é recalculada aqui)"><span class="indLbl">Criticidade</span><b>${esc(critTxt)}</b></span>
+      <span class="ind ind-prio" title="Prioridade editorial (derivada de criticidade, score decisório e atualidade). Prioridade CRIT histórica: ${esc(prioCrit)}"><span class="indLbl">Prioridade editorial</span>${prio!=='—'?`<span class="prio ${prioClass}">${esc(prio)}</span>`:''}<b>${esc(pe.rotulo)}</b>${pe.aviso?`<span class="avisoPrio">${esc(pe.aviso)}</span>`:''}</span>
+      <span class="ind ind-score ${scoreClass}" title="${esc(scoreTitulo)}"><span class="indLbl">Score</span><b class="score">${esc(scoreTxt)}</b>${scoreBadge}</span>
+      <span class="ind ind-atual" title="Data material do caso (última atualização material, data do evento/ato ou entrada)"><span class="indLbl">Atualidade</span><b>${esc(atualTxt)}</b>${item.atual.atualizado?'<span class="badgeAtualizado">ATUALIZADO</span>':''}</span>
+      <span class="ind ind-ined" title="Ineditismo: conteúdo ainda não publicado antes"><span class="indLbl">Ineditismo</span><b class="${item.ineditismo.inedito?'ined-sim':'ined-nao'}">${esc(item.ineditismo.texto)}</b></span>
+      <span class="ind"><span class="indLbl">Status</span><span class="statusTag st-${e.status_editorial}">${STATUS_LABEL[e.status_editorial]||e.status_editorial}</span></span>
+      ${iaAnalisados[e.id] ? `<span class="statusTag seloIa" title="Análise de IA concluída em ${esc(formatarEntradaSistema(iaAnalisados[e.id]))}. É um rascunho: a revisão humana continua pendente." style="background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe">IA analisada</span>` : ''}
       <div class="grow"></div>
       <span class="sub">${esc(e.empresa||'')}${e.municipio?' · '+esc(e.municipio):''}</span>
     </div>
+    <div class="motivoPrio sub" title="Criticidade = gravidade do fato. Prioridade editorial = urgência de tratar agora (criticidade + atualidade + materialidade da mudança + ineditismo + score)."><strong>Prioridade editorial ${esc(pe.codigo)}${prio==='—'?'':' · '+esc(pe.rotulo)}</strong> — motivo: ${esc(pe.texto)}</div>
+    <div class="scoreMeta sub">
+      <span><strong>Versão do score:</strong> ${esc(dec.score_versao || '—')}</span> ·
+      <span><strong>Estágio:</strong> ${esc(dec.score_estagio || '—')}</span> ·
+      <span><strong>Justificativa:</strong> ${esc(justResumo)}</span> ·
+      <span class="entradaTopo"><strong>Entrada:</strong> ${esc(formatarEntradaSistema(e.created_at))}</span>
+    </div>
+    ${sit.codigo==='FORA_DA_SELECAO' || sit.codigo==='FORA_DA_SELECAO_MANTIDO_POR_TRAVA' ? `<div class="avisoFila fora">FORA DA SELEÇÃO · ${esc(sit.motivo)} · regra ${esc(sit.regra)} · score ${esc(dec.score_valor)} (versão ${esc(dec.score_versao||'—')}, estágio ${esc(dec.score_estagio||'—')}). ${sit.codigo==='FORA_DA_SELECAO'?'Nada foi apagado: evidências, histórico e análises seguem no banco.':'Mantido na fila: já passou por decisão editorial humana.'}</div>` : ''}
+    ${sit.codigo==='SCORE_BAIXO_COM_GATILHO_FORTE' ? `<div class="avisoFila gatilho">SCORE_BAIXO_COM_GATILHO_FORTE · score ${esc(dec.score_valor)} < 40, mas a criticidade ${esc(critTxt)} impede o descarte automático.</div>` : ''}
+    ${sit.codigo==='PENDENTE_DE_SCORE' ? `<div class="avisoFila pendente">PENDENTE_DE_SCORE · sem score registrado: não descartado e não enviado à IA.</div>` : ''}
     <div class="titulo">${esc(e.titulo_fato || e.id_evento)}</div>
     ${(e.processo||e.tipo_evento||e.decisao||e.situacao_processual)?`<div class="sub">${[e.processo?('Processo: '+e.processo):'',e.tipo_evento?('Tipo: '+e.tipo_evento):'',e.decisao?('Decisão: '+e.decisao):'',e.situacao_processual?('Situação: '+e.situacao_processual):''].filter(Boolean).map(esc).join(' · ')}</div>`:''}
     ${e.resumo_factual?`<div class="resumo">${esc(e.resumo_factual)}</div>`:''}
 
     ${chkResumoHTML}
 
-    ${e.pre_release
-      ? `<div class="prerelease"><span class="lbl">Proposta de release (rascunho) — revisão do editor decide se publica</span>${esc(e.pre_release)}</div>`
-      : `<div class="prerelease empty"><span class="lbl">Pré-release</span>Ainda sem pré-release gerado para este assunto.</div>`}
+    ${temPre
+      ? `<div class="prerelease"><span class="lbl"><span class="badgePre">${e.status_editorial==='publicado'?'PRÉ-RELEASE · PUBLICADO':'PRÉ-RELEASE · NÃO PUBLICADO'}</span> Proposta de release (rascunho) — revisão do editor decide se publica</span>${esc(e.pre_release)}</div>`
+      : `<div class="prerelease empty"><span class="lbl"><span class="badgePre vazio">Sem pré-release</span></span>Ainda sem pré-release gerado para este assunto.</div>`}
 
     <details>
       <summary>Por que esse score</summary>
-      <div class="sub" style="margin:8px 0;"><strong>Score editorial:</strong> ${item.score ?? (item.scoreProvisorio?'— (score calculado existe, mas está provisório — fórmula ainda não homologada)':'—')} ${prio!=='—'?'· Prioridade '+esc(prio):''}</div>
+      <div class="sub" style="margin:8px 0;"><strong>Score:</strong> ${dec.score_valor == null ? 'PENDENTE_DE_SCORE' : esc(dec.score_valor) + (dec.score_decisorio ? ' (decisório)' : ' (provisório — não decisório; fórmula ainda não homologada)')} · Prioridade editorial ${esc(pe.codigo)} (${esc(pe.motivo)}) · Prioridade CRIT (histórica): ${esc(prioCrit)}</div>
       ${explicacaoScore}
       <table class="compTable" style="margin-top:8px;"><tbody>${compRows || '<tr><td colspan="4" style="color:var(--muted)">Esta versão de score não possui decomposição numérica reproduzível registrada. Use a justificativa editorial acima como explicação oficial.</td></tr>'}</tbody></table>
     </details>
@@ -1484,8 +1785,8 @@ function cardHTML(item){
       <summary>Fontes e evidências (${docs.length + evid.length})</summary>
       <ul class="srcList">${srcItems}</ul>
     </details>
-    ${pode('admin_painel') ? `<details class="iaEvento" data-ia-event="${esc(e.id)}" data-revisao="${esc(e.revisao_humana || '')}">
-      <summary>IA assistida (somente master)</summary>
+    ${pode('ia_assistida') ? `<details class="iaEvento" data-ia-event="${esc(e.id)}" data-revisao="${esc(e.revisao_humana || '')}" data-aviso-ia="${esc(['FORA_DA_SELECAO','PENDENTE_DE_SCORE'].includes(sit.codigo) ? ('Não enviar à IA: ' + sit.codigo + (sit.regra ? ' (' + sit.regra + ')' : '')) : '')}">
+      <summary>IA assistida${pode('ia_assistida_custo') ? '' : ' — leitura'}</summary>
       <div class="iaBody sub" style="margin-top:6px">Abra para carregar…</div>
     </details>` : ''}
     <details>
@@ -1494,8 +1795,8 @@ function cardHTML(item){
     </details>
 
     ${podeOperar ? `<div class="actions">
-      <button class="ok" data-action="pronto_para_publicar" data-id="${e.id}">Pronto p/ publicar</button>
-      <button data-action="publicado" data-id="${e.id}">Marcar publicado</button>
+      <button class="ok" data-action="pronto_para_publicar" data-id="${e.id}"${btnBloq(bloqPronto)}>Pronto p/ publicar${btnMotivo(bloqPronto)}</button>
+      <button data-action="publicado" data-id="${e.id}"${btnBloq(bloqPub)}>Marcar publicado${btnMotivo(bloqPub)}</button>
       <button class="danger" data-action="descartado" data-id="${e.id}">Descartar</button>
     </div>` : ''}
   </div>`;
@@ -1559,6 +1860,11 @@ async function atualizarChecklist(chk){
 
 async function atualizarStatus(eventId, novoStatus){
   if(!exigirPermissao('editorial')) return;
+  if(novoStatus==='pronto_para_publicar' || novoStatus==='publicado'){
+    const it = filaData.find(x => x.event.id === eventId);
+    const bloq = it ? bloqueiosPublicacao(it, novoStatus) : [];
+    if(bloq.length){ alert('Não é possível avançar: ' + bloq.join('; ') + '.'); return; }
+  }
   if(novoStatus==='descartado' && !confirm('Descartar este assunto? Ele some da fila padrão (continua no banco, com o histórico).')) return;
   // .select('id'): com RLS, UPDATE sem permissão NÃO dá erro — só afeta 0 linhas. Conferimos.
   const { data, error } = await sb.from('events').update({ status_editorial: novoStatus })
@@ -2763,25 +3069,38 @@ async function pilotoPausar(){
 }
 
 // ---------------------------------------------------------------------------
-// Detalhe do evento (somente master): situação da IA assistida, carregada ao abrir o bloco.
+// Detalhe do evento (master completo; admin só leitura, sem custo): situação da IA assistida, carregada ao abrir o bloco.
 // ---------------------------------------------------------------------------
 async function iaEventoCarregar(det){
   const eventId = det.dataset.iaEvent; const box = det.querySelector('.iaBody'); if (!box || det.dataset.carregado === '1') return;
+  if (!pode('ia_assistida')) { box.textContent = 'Sem permissão.'; return; }
   box.textContent = 'Carregando…';
+  const avisoIa = det.dataset.avisoIa ? `<div class="avisoFila pendente">${esc(det.dataset.avisoIa)} — a seleção para IA deve ignorar este caso.</div>` : '';
+  const completo = pode('ia_assistida_custo');      // quem tem a permissão (banco) vê modelo, custo e prompt; os demais veem só o status e a análise.
   try {
-    const r = await sb.from('api_execucoes').select('id, status, modelo, custo_estimado_usd, versao_prompt, data_inicio, erro, motivo_bloqueio, resposta_texto, metadata')
-      .eq('event_id', eventId).eq('operacao', 'analise_editorial').order('data_inicio', { ascending: false }).limit(5);
-    if (r.error) throw r.error;
-    const rows = r.data || [];
+    let rows;
+    if (completo) {
+      const r = await sb.from('api_execucoes').select('id, status, modelo, custo_estimado_usd, versao_prompt, data_inicio, erro, motivo_bloqueio, resposta_texto, metadata')
+        .eq('event_id', eventId).eq('operacao', 'analise_editorial').order('data_inicio', { ascending: false }).limit(5);
+      if (r.error) throw r.error;
+      rows = r.data || [];
+    } else {
+      // admin: função do servidor devolve só campos seguros e só de eventos das empresas vinculadas a ele
+      const r = await sb.rpc('ia_assistida_evento', { p_event_id: eventId });
+      if (r.error) throw r.error;
+      rows = (r.data || []).map(x => ({ status: x.status, motivo_bloqueio: x.motivo_bloqueio, resposta_texto: x.resposta_texto, tem_erro: x.tem_erro, metadata: { elegibilidade: { flags: x.flags || {} } } }));
+    }
     det.dataset.carregado = '1';
-    if (!rows.length) { box.innerHTML = 'Nunca enviado à IA. (Passou no pré-IA? Veja ADMIN &gt; Piloto IA.)'; return; }
+    if (!rows.length) { box.innerHTML = avisoIa + 'Nunca enviado à IA.' + (completo ? ' (Passou no pré-IA? Veja ADMIN &gt; Piloto IA.)' : ''); return; }
     const real = rows.find(x => ['sucesso', 'erro', 'pendente'].includes(x.status));
     const ult = real || rows[0];
     const flags = (ult.metadata && ult.metadata.elegibilidade && ult.metadata.elegibilidade.flags) || {};
     const passou = ult.status !== 'bloqueado_pre_ia';
-    box.innerHTML = `<div>Passou no pré-IA: <b>${passou ? 'sim' : 'não'}</b>${passou ? '' : ' (' + esc(Object.keys(flags).filter(k => flags[k]).map(k => ptMotivoDispensa[k] || k).join('; ') || ult.motivo_bloqueio || '') + ')'}
-      · Enviado à IA: <b>${real ? 'sim' : 'não'}</b> · Chamada: <b>${esc(ptStatusIa[ult.status] || ult.status)}</b> · Modelo: ${esc(ult.modelo || '—')} · Custo: ${esc(fmtUsd(ult.custo_estimado_usd))} · Prompt: ${esc(ult.versao_prompt || '—')} · Revisão humana: <b>${esc(det.dataset.revisao || '—')}</b></div>
-      ${ult.status === 'sucesso' ? iaRespostaHTML(ult.resposta_texto) : (ult.erro ? '<div class="sub">' + esc(ult.erro) + '</div>' : '')}`;
+    const tecnico = completo ? ` · Modelo: ${esc(ult.modelo || '—')} · Custo: ${esc(fmtUsd(ult.custo_estimado_usd))} · Prompt: ${esc(ult.versao_prompt || '—')}` : '';
+    const erroTxt = completo ? (ult.erro ? '<div class="sub">' + esc(ult.erro) + '</div>' : '') : (ult.tem_erro ? '<div class="sub">A chamada terminou com erro.</div>' : '');
+    box.innerHTML = avisoIa + `<div>Passou no pré-IA: <b>${passou ? 'sim' : 'não'}</b>${passou ? '' : ' (' + esc(Object.keys(flags).filter(k => flags[k]).map(k => ptMotivoDispensa[k] || k).join('; ') || ult.motivo_bloqueio || '') + ')'}
+      · Enviado à IA: <b>${real ? 'sim' : 'não'}</b> · Chamada: <b>${esc(ptStatusIa[ult.status] || ult.status)}</b>${tecnico} · Revisão humana: <b>${esc(det.dataset.revisao || '—')}</b></div>
+      ${ult.status === 'sucesso' ? iaRespostaHTML(ult.resposta_texto) : erroTxt}`;
   } catch (e) { box.textContent = 'Não foi possível carregar: ' + e.message; }
 }
 
