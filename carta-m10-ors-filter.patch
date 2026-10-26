@@ -1,0 +1,103 @@
+--- a/coletores/avaliador.py
++++ b/coletores/avaliador.py
+@@ -12,7 +12,7 @@
+ from datetime import date, datetime
+ from typing import Any
+ 
+-VERSAO_REGRA = "M10-IMPACTO-0.1"
++VERSAO_REGRA = "M10-IMPACTO-0.2"
+ 
+ ATIVIDADE_DIRETA = (
+     "cava da mina", "barragem de rejeitos", "pilha de estéril", "pilha de esteril",
+@@ -44,6 +44,7 @@
+ IMPACTO_SOCIAL = (
+     "poço artesiano", "poco artesiano", "cisterna", "captação comunitária",
+     "captacao comunitaria", "assentamento rural", "comunidade tradicional",
++    "morador", "moradores", "população", "populacao", "água para consumo", "agua para consumo",
+     "vazamento em propriedade de terceiros", "perda de potabilidade",
+     "dessedentação de animais", "dessedentacao de animais", "pescadores",
+     "economia da pesca", "agricultores", "destruição de lavoura", "destruicao de lavoura",
+@@ -171,12 +172,18 @@
+ 
+     if not hits_atividade and not cnae:
+         status, motivo = "descartado", "sem_atividade_mineraria_direta_ou_cnae_alvo"
+-    elif not hits_ambientais:
+-        status, motivo = "descartado", "sem_indicio_ambiental_subterraneo"
+-    elif not hits_sociais:
+-        status, motivo = "descartado", "sem_indicio_de_afetacao_humana_social"
++    elif hits_ambientais or hits_sociais:
++        # Eixos ambientais e humanos/sociais são portas independentes.
++        # Um caso não é descartado só porque o documento não descreve os dois.
++        status = "candidato_fila_editor"
++        if hits_ambientais and hits_sociais:
++            motivo = "portas_ambiental_e_social"
++        elif hits_ambientais:
++            motivo = "porta_ambiental_sem_sinal_social"
++        else:
++            motivo = "porta_social_sem_sinal_ambiental"
+     else:
+-        status, motivo = "candidato_fila_editor", "triplo_impacto_com_sinais_textuais"
++        status, motivo = "descartado", "sem_porta_editorial_ambiental_ou_social"
+ 
+     fiscal = texto_fiscal
+     frases = _frases(fiscal)
+@@ -253,3 +260,4 @@
+         '<p class="nota-editorial">Ficha técnica gerada a partir de documento oficial; requer validação editorial.</p>'
+         '</article>'
+     )
++
+--- a/coletores/test_avaliador.py
++++ b/coletores/test_avaliador.py
+@@ -16,7 +16,7 @@
+             "inercia_exclusiva_estado": False,
+         }
+ 
+-    def test_candidato_exige_setor_e_nexo_ambiental_social(self):
++    def test_candidato_com_sinais_ambiental_e_social(self):
+         r = avaliar_evento(self.base(), date(2026, 10, 21))
+         self.assertEqual(r["status_triagem"], "candidato_fila_editor")
+         self.assertEqual(r["revisao_humana"], "pendente")
+@@ -33,7 +33,7 @@
+         e = self.base()
+         e["texto_fiscal"] = "Vistoria realizada na área."
+         e["texto_documento"] = "aquífero e poço artesiano"
+-        self.assertEqual(avaliar_evento(e)["motivo_status"], "sem_indicio_ambiental_subterraneo")
++        self.assertEqual(avaliar_evento(e)["motivo_status"], "sem_porta_editorial_ambiental_ou_social")
+ 
+     def test_nao_confunde_substrings_com_atividade(self):
+         e = self.base()
+@@ -47,10 +47,27 @@
+         e["cnae"] = "49.30-2/01"
+         self.assertEqual(avaliar_evento(e)["motivo_status"], "sem_atividade_mineraria_direta_ou_cnae_alvo")
+ 
+-    def test_descarta_sem_nexo_social(self):
++    def test_ambiental_sem_social_tambem_e_candidato(self):
+         e = self.base()
+         e["texto_fiscal"] = "Contaminação do solo por metais pesados próxima à cava da mina."
+-        self.assertEqual(avaliar_evento(e)["motivo_status"], "sem_indicio_de_afetacao_humana_social")
++        r = avaliar_evento(e)
++        self.assertEqual(r["status_triagem"], "candidato_fila_editor")
++        self.assertEqual(r["motivo_status"], "porta_ambiental_sem_sinal_social")
++
++    
++    def test_social_sem_dano_ambiental_tambem_e_candidato(self):
++        e = self.base()
++        e["texto_fiscal"] = "Moradores da comunidade perderam o acesso à água para consumo."
++        r = avaliar_evento(e)
++        self.assertEqual(r["status_triagem"], "candidato_fila_editor")
++        self.assertEqual(r["motivo_status"], "porta_social_sem_sinal_ambiental")
++
++    def test_sem_nenhuma_porta_editorial_e_descartado_com_motivo(self):
++        e = self.base()
++        e["texto_fiscal"] = "Vistoria realizada na área."
++        r = avaliar_evento(e)
++        self.assertEqual(r["status_triagem"], "descartado")
++        self.assertEqual(r["motivo_status"], "sem_porta_editorial_ambiental_ou_social")
+ 
+     def test_nao_inventa_multa_ou_conclusao_prescricional(self):
+         r = avaliar_evento(self.base(), date(2026, 10, 21))
+@@ -103,3 +120,4 @@
+ 
+ if __name__ == "__main__":
+     unittest.main()
++
