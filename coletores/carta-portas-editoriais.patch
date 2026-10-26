@@ -1,0 +1,350 @@
+--- a/coletores/avaliador.py
++++ b/coletores/avaliador.py
+@@ -15,6 +15,11 @@
+ VERSAO_REGRA = "M10-IMPACTO-0.2"
+ 
+ ATIVIDADE_DIRETA = (
++    "mineração", "mineracao", "atividade minerária", "atividade mineraria",
++    "empreendimento minerário", "empreendimento minerario", "exploração mineral",
++    "exploracao mineral", "extração mineral", "extracao mineral", "pesquisa mineral",
++    "prospecção mineral", "prospeccao mineral", "beneficiamento mineral", "tratamento de minério",
++    "tratamento de minerio", "planta de beneficiamento", "usina de beneficiamento",
+     "cava da mina", "barragem de rejeitos", "pilha de estéril", "pilha de esteril",
+     "bacia de sedimentação", "bacia de sedimentacao", "drenagem ácida de mina",
+     "drenagem acida de mina", "drenagem ácida", "drenagem acida", "dam",
+@@ -50,6 +55,71 @@
+     "economia da pesca", "agricultores", "destruição de lavoura", "destruicao de lavoura",
+     "inviabilidade econômica", "inviabilidade economica",
+ )
++
++# Portas de entrada da Carta v1.1. Vocabulário é sinal de triagem, não prova.
++# Portas que dependem de contexto estruturado são ativadas por campos explícitos
++# do evento, sem inferir watchlist, exclusividade ou atualização a partir do nome.
++PORTAS_TEXTO = {
++    "P1_DANO_OU_RISCO_AMBIENTAL": AMBIENTAL_AMPLIADO + (
++        "risco ambiental", "risco de contaminacao", "risco de poluicao", "risco de vazamento",
++        "supressao vegetal", "desmatamento", "fauna", "flora", "cavidade", "caverna",
++        "poeira", "emissao atmosferica", "material particulado", "ruido", "vibracao",
++    ),
++    "P2_VIDA_SAUDE_SEGURANCA_OU_COMUNIDADE": IMPACTO_SOCIAL + (
++        "trabalhador", "empregado", "terceirizado", "vitima", "ferido", "hospitalizacao",
++        "morte", "obito", "morador", "familia", "evacuacao", "reassentamento",
++        "saude publica", "escola", "abastecimento",
++    ),
++    "P3_SEGURANCA_DE_ESTRUTURA": (
++        "barragem", "pilha", "dique", "cava", "mina", "estrutura", "anomalia",
++        "trinca", "instabilidade", "risco de ruptura", "nivel de emergencia", "sirene",
++        "extravasamento", "rompimento", "desabamento", "colapso",
++    ),
++    "P4_DECISAO_REGULATORIA_MATERIAL": (
++        "decisao", "julgamento", "licenca", "licenciamento", "outorga", "portaria",
++        "parecer", "ata", "recurso", "condicionante", "tac", "termo de compromisso",
++        "autorizacao", "concessao", "indeferimento", "deferimento",
++    ),
++    "P5_SANCAO_EMBARGO_INTERDICAO_OU_PERDA_DE_DIREITO": (
++        "auto de infracao", "multa", "embargo", "interdicao", "suspensao", "cassacao",
++        "revogacao", "anulacao", "sancao", "apreensao", "perdimento", "perda de direito",
++    ),
++    "P6_MUDANCA_OPERACIONAL_MATERIAL": (
++        "paralisacao", "retomada", "fechamento", "desmobilizacao", "reducao de producao",
++        "aumento de producao", "mudanca operacional", "interrupcao da operacao",
++    ),
++    "P7_INVESTIMENTO_EXPANSAO_OU_INFRAESTRUTURA": (
++        "investimento", "expansao", "ampliacao", "implantacao", "capacidade", "producao",
++        "mineroduto", "ferrovia", "terminal", "linha de transmissao", "infraestrutura",
++        "financiamento", "aquisicao", "venda", "fusao", "incorporacao",
++    ),
++    "P9_CRUZAMENTO_REINCIDENCIA_OU_PADRAO": (
++        "reincidencia", "reincidente", "reiteracao", "reiterado", "repeticao de ocorrencias",
++        "casos relacionados", "padrao recorrente",
++    ),
++    "P10_INTERESSE_PUBLICO_TERRITORIAL_OU_POLITICO": (
++        "conflito territorial", "terra indigena", "territorio quilombola", "unidade de conservacao",
++        "desapropriacao", "servidao", "patrimonio cultural", "patrimonio historico",
++        "audiencia publica", "interesse publico", "acesso interrompido", "estrada bloqueada",
++    ),
++}
++
++PORTAS_ESTRUTURADAS = {
++    "P8_ENTIDADE_PROJETO_OU_ATIVO_ESTRATEGICO": ("empresa_watchlist", "ativo_watchlist", "projeto_estrategico"),
++    "P9_CRUZAMENTO_REINCIDENCIA_OU_PADRAO": ("reincidencia_confirmada", "casos_relacionados"),
++    "P11_ANTECEDENCIA_OU_EXCLUSIVIDADE": ("antecedencia_relevante", "exclusividade_jornalistica"),
++    "P12_ATUALIZACAO_MATERIAL_DE_CASO": ("atualizacao_material",),
++}
++
++NEGACAO_EXPLICITA = (
++    "nao houve", "nao ocorreu", "nao foi constatado", "nao foi identificad",
++    "sem registro de", "ausencia de", "nao se verificou", "inexistencia de",
++)
++MARCADORES_RISCO = ("risco de", "possibilidade de", "potencial de", "pode ocorrer", "ameaca de")
++MARCADORES_ALEGACAO = ("alega que", "denuncia que", "segundo moradores", "investiga possivel", "suspeita de")
++MARCADORES_PEDIDO = ("pedido de", "requerimento de", "solicitacao de", "solicitou", "protocolou pedido")
++MARCADORES_DECISAO_NEGATIVA = ("indeferiu", "negou o pedido", "nao concedeu", "cancelou", "revogou", "anulou")
++MARCADORES_ATO_EFETIVADO = ("deferiu", "concedeu", "autorizou", "aprovou", "publicou", "embargou", "interditou", "cassou")
+ # Normalização dos códigos informados: 07103, 07294 e grupo 081.
+ CNAE_ALVOS = {"07103", "07294", "081"}
+ 
+@@ -71,6 +141,72 @@
+     return encontrados
+ 
+ 
++def _portas_ativas(evento: dict[str, Any], texto: str) -> dict[str, list[str]]:
++    """Retorna as portas editoriais acionadas e as evidências que as acionaram."""
++    portas = {}
++    for nome, termos in PORTAS_TEXTO.items():
++        sinais = _matches(texto, termos)
++        # Negação explícita não conta como dano/risco/sanção confirmado.
++        # Decisões regulatórias continuam como porta, inclusive quando negam um pedido.
++        if nome != "P4_DECISAO_REGULATORIA_MATERIAL":
++            sinais = [termo for termo in sinais
++                      if _natureza_evidencia(texto, termo) != "NEGATIVA_EXPLICITA"]
++        if sinais:
++            portas[nome] = sinais
++    campos_novidade = ("novo_ou_alterado", "evento_novo", "fato_novo")
++    novidade_confirmada = any(evento.get(campo) is True for campo in campos_novidade)
++    for porta, campos in PORTAS_ESTRUTURADAS.items():
++        valores = []
++        for campo in campos:
++            valor = evento.get(campo)
++            ativo = bool(valor) and valor is not False
++            if campo in {"empresa_watchlist", "ativo_watchlist", "projeto_estrategico"}:
++                ativo = ativo and novidade_confirmada
++            if ativo:
++                valores.append(f"{campo}={valor}")
++        if valores:
++            portas.setdefault(porta, []).extend(valores)
++    return {nome: evidencias for nome, evidencias in portas.items() if evidencias}
++
++
++def _natureza_evidencia(texto: str, termo: str) -> str:
++    """Rotula a frase do sinal; não converte alegação/risco em fato confirmado."""
++    termo_norm = normalizar(termo)
++    for frase in _frases(texto):
++        frase_norm = normalizar(frase)
++        if termo_norm not in frase_norm:
++            continue
++        if any(marcador in frase_norm for marcador in NEGACAO_EXPLICITA):
++            return "NEGATIVA_EXPLICITA"
++        if any(marcador in frase_norm for marcador in MARCADORES_RISCO):
++            return "RISCO_OU_POSSIBILIDADE"
++        if any(marcador in frase_norm for marcador in MARCADORES_ALEGACAO):
++            return "ALEGACAO_OU_INVESTIGACAO"
++        return "SINAL_TEXTUAL_A_CLASSIFICAR"
++    return "AUSENCIA_DE_CONTEXTO"
++
++
++def _classificar_semantica_evento(texto: str) -> str:
++    """Distingue pedido, ato efetivado, risco, alegação e negativa sem inferir fatos."""
++    t = normalizar(texto)
++    frases = [normalizar(x) for x in _frases(texto)]
++    if not t.strip():
++        return "AUSENCIA_DE_INFORMACAO"
++    if any(any(m in f for m in NEGACAO_EXPLICITA) for f in frases):
++        return "NEGATIVA_EXPLICITA"
++    if any(any(m in f for m in MARCADORES_ALEGACAO) for f in frases):
++        return "ALEGACAO_OU_INVESTIGACAO"
++    if any(any(m in f for m in MARCADORES_RISCO) for f in frases):
++        return "RISCO_OU_POSSIBILIDADE"
++    if any(any(m in f for m in MARCADORES_DECISAO_NEGATIVA) for f in frases):
++        return "DECISAO_NEGATIVA"
++    if any(any(m in f for m in MARCADORES_PEDIDO) for f in frases):
++        return "PEDIDO_AINDA_NAO_DECIDIDO"
++    if any(any(m in f for m in MARCADORES_ATO_EFETIVADO) for f in frases):
++        return "ATO_OU_DECISAO_EFETIVADA"
++    return "SINAL_TEXTUAL_SEM_STATUS_CONCLUSIVO"
++
++
+ def _cnae_direto(cnae: str | None) -> str | None:
+     digitos = re.sub(r"\D", "", str(cnae or ""))
+     if digitos.startswith("07103"):
+@@ -169,21 +305,46 @@
+     texto_fiscal = str(evento.get("texto_fiscal") or "")
+     hits_ambientais = _matches(texto_fiscal, AMBIENTAL_AMPLIADO)
+     hits_sociais = _matches(texto_fiscal, IMPACTO_SOCIAL)
++    texto_evento = "\n".join(str(evento.get(k) or "") for k in (
++        "metadados", "texto_documento", "texto_fiscal", "tipo_evento", "descricao_evento"
++    ))
++    portas = _portas_ativas(evento, texto_evento)
+ 
+-    if not hits_atividade and not cnae:
+-        status, motivo = "descartado", "sem_atividade_mineraria_direta_ou_cnae_alvo"
+-    elif hits_ambientais or hits_sociais:
+-        # Eixos ambientais e humanos/sociais são portas independentes.
+-        # Um caso não é descartado só porque o documento não descreve os dois.
++    evidencias_vinculo = []
++    if hits_atividade:
++        evidencias_vinculo.extend({"tipo": "termo_minerario_direto", "valor": x} for x in hits_atividade)
++    if cnae:
++        evidencias_vinculo.append({"tipo": "cnae_minerario", "valor": cnae})
++    campos_vinculo_forte = (
++        "processo_anm", "identificador_sigbm", "cnpj_watchlist_confirmado",
++        "empresa_watchlist_confirmada", "ativo_watchlist_confirmado",
++        "atividade_licenciada_mineraria", "vinculo_oficial_confirmado",
++    )
++    for campo in campos_vinculo_forte:
++        valor = evento.get(campo)
++        if valor is not None and valor is not False and valor != "":
++            evidencias_vinculo.append({"tipo": campo, "valor": valor})
++    vinculo_direto = bool(evidencias_vinculo)
++    evidencias_contextuais = evento.get("evidencias_contextuais") or []
++    tipos_contextuais = {str(x.get("tipo")) for x in evidencias_contextuais
++                         if isinstance(x, dict) and x.get("tipo") and x.get("valor")}
++    vinculo_provavel = not vinculo_direto and len(tipos_contextuais) >= 2
++
++    documento_presente = bool(texto_evento.strip() or evento.get("documento_url"))
++    if not documento_presente:
++        status, motivo, resultado_pre_filtro = "descartado", "documento_ausente_ou_ilegivel", "NAO_AVALIAVEL"
++    elif not (vinculo_direto or vinculo_provavel):
++        status, motivo, resultado_pre_filtro = "descartado", "vinculo_minerario_nao_comprovado", "FORA_DO_ESCOPO"
++    elif portas:
+         status = "candidato_fila_editor"
+-        if hits_ambientais and hits_sociais:
+-            motivo = "portas_ambiental_e_social"
+-        elif hits_ambientais:
+-            motivo = "porta_ambiental_sem_sinal_social"
+-        else:
+-            motivo = "porta_social_sem_sinal_ambiental"
++        resultado_pre_filtro = "CLASSIFICAR_AGORA" if vinculo_direto else "PENDENTE_DE_EVIDENCIA"
++        motivo = "uma_ou_mais_portas_editoriais_ativadas"
++    elif any(evento.get(campo) is True for campo in ("empresa_watchlist", "ativo_watchlist", "projeto_estrategico")):
++        status, motivo, resultado_pre_filtro = "monitoramento_estrategico", "vinculo_estrategico_sem_porta_nova", "MONITORAMENTO_ESTRATEGICO"
++    elif evento.get("ato_rotineiro_inequivoco") is True:
++        status, motivo, resultado_pre_filtro = "descartado", "ato_administrativo_rotineiro_inequivoco", "ROTINA"
+     else:
+-        status, motivo = "descartado", "sem_porta_editorial_ambiental_ou_social"
++        status, motivo, resultado_pre_filtro = "descartado", "nenhuma_porta_editorial_ativada", "FORA_DO_ESCOPO"
+ 
+     fiscal = texto_fiscal
+     frases = _frases(fiscal)
+@@ -205,7 +366,15 @@
+     return {
+         "versao_regra": VERSAO_REGRA,
+         "status_triagem": status,
++        "resultado_pre_filtro": resultado_pre_filtro,
+         "motivo_status": motivo,
++        "vinculo_minerario": "DIRETO" if vinculo_direto else "PROVAVEL" if vinculo_provavel else "INEXISTENTE",
++        "evidencias_vinculo": evidencias_vinculo or list(evidencias_contextuais),
++        "portas_editoriais_ativadas": portas,
++        "semantica_evento": _classificar_semantica_evento(texto_evento),
++        "natureza_sinais": {porta: {termo: _natureza_evidencia(texto_evento, termo)
++                                    for termo in termos if not termo.startswith(("empresa_watchlist=", "ativo_watchlist=", "projeto_estrategico=", "reincidencia_confirmada=", "casos_relacionados=", "antecedencia_relevante=", "exclusividade_jornalistica=", "atualizacao_material="))}
++                            for porta, termos in portas.items()},
+         "numero_processo": evento.get("numero_processo"),
+         "razao_social_empreendedor": evento.get("razao_social_empreendedor"),
+         "data_abertura_processo": evento.get("data_abertura_processo"),
+@@ -221,7 +390,7 @@
+         "fonte_url": evento.get("fonte_url"),
+         "documento_url": evento.get("documento_url"),
+         "data_publicacao": evento.get("data_publicacao"),
+-        "revisao_humana": "pendente" if status == "candidato_fila_editor" else None,
++        "revisao_humana": "pendente" if status in {"candidato_fila_editor", "monitoramento_estrategico"} else None,
+         "publicado": False,
+         "auditoria_status": audit,
+         "prioridade_exposicao": prioridade,
+--- a/coletores/test_avaliador.py
++++ b/coletores/test_avaliador.py
+@@ -33,26 +33,29 @@
+         e = self.base()
+         e["texto_fiscal"] = "Vistoria realizada na área."
+         e["texto_documento"] = "aquífero e poço artesiano"
+-        self.assertEqual(avaliar_evento(e)["motivo_status"], "sem_porta_editorial_ambiental_ou_social")
++        r = avaliar_evento(e)
++        self.assertEqual(r["status_triagem"], "candidato_fila_editor")
++        self.assertIn("P1_DANO_OU_RISCO_AMBIENTAL", r["portas_editoriais_ativadas"])
++        self.assertIn("P2_VIDA_SAUDE_SEGURANCA_OU_COMUNIDADE", r["portas_editoriais_ativadas"])
+ 
+     def test_nao_confunde_substrings_com_atividade(self):
+         e = self.base()
+         e["metadados"] = "Tesouro estadual e obras urbanas"
+         e["cnae"] = "49.30-2/01"
+-        self.assertEqual(avaliar_evento(e)["motivo_status"], "sem_atividade_mineraria_direta_ou_cnae_alvo")
++        self.assertEqual(avaliar_evento(e)["motivo_status"], "vinculo_minerario_nao_comprovado")
+ 
+     def test_descarta_sem_atividade_direta_ou_cnae(self):
+         e = self.base()
+         e["metadados"] = "Relatório genérico de contaminação"
+         e["cnae"] = "49.30-2/01"
+-        self.assertEqual(avaliar_evento(e)["motivo_status"], "sem_atividade_mineraria_direta_ou_cnae_alvo")
++        self.assertEqual(avaliar_evento(e)["motivo_status"], "vinculo_minerario_nao_comprovado")
+ 
+     def test_ambiental_sem_social_tambem_e_candidato(self):
+         e = self.base()
+         e["texto_fiscal"] = "Contaminação do solo por metais pesados próxima à cava da mina."
+         r = avaliar_evento(e)
+         self.assertEqual(r["status_triagem"], "candidato_fila_editor")
+-        self.assertEqual(r["motivo_status"], "porta_ambiental_sem_sinal_social")
++        self.assertEqual(r["motivo_status"], "uma_ou_mais_portas_editoriais_ativadas")
+ 
+     
+     def test_social_sem_dano_ambiental_tambem_e_candidato(self):
+@@ -60,14 +63,68 @@
+         e["texto_fiscal"] = "Moradores da comunidade perderam o acesso à água para consumo."
+         r = avaliar_evento(e)
+         self.assertEqual(r["status_triagem"], "candidato_fila_editor")
+-        self.assertEqual(r["motivo_status"], "porta_social_sem_sinal_ambiental")
++        self.assertEqual(r["motivo_status"], "uma_ou_mais_portas_editoriais_ativadas")
+ 
+     def test_sem_nenhuma_porta_editorial_e_descartado_com_motivo(self):
+         e = self.base()
++        e["metadados"] = "Atividade de mineração"  # vínculo, sem fato editorial
+         e["texto_fiscal"] = "Vistoria realizada na área."
+         r = avaliar_evento(e)
+         self.assertEqual(r["status_triagem"], "descartado")
+-        self.assertEqual(r["motivo_status"], "sem_porta_editorial_ambiental_ou_social")
++        self.assertEqual(r["motivo_status"], "nenhuma_porta_editorial_ativada")
++
++    def test_portas_textuais_da_carta_sao_independentes(self):
++        amostras = {
++            "P1_DANO_OU_RISCO_AMBIENTAL": "Mortandade de peixes no rio.",
++            "P2_VIDA_SAUDE_SEGURANCA_OU_COMUNIDADE": "Houve hospitalização de trabalhadores.",
++            "P3_SEGURANCA_DE_ESTRUTURA": "A barragem apresenta instabilidade.",
++            "P4_DECISAO_REGULATORIA_MATERIAL": "A decisão do Copam foi publicada.",
++            "P5_SANCAO_EMBARGO_INTERDICAO_OU_PERDA_DE_DIREITO": "Foi aplicado auto de infração.",
++            "P6_MUDANCA_OPERACIONAL_MATERIAL": "A paralisação da operação foi anunciada.",
++            "P7_INVESTIMENTO_EXPANSAO_OU_INFRAESTRUTURA": "A empresa anunciou investimento na expansão.",
++            "P9_CRUZAMENTO_REINCIDENCIA_OU_PADRAO": "Foi identificada reincidência.",
++            "P10_INTERESSE_PUBLICO_TERRITORIAL_OU_POLITICO": "Há conflito territorial com comunidade local.",
++        }
++        for porta, frase in amostras.items():
++            with self.subTest(porta=porta):
++                e = self.base()
++                e["texto_fiscal"] = frase
++                resultado = avaliar_evento(e)
++                self.assertIn(porta, resultado["portas_editoriais_ativadas"])
++                self.assertEqual(resultado["resultado_pre_filtro"], "CLASSIFICAR_AGORA")
++
++    def test_portas_estrategicas_exigem_flags_de_origem(self):
++        e = self.base()
++        e.update({"empresa_watchlist": True, "fato_novo": True,
++                  "exclusividade_jornalistica": True, "atualizacao_material": True})
++        r = avaliar_evento(e)
++        self.assertIn("P8_ENTIDADE_PROJETO_OU_ATIVO_ESTRATEGICO", r["portas_editoriais_ativadas"])
++        self.assertIn("P11_ANTECEDENCIA_OU_EXCLUSIVIDADE", r["portas_editoriais_ativadas"])
++        self.assertIn("P12_ATUALIZACAO_MATERIAL_DE_CASO", r["portas_editoriais_ativadas"])
++
++    def test_negacao_explicita_nao_ativa_dano_ou_risco_confirmado(self):
++        e = self.base()
++        e["cnae"] = "07.10-3/01"
++        e["metadados"] = "Relatório de vistoria"
++        e["texto_fiscal"] = "Não houve rompimento da barragem nem vazamento de lama."
++        r = avaliar_evento(e)
++        self.assertEqual(r["status_triagem"], "descartado")
++        self.assertEqual(r["resultado_pre_filtro"], "FORA_DO_ESCOPO")
++
++    def test_decisao_material_e_porta_sem_exigir_dano_social(self):
++        e = self.base()
++        e["texto_fiscal"] = "O Copam aprovou a licença ambiental do projeto."
++        r = avaliar_evento(e)
++        self.assertEqual(r["status_triagem"], "candidato_fila_editor")
++        self.assertIn("P4_DECISAO_REGULATORIA_MATERIAL", r["portas_editoriais_ativadas"])
++        self.assertEqual(r["resultado_pre_filtro"], "CLASSIFICAR_AGORA")
++
++    def test_pedido_nao_e_confundido_com_ato_concedido(self):
++        e = self.base()
++        e["texto_fiscal"] = "A empresa protocolou pedido de licença para ampliar a mina."
++        r = avaliar_evento(e)
++        self.assertIn("P4_DECISAO_REGULATORIA_MATERIAL", r["portas_editoriais_ativadas"])
++        self.assertEqual(r["semantica_evento"], "PEDIDO_AINDA_NAO_DECIDIDO")
+ 
+     def test_nao_inventa_multa_ou_conclusao_prescricional(self):
+         r = avaliar_evento(self.base(), date(2026, 10, 21))
