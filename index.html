@@ -2798,7 +2798,7 @@ const PILOTO_RECENTES = 40;   // eventos mais recentes listados; o servidor acei
 const PILOTO_EXTRAS_MAX = 10; // eventos incluídos à mão pelo código (id_evento)
 const PILOTO_CODIGO_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{2,79}$/;
 const PILOTO_MODULOS = ['M6_outorgas', 'M8_acidentes_ambientais', 'M9A_anm_movimentacoes'];
-const PILOTO_PROMPT = { m6: 'M6_ANALISE_EDITORIAL_V2', m8: 'M8_ANALISE_EDITORIAL_V2', m9a: 'M9A_ANALISE_EDITORIAL_V2' };
+const PILOTO_PROMPT = { m6: 'M6_ANALISE_EDITORIAL_V3', m8: 'M8_ANALISE_EDITORIAL_V3', m9a: 'M9A_ANALISE_EDITORIAL_V3' };
 // recusas que interrompem o lote inteiro (as demais só encerram aquele caso — e nunca há nova tentativa)
 const PILOTO_FATAIS = ['api_pausada', 'api_nao_configurada', 'credencial_ausente', 'modelo_nao_definido', 'modelo_sem_preco', 'limite_atingido',
   'limite_ia_do_lote', 'limite_ia_zero', 'usar_api_real_desligado', 'sem_permissao', 'nao_autenticado', 'trocar_senha', 'erro_provider', 'operacao_desconhecida', 'prompt_desconhecido'];
