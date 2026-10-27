@@ -644,7 +644,8 @@ function prioridadeEditorial(item){
 // Motivos que impedem avançar. Usada pela interface E conferida de novo em atualizarStatus; o banco repete a regra
 // essencial (migration pendente 20261016_fila_editorial_travas.sql) — a interface só reflete.
 function bloqueiosPublicacao(item, acao){
-  const e = item.event, r = [];
+  if(item.bloqueiosDb) return item.bloqueiosDb[acao === 'publicado' ? 'publicado' : 'pronto_para_publicar'] || [];   // regra do BANCO
+  const e = item.event, r = [];       // MODO DE TRANSIÇÃO
   if(!e.pre_release || !String(e.pre_release).trim()) r.push('sem pré-release');
   if(item.situacao && item.situacao.codigo === 'FORA_DA_SELECAO') r.push('score decisório < 40 (fora da seleção)');
   if(EXIGE_SCORE_PARA_PUBLICAR && item.decisao && item.decisao.score_valor == null) r.push('PENDENTE_DE_SCORE');
@@ -1365,8 +1366,25 @@ async function criarCliente(){
 // ---------------------------------------------------------------------------
 // FILA DO EDITOR
 // ---------------------------------------------------------------------------
-function montarItemFila(e, vig, fontesPorId){
+// As REGRAS DA FILA (score decisório, situação, prioridade A/B/C/D, ineditismo, atualidade, ordem, bloqueios, elegibilidade para IA)
+// vivem no BANCO (public.fila_editorial / fila_item, migração 20261019). Aqui só montamos o que o banco devolveu.
+// Sem o banco novo (migração ainda não aplicada) cai no MODO DE TRANSIÇÃO: as funções locais acima, que são cópia da regra e
+// serão removidas depois que a 20261019 estiver em produção. Cada item informa a origem em item.regrasOrigem.
+function montarItemFila(e, vig, fontesPorId, reg){
   const componentes = vig?.componentes ?? null;
+  if(reg){
+    const dec = reg.decisao;
+    return {
+      event: e, fonteOficial: e.fonte_id ? ((fontesPorId||{})[e.fonte_id] || null) : null,
+      decisao: dec, score: dec.score_decisorio ? dec.score_valor : null, scoreProvisorio: !dec.score_decisorio && dec.score_valor != null,
+      criticidade: reg.criticidade, situacao: reg.situacao,
+      atual: { material: { texto: reg.atual.material_texto, ts: reg.atual.material_ts }, atualizado: reg.atual.atualizado },
+      qualidadeEvidencia: reg.qualidade_evidencia, prioridade: vig?.prioridade ?? null, componentes,
+      justificativaScore: vig?.justificativa_score ?? null, versaoScore: vig?.versao_score ?? null,
+      ineditismo: reg.ineditismo, prioridadeEditorial: reg.prioridade_editorial,
+      ordem: reg.ordem, bloqueiosDb: reg.bloqueios, ia: reg.ia, regrasOrigem: 'banco', regrasVersao: reg.regras_versao,
+    };
+  }
   const decisao = decisaoScore(vig);
   const criticidade = (componentes && componentes.criticidade) || null;
   const item = {
@@ -1386,6 +1404,7 @@ function montarItemFila(e, vig, fontesPorId){
   };
   item.ineditismo = ineditismoDe(e, componentes);
   item.prioridadeEditorial = prioridadeEditorial(item);   // derivada: card, ordenação e filtro
+  item.regrasOrigem = 'transicao';
   return item;
 }
 
@@ -1429,9 +1448,17 @@ async function carregarFila(){
     if (!escopoVigente(esc0)) return;
     if (eEv) throw eEv;
 
+    // REGRAS NO BANCO: a fila já vem classificada e ordenada. Função ausente (migração não aplicada) => modo de transição; outro erro => falha.
+    let regrasDb = null;
+    const rr = await comLimiteDeTempo(sb.rpc('fila_editorial', { p_empresa: clienteSelecionado }), TIMEOUT_MS, 'fila_editorial');
+    if (!escopoVigente(esc0)) return;
+    if (rr.error) {
+      if (!['PGRST202', '42883'].includes(rr.error.code)) throw rr.error;
+    } else regrasDb = Object.fromEntries((rr.data || []).map(x => [x.event_id, x]));
+
     filaData = (allEvents || []).map(e=>{
       const vig = (e.event_scores||[]).find(s=>s.vigente) || (e.event_scores||[])[0];
-      return montarItemFila(e, vig, fontesEventoPorId);
+      return montarItemFila(e, vig, fontesEventoPorId, regrasDb ? (regrasDb[e.id] || null) : null);
     });
 
     // Selo "IA analisada" (só master): leitura dos registros de chamadas concluídas; falha aqui não derruba a fila.
@@ -1582,7 +1609,8 @@ function compararItens(a,b){
     if ((xa !== null) !== (xb !== null)) return xa !== null ? -1 : 1;
     if (xa !== null && xb !== null && xa !== xb) return xb - xa;
   }
-  // Ordem da fila editorial: ATUALIZADO -> prioridade editorial -> criticidade -> atualidade/materialidade -> ineditismo -> score decisório DESC
+  if(a.ordem != null && b.ordem != null) return a.ordem - b.ordem;      // ordem calculada pelo BANCO (fila_editorial)
+  // MODO DE TRANSIÇÃO (sem as regras no banco). Ordem da fila editorial: ATUALIZADO -> prioridade editorial -> criticidade -> atualidade/materialidade -> ineditismo -> score decisório DESC
   // -> qualidade da evidência -> id estável. Nada é média: cada critério só desempata o anterior.
   if(a.atual.atualizado !== b.atual.atualizado) return a.atual.atualizado ? -1 : 1;
   const rpe = x => RANK_PRIORIDADE_EDITORIAL[x.prioridadeEditorial.codigo] ?? -1;
@@ -1602,7 +1630,8 @@ function renderFila(){
   const itens = filaData.filter(passaFiltro).sort(compararItens);
   const total = filaData.length;
   const ocultosScore = document.getElementById('mostrarTodos').checked ? 0 : filaData.filter(i => i.situacao && i.situacao.foraDaSelecao).length;
-  document.getElementById('filterSummary').textContent = `${itens.length} de ${total} assunto(s)` + (ocultosScore ? ` · ${ocultosScore} fora da seleção (score < 40) oculto(s) — marque "mostrar" para ver` : '');
+  document.getElementById('filterSummary').textContent = `${itens.length} de ${total} assunto(s)` + (ocultosScore ? ` · ${ocultosScore} fora da seleção (score < 40) oculto(s) — marque "mostrar" para ver` : '')
+    + (filaData.some(i => i.regrasOrigem === 'transicao') ? ' · regras da fila em MODO DE TRANSIÇÃO (o banco ainda não tem as regras)' : '');
 
   if(itens.length===0){
     wrap.innerHTML = '<div class="empty">Nenhum assunto corresponde aos filtros selecionados.</div>';
@@ -1749,6 +1778,7 @@ function cardHTML(item){
       <span class="ind ind-prio" title="Prioridade editorial (derivada de criticidade, score decisório e atualidade). Prioridade CRIT histórica: ${esc(prioCrit)}"><span class="indLbl">Prioridade editorial</span>${prio!=='—'?`<span class="prio ${prioClass}">${esc(prio)}</span>`:''}<b>${esc(pe.rotulo)}</b>${pe.aviso?`<span class="avisoPrio">${esc(pe.aviso)}</span>`:''}</span>
       <span class="ind ind-score ${scoreClass}" title="${esc(scoreTitulo)}"><span class="indLbl">Score</span><b class="score">${esc(scoreTxt)}</b>${scoreBadge}</span>
       <span class="ind ind-atual" title="Data material do caso (última atualização material, data do evento/ato ou entrada)"><span class="indLbl">Atualidade</span><b>${esc(atualTxt)}</b>${item.atual.atualizado?'<span class="badgeAtualizado">ATUALIZADO</span>':''}</span>
+      <span class="ind ind-entrada entradaTopo" title="Data e hora em que o assunto entrou no sistema"><span class="indLbl">Entrada</span><b>${esc(formatarEntradaSistema(e.created_at))}</b></span>
       <span class="ind ind-ined" title="Ineditismo: conteúdo ainda não publicado antes"><span class="indLbl">Ineditismo</span><b class="${item.ineditismo.inedito?'ined-sim':'ined-nao'}">${esc(item.ineditismo.texto)}</b></span>
       <span class="ind"><span class="indLbl">Status</span><span class="statusTag st-${e.status_editorial}">${STATUS_LABEL[e.status_editorial]||e.status_editorial}</span></span>
       ${iaAnalisados[e.id] ? `<span class="statusTag seloIa" title="Análise de IA concluída em ${esc(formatarEntradaSistema(iaAnalisados[e.id]))}. É um rascunho: a revisão humana continua pendente." style="background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe">IA analisada</span>` : ''}
@@ -1759,8 +1789,7 @@ function cardHTML(item){
     <div class="scoreMeta sub">
       <span><strong>Versão do score:</strong> ${esc(dec.score_versao || '—')}</span> ·
       <span><strong>Estágio:</strong> ${esc(dec.score_estagio || '—')}</span> ·
-      <span><strong>Justificativa:</strong> ${esc(justResumo)}</span> ·
-      <span class="entradaTopo"><strong>Entrada:</strong> ${esc(formatarEntradaSistema(e.created_at))}</span>
+      <span><strong>Justificativa:</strong> ${esc(justResumo)}</span>
     </div>
     ${sit.codigo==='FORA_DA_SELECAO' || sit.codigo==='FORA_DA_SELECAO_MANTIDO_POR_TRAVA' ? `<div class="avisoFila fora">FORA DA SELEÇÃO · ${esc(sit.motivo)} · regra ${esc(sit.regra)} · score ${esc(dec.score_valor)} (versão ${esc(dec.score_versao||'—')}, estágio ${esc(dec.score_estagio||'—')}). ${sit.codigo==='FORA_DA_SELECAO'?'Nada foi apagado: evidências, histórico e análises seguem no banco.':'Mantido na fila: já passou por decisão editorial humana.'}</div>` : ''}
     ${sit.codigo==='SCORE_BAIXO_COM_GATILHO_FORTE' ? `<div class="avisoFila gatilho">SCORE_BAIXO_COM_GATILHO_FORTE · score ${esc(dec.score_valor)} < 40, mas a criticidade ${esc(critTxt)} impede o descarte automático.</div>` : ''}
@@ -1785,7 +1814,7 @@ function cardHTML(item){
       <summary>Fontes e evidências (${docs.length + evid.length})</summary>
       <ul class="srcList">${srcItems}</ul>
     </details>
-    ${pode('ia_assistida') ? `<details class="iaEvento" data-ia-event="${esc(e.id)}" data-revisao="${esc(e.revisao_humana || '')}" data-aviso-ia="${esc(['FORA_DA_SELECAO','PENDENTE_DE_SCORE'].includes(sit.codigo) ? ('Não enviar à IA: ' + sit.codigo + (sit.regra ? ' (' + sit.regra + ')' : '')) : '')}">
+    ${pode('ia_assistida') ? `<details class="iaEvento" data-ia-event="${esc(e.id)}" data-revisao="${esc(e.revisao_humana || '')}" data-aviso-ia="${esc(item.ia ? (item.ia.pode ? '' : 'Não enviar à IA: ' + (item.ia.motivos || []).join(', ')) : (['FORA_DA_SELECAO','PENDENTE_DE_SCORE'].includes(sit.codigo) ? ('Não enviar à IA: ' + sit.codigo + (sit.regra ? ' (' + sit.regra + ')' : '')) : ''))}">
       <summary>IA assistida${pode('ia_assistida_custo') ? '' : ' — leitura'}</summary>
       <div class="iaBody sub" style="margin-top:6px">Abra para carregar…</div>
     </details>` : ''}
@@ -3100,8 +3129,35 @@ async function iaEventoCarregar(det){
     const erroTxt = completo ? (ult.erro ? '<div class="sub">' + esc(ult.erro) + '</div>' : '') : (ult.tem_erro ? '<div class="sub">A chamada terminou com erro.</div>' : '');
     box.innerHTML = avisoIa + `<div>Passou no pré-IA: <b>${passou ? 'sim' : 'não'}</b>${passou ? '' : ' (' + esc(Object.keys(flags).filter(k => flags[k]).map(k => ptMotivoDispensa[k] || k).join('; ') || ult.motivo_bloqueio || '') + ')'}
       · Enviado à IA: <b>${real ? 'sim' : 'não'}</b> · Chamada: <b>${esc(ptStatusIa[ult.status] || ult.status)}</b>${tecnico} · Revisão humana: <b>${esc(det.dataset.revisao || '—')}</b></div>
-      ${ult.status === 'sucesso' ? iaRespostaHTML(ult.resposta_texto) : erroTxt}`;
+      ${ult.status === 'sucesso' ? iaRespostaHTML(ult.resposta_texto) : erroTxt}
+      <div class="rascunhoPre" data-event="${esc(eventId)}"></div>`;
+    rascunhoPreCarregar(box.querySelector('.rascunhoPre'), eventId);
   } catch (e) { box.textContent = 'Não foi possível carregar: ' + e.message; }
+}
+
+// Rascunho de pré-release gerado pela IA -> events.pre_release. SÓ por clique de quem tem a permissão 'editorial';
+// as travas (status já decidido, fora da seleção, análise mais recente, substituição) são do BANCO (fila_aplicar_rascunho_pre_release).
+async function rascunhoPreCarregar(div, eventId){
+  if (!div || !pode('editorial')) return;
+  const r = await sb.rpc('fila_rascunho_pre_release', { p_event_id: eventId });
+  if (r.error) {
+    div.innerHTML = ['PGRST202', '42883'].includes(r.error.code) ? '<div class="sub">Aplicar o rascunho como pré-release fica disponível depois da migração 20261019.</div>' : '';
+    return;
+  }
+  const d = r.data || {};
+  if (!d.execucao_id || !d.rascunho) { div.innerHTML = ''; return; }
+  const aviso = d.bloqueio ? `<div class="avisoFila pendente">Não é possível aplicar: ${esc(({ STATUS_JA_DECIDIDO: 'o evento já foi decidido (pronto/publicado/arquivado/descartado)', FORA_DA_SELECAO: 'score decisório abaixo do corte (fora da seleção)', ANALISE_SEM_RASCUNHO: 'a análise não trouxe rascunho' })[d.bloqueio] || d.bloqueio)}.</div>` : '';
+  div.innerHTML = `<div class="prerelease"><span class="lbl">Rascunho de pré-release da IA (revisão do editor decide)${d.ja_tem_pre_release ? ' — o evento JÁ TEM pré-release' : ''}</span>${esc(d.rascunho)}</div>${aviso}
+    ${d.pode_aplicar ? `<button type="button" class="btnAplicarRascunho">${d.ja_tem_pre_release ? 'Substituir o pré-release por este rascunho' : 'Aplicar como pré-release do evento'}</button>` : ''}`;
+  const btn = div.querySelector('.btnAplicarRascunho');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    if (!confirm(d.ja_tem_pre_release ? 'Substituir o pré-release atual por este rascunho da IA? O texto anterior fica registrado.' : 'Aplicar este rascunho como pré-release do evento? Nada será publicado.')) return;
+    btn.disabled = true;
+    const a = await sb.rpc('fila_aplicar_rascunho_pre_release', { p_event_id: eventId, p_execucao_id: d.execucao_id, p_substituir: Boolean(d.ja_tem_pre_release) });
+    if (a.error) { btn.disabled = false; alert('Não foi possível aplicar: ' + a.error.message.replace(/^pre_release_recusado:\s*/, '')); return; }
+    await carregarFila();
+  });
 }
 
 // ---------------------------------------------------------------------------
