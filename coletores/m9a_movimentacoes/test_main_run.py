@@ -37,7 +37,7 @@ class TestRodadaM9A(unittest.TestCase):
         self.final = {}
         db_writer.buscar_fonte = lambda sb, empresa_id=None, carteira_id=None: {"id": "SRC", "empresa_id": "EMP", "carteira_id": "CART"}
         
-                self.config_loader_original = m.carteira_config.carregar
+        self.config_loader_original = m.carteira_config.carregar
         self.configs_carregadas = []
         m.carteira_config.carregar = lambda sb, **kw: (self.configs_carregadas.append((kw["empresa_id"], kw["carteira_id"], kw["source_id"])), {"nome": "Carteira teste", "bandas": {"A": 80.0, "B": 60.0, "C": 40.0}, "pesos": [], "criterios": {}})[1]
         db_writer.criar_execucao = lambda sb, i, ambiente="piloto", empresa_id=None, carteira_id=None: "EXEC"
@@ -52,7 +52,7 @@ class TestRodadaM9A(unittest.TestCase):
         for k, v in self.o.items(): setattr(db_writer, k, v)
         m.processar_caso = self.op
         
-                m.carteira_config.carregar = self.config_loader_original
+        m.carteira_config.carregar = self.config_loader_original
         confere_regra_do_banco(self, self.logs)
 
     def test_rodada_em_blocos_sem_ia_e_com_metricas(self):
