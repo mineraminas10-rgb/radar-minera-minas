@@ -100,7 +100,7 @@ class TestRodadaM8(unittest.TestCase):
         db_writer.registrar_log_coleta = lambda sb, e, src, c, empresa_id=None: self.logs.append(c)
         self.orig_proc = m.processar_item
         self.ia = 0
-        def proc(sb, execucao_id, source_id, item, empresa_id=None, acessador=None):
+        def proc(sb, execucao_id, source_id, item, empresa_id=None, acessador=None, config_carteira=None):
             r = extractor.extrair(item.url_detalhe, acessador=acessador)
             return {"protocolo": item.protocolo, "acao": r.status_processamento == "falha_extracao" and "falha_extracao" or "processado",
                     "faixa": "provavel", "criado": True}
@@ -147,7 +147,7 @@ class TestRodadaM8(unittest.TestCase):
 
     def test_teto_de_requisicoes_para_a_rodada_sem_marcar_falha(self):
         """Regressão da rodada real: 153 comunicados viraram 'falha_extracao' só porque o teto de 200 requisições acabou."""
-        def proc(sb, execucao_id, source_id, item, empresa_id=None, acessador=None):
+        def proc(sb, execucao_id, source_id, item, empresa_id=None, acessador=None, config_carteira=None):
             if item.protocolo == "180":
                 return {"protocolo": item.protocolo, "acao": "adiado_por_limite", "motivo": "limite:limite de 200 requisições por rodada", "criado": False}
             return {"protocolo": item.protocolo, "acao": "processado", "faixa": "provavel", "criado": True}
@@ -163,7 +163,7 @@ class TestRodadaM8(unittest.TestCase):
     def test_janela_de_dias_nao_abre_comunicado_antigo(self):
         from datetime import date
         abertos = []
-        def proc(sb, execucao_id, source_id, item, empresa_id=None, acessador=None):
+        def proc(sb, execucao_id, source_id, item, empresa_id=None, acessador=None, config_carteira=None):
             abertos.append(item.protocolo)
             return {"protocolo": item.protocolo, "acao": "processado", "faixa": "provavel", "criado": True}
         m.processar_item = proc
@@ -177,7 +177,7 @@ class TestRodadaM8(unittest.TestCase):
 
     def test_somente_existentes_ignora_comunicado_novo_e_nao_cria_evento(self):
         abertos = []
-        def proc(sb, execucao_id, source_id, item, empresa_id=None, acessador=None):
+        def proc(sb, execucao_id, source_id, item, empresa_id=None, acessador=None, config_carteira=None):
             abertos.append(item.protocolo)
             return {"protocolo": item.protocolo, "acao": "processado", "faixa": "provavel", "criado": False}
         m.processar_item = proc
