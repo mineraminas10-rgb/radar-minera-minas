@@ -80,6 +80,19 @@ class TestRodadaM8(unittest.TestCase):
     def setUp(self):
         self.orig = {k: getattr(db_writer, k) for k in ("buscar_fonte", "criar_execucao", "finalizar_execucao", "registrar_log_coleta")}
         self.final = {}
+        # run() carrega as regras da carteira depois de resolver a fonte.
+        # Este teste usa um Supabase falso sem tabelas de configuração; injete
+        # uma carteira explícita para isolar o fluxo e preservar a validação
+        # fail-closed nos testes próprios de escopo/configuração.
+        self.orig_carteira = m.carteira_config.carregar
+        m.carteira_config.carregar = lambda sb, **kwargs: {
+            "nome": "Carteira de teste",
+            "url_base": LISTA,
+            "url_secundaria": None,
+            "bandas": {"A": 80, "B": 60, "C": 40},
+            "criterios": {},
+            "pesos": [],
+        }
         db_writer.buscar_fonte = lambda sb, empresa_id=None, carteira_id=None: {"id": "SRC", "empresa_id": "EMP", "carteira_id": "CART"}
         db_writer.criar_execucao = lambda sb, idexec, ambiente="piloto", empresa_id=None, carteira_id=None: "EXEC"
         db_writer.finalizar_execucao = lambda sb, eid, totais, status_final="concluída": self.final.update(totais=totais, status=status_final)
@@ -96,6 +109,7 @@ class TestRodadaM8(unittest.TestCase):
     def tearDown(self):
         for k, v in self.orig.items(): setattr(db_writer, k, v)
         m.processar_item = self.orig_proc
+        m.carteira_config.carregar = self.orig_carteira
         confere_regra_do_banco(self, self.logs)
 
     def test_contagens_do_log_respeitam_a_regra_do_banco_com_erros_e_descartados(self):
