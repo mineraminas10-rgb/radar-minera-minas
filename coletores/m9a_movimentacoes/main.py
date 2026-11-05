@@ -214,9 +214,26 @@ def processar_caso(sb, execucao_id: str, atos: list, empresa_id=None, fonte_id=N
     })
 
     memoria = scoring.montar_memoria_calculo(sig_agregado, justificativa)
+    try:
+        from comum.portas_editoriais import avaliar_descoberta
+    except ImportError:
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from comum.portas_editoriais import avaliar_descoberta
+    texto_caso = " ".join(str(getattr(a, campo, None) or "") for a in atos for campo in ("texto_narrativo", "descricao", "documento_url"))
+    triagem_carta = avaliar_descoberta({
+        "titulo": primeiro.descricao,
+        "texto_documento": texto_caso,
+        "descricao_evento": primeiro.descricao,
+        "tipo_evento": "movimentacao_scm_anm",
+        "empresa": primeiro.empresa,
+        "municipio": ", ".join(sorted({a.municipio for a in atos if a.municipio})),
+        "processo": ", ".join(processos_envolvidos),
+    }, modo="shadow")
     db_writer.gravar_score(
         sb, event_id, score_bruto=score, prioridade=prioridade,
-        componentes={"score_m9a": score, "score_normalizado_carteira": round(score_carteira, 2),
+        componentes={"triagem_carta": triagem_carta, "score_m9a": score, "score_normalizado_carteira": round(score_carteira, 2),
                      "prioridade_carteira": prioridade, "criterios_carteira_atendidos": criterio_ok,
                      "criterios_carteira_pendentes": criterios_pendentes,
                      "pesos_carteira_nao_aplicados": pesos_nao_aplicados,

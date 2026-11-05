@@ -62,6 +62,25 @@ def construir_id_evento(protocolo: str) -> str:
     return f"semad-m8-{protocolo.replace('/', '-')}"
 
 
+def _triagem_carta_m8(item, texto):
+    """Classifica em shadow; não descarta acidente por falta de evidência."""
+    try:
+        from comum.portas_editoriais import avaliar_descoberta
+    except ImportError:
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from comum.portas_editoriais import avaliar_descoberta
+    return avaliar_descoberta({
+        "titulo": getattr(item, "titulo", None) or getattr(item, "protocolo", None),
+        "texto_documento": texto or "",
+        "descricao_evento": getattr(item, "descricao", None),
+        "tipo_evento": getattr(item, "tipo_evento", None) or "acidente_minerario",
+        "empresa": getattr(item, "empresa", None),
+        "municipio": getattr(item, "municipio", None),
+    }, modo="shadow")
+
+
 def _parse_data_segura(texto: str):
     """Tenta interpretar `texto` (data crua de fonte HTML, formato não
     garantido) como data real. Retorna None em vez de arriscar gravar uma
@@ -393,13 +412,14 @@ def processar_item(sb, execucao_id: str, source_id: str, item: discovery.ItemInv
             _retirar_novo_da_fila(sb, id_evento, event_id, criado, "arquivado",
                                   f"Fora da fila ativa: {motivo_fila}. Score de gravidade={score_g}; prioridade={prioridade}.",
                                   execucao_id, empresa_id)
+        triagem_carta = _triagem_carta_m8(item, resultado_extracao.texto or "")
         db_writer.upsert_m8_detalhe(sb, event_id, item.protocolo, item.ano, detalhe_m8, empresa_id=empresa_id)
 
         memoria_vinculo = scoring.montar_memoria_calculo_vinculo(sig_vinculo, justificativa_v)
         memoria_gravidade = scoring.montar_memoria_calculo_gravidade(sig_gravidade)
         db_writer.gravar_score(
             sb, event_id, score_bruto=score_g, prioridade=prioridade,
-            componentes={"score_vinculo": score_v, "faixa_vinculo": faixa_v,
+            componentes={"triagem_carta": triagem_carta, "score_vinculo": score_v, "faixa_vinculo": faixa_v,
                          "score_gravidade": score_g, "nivel_gravidade": nivel_g,
                          "dano_risco": round(score_norm_base, 2),
                          "score_dano_risco": round(score_norm_base, 2),

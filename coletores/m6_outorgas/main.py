@@ -66,6 +66,33 @@ class AtoParaProcessar:
     texto_para_vinculo: Optional[str] = None
 
 
+def _triagem_carta_m6(ato, tipo_evento=None):
+    """Classifica em shadow; não altera elegibilidade ou score do M6."""
+    try:
+        from comum.portas_editoriais import avaliar_descoberta
+    except ImportError:
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from comum.portas_editoriais import avaliar_descoberta
+    texto = " ".join(str(v or "") for v in (
+        getattr(ato, "trecho_decisorio", None),
+        getattr(ato, "texto_para_vinculo", None),
+        getattr(ato, "finalidade_uso", None),
+        getattr(ato, "atividade_associada", None),
+    ))
+    return avaliar_descoberta({
+        "titulo": getattr(ato, "processo_ou_portaria", None),
+        "texto_documento": texto,
+        "descricao_evento": texto,
+        "tipo_evento": tipo_evento,
+        "empresa": getattr(ato, "titular", None),
+        "municipio": getattr(ato, "municipio", None),
+        "atividade_associada": getattr(ato, "atividade_associada", None),
+        "cnae": getattr(ato, "cnae", None),
+    }, modo="shadow")
+
+
 def construir_id_evento(processo_ou_portaria: str) -> str:
     """Chave de negócio (carta §44.6: 'processo, portaria, CNPJ,
     empreendimento [...] por ordem de força') — nesta primeira versão,
@@ -82,6 +109,7 @@ def processar_ato(sb, execucao_id: str, ato: AtoParaProcessar, empresa_id: Optio
     id_evento = construir_id_evento(ato.processo_ou_portaria)
 
     tipo_evento = signals.classificar_ato(ato.trecho_decisorio)
+    triagem_carta = _triagem_carta_m6(ato, tipo_evento)
 
     sinais_vinculo = signals.SinaisVinculoMineral(
         titular=ato.titular, finalidade_uso=ato.finalidade_uso or "",
@@ -126,13 +154,13 @@ def processar_ato(sb, execucao_id: str, ato: AtoParaProcessar, empresa_id: Optio
         # Nenhum score é calculado nem gravado para um ato confirmado como
         # não-mineral — é eliminado ANTES da chamada cara de IA (M6 A08),
         # não "zerado depois". Nada é inserido em event_scores aqui.
-        return {"processo_ou_portaria": ato.processo_ou_portaria, "acao": "descartado",
+        return {"triagem_carta": triagem_carta, "processo_ou_portaria": ato.processo_ou_portaria, "acao": "descartado",
                 "motivo": motivo_vinculo, "criado": criado, "event_id": event_id}
 
     if status_vinculo == signals.VINCULO_INDETERMINADO:
         respostas = checklist_editorial.derivar_checklist_m6(fora_de_escopo=False, tipo_evento_normalizado=tipo_evento)
         db_writer.gravar_checklist_editorial(sb, event_id, respostas, empresa_id=empresa_id)
-        return {"processo_ou_portaria": ato.processo_ou_portaria, "acao": "requer_apuracao_humana",
+        return {"triagem_carta": triagem_carta, "processo_ou_portaria": ato.processo_ou_portaria, "acao": "requer_apuracao_humana",
                 "motivo": motivo_vinculo, "criado": criado, "event_id": event_id}
 
     if tipo_evento == "indeterminado":
@@ -142,7 +170,7 @@ def processar_ato(sb, execucao_id: str, ato: AtoParaProcessar, empresa_id: Optio
         # nunca um default de score.
         respostas = checklist_editorial.derivar_checklist_m6(fora_de_escopo=False, tipo_evento_normalizado=tipo_evento)
         db_writer.gravar_checklist_editorial(sb, event_id, respostas, empresa_id=empresa_id)
-        return {"processo_ou_portaria": ato.processo_ou_portaria, "acao": "requer_apuracao_humana",
+        return {"triagem_carta": triagem_carta, "processo_ou_portaria": ato.processo_ou_portaria, "acao": "requer_apuracao_humana",
                 "motivo": "verbo decisório não identificado", "criado": criado, "event_id": event_id}
 
     if ato.componentes_score is None:
@@ -151,7 +179,7 @@ def processar_ato(sb, execucao_id: str, ato: AtoParaProcessar, empresa_id: Optio
         # apuração, sem score, esperando a etapa de IA/editor. Nunca um score default.
         respostas = checklist_editorial.derivar_checklist_m6(fora_de_escopo=False, tipo_evento_normalizado=tipo_evento)
         db_writer.gravar_checklist_editorial(sb, event_id, respostas, empresa_id=empresa_id)
-        return {"processo_ou_portaria": ato.processo_ou_portaria, "acao": "aguardando_score",
+        return {"triagem_carta": triagem_carta, "processo_ou_portaria": ato.processo_ou_portaria, "acao": "aguardando_score",
                 "tipo_evento": tipo_evento, "motivo": "vínculo mineral confirmado; score depende de julgamento editorial/IA",
                 "criado": criado, "event_id": event_id}
 
@@ -181,8 +209,10 @@ def processar_ato(sb, execucao_id: str, ato: AtoParaProcessar, empresa_id: Optio
     grau_completude = checklist_editorial.calcular_grau_completude(respostas_finais)
     db_writer.upsert_evento(sb, id_evento, {"grau_completude": grau_completude}, execucao_id, empresa_id=empresa_id)
 
+    componentes_score = dict(memoria) if isinstance(memoria, dict) else {"score_componentes": memoria}
+    componentes_score["triagem_carta"] = triagem_carta
     db_writer.gravar_score(sb, event_id, score_bruto=score_total, prioridade=prioridade,
-                            componentes=memoria, score_normalizado=score_total, empresa_id=empresa_id)
+                            componentes=componentes_score, score_normalizado=score_total, empresa_id=empresa_id)
 
     import hashlib
     hash_entrada = hashlib.sha256(f"{ato.processo_ou_portaria}|{tipo_evento}".encode()).hexdigest()
@@ -190,7 +220,7 @@ def processar_ato(sb, execucao_id: str, ato: AtoParaProcessar, empresa_id: Optio
         sb, event_id, hash_entrada, status="concluido", empresa_id=empresa_id,
     )
 
-    return {"processo_ou_portaria": ato.processo_ou_portaria, "acao": "processado" if criado else "atualizado",
+    return {"triagem_carta": triagem_carta, "processo_ou_portaria": ato.processo_ou_portaria, "acao": "processado" if criado else "atualizado",
             "tipo_evento": tipo_evento, "faixa": faixa, "score": score_total, "criado": criado,
             "job_novo": job_criado, "event_id": event_id}
 

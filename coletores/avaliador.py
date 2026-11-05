@@ -12,6 +12,11 @@ from calendar import monthrange
 from datetime import date, datetime
 from typing import Any
 
+try:
+    from comum.portas_editoriais import avaliar_descoberta
+except ImportError:
+    from portas_editoriais import avaliar_descoberta
+
 VERSAO_REGRA = "M10-IMPACTO-0.1"
 
 ATIVIDADE_DIRETA = (
@@ -156,38 +161,35 @@ def auditoria_status(evento: dict[str, Any], hoje: date) -> dict[str, Any]:
 
 
 def avaliar_evento(evento: dict[str, Any], hoje: date | None = None) -> dict[str, Any]:
-    """Executa os gates em ordem e devolve ficha candidata + trilha auditável."""
+    """Aplica a descoberta da Carta v1.1 e preserva score/checklist para etapas próprias."""
     hoje = hoje or date.today()
-    # O gate setorial pode usar metadados/texto inicial/CNAE. Já os gates
-    # ambiental e social só usam o texto descritivo atribuído ao fiscal.
+    texto_fiscal = str(evento.get("texto_fiscal") or "")
     texto_setorial = "\n".join(str(evento.get(k) or "") for k in (
         "metadados", "texto_documento", "atividade", "cnae"
     ))
+    entrada = dict(evento)
+    entrada.setdefault("titulo", evento.get("titulo_fato") or "")
+    entrada["metadados"] = texto_setorial
+    entrada["texto_fiscal"] = texto_fiscal
+    entrada["cnae"] = evento.get("cnae") or evento.get("cnae_empreendedor")
+    descoberta = avaliar_descoberta(entrada)
     hits_atividade = _matches(texto_setorial, ATIVIDADE_DIRETA)
-    cnae = _cnae_direto(evento.get("cnae"))
-    texto_fiscal = str(evento.get("texto_fiscal") or "")
+    cnae = _cnae_direto(entrada.get("cnae"))
     hits_ambientais = _matches(texto_fiscal, AMBIENTAL_AMPLIADO)
     hits_sociais = _matches(texto_fiscal, IMPACTO_SOCIAL)
 
-    if not hits_atividade and not cnae:
-        status, motivo = "descartado", "sem_atividade_mineraria_direta_ou_cnae_alvo"
-    elif not hits_ambientais:
-        status, motivo = "descartado", "sem_indicio_ambiental_subterraneo"
-    elif not hits_sociais:
-        status, motivo = "descartado", "sem_indicio_de_afetacao_humana_social"
-    else:
-        status, motivo = "candidato_fila_editor", "triplo_impacto_com_sinais_textuais"
-
-    fiscal = texto_fiscal
-    frases = _frases(fiscal)
-    frases_ambientais = [s for s in frases if _matches(s, AMBIENTAL_AMPLIADO)]
-    frases_sociais = [s for s in frases if _matches(s, IMPACTO_SOCIAL)]
-    # Excerpt must come from the inspector's text exactly; no AI paraphrase.
+    status_map = {
+        "CLASSIFICAR_AGORA": ("candidato_fila_editor", "porta_editorial_ativada"),
+        "PENDENTE_DE_EVIDENCIA": ("em_revisao", "evidencia_ou_vinculo_inconclusivo"),
+        "NAO_AVALIAVEL": ("em_revisao", "documento_ausente_ou_ilegivel"),
+        "MONITORAMENTO_ESTRATEGICO": ("monitoramento_estrategico", "watchlist_sem_fato_novo"),
+        "ROTINA": ("descartado", "ato_rotineiro_confirmado"),
+        "FORA_DO_ESCOPO": ("descartado", "vinculo_minerario_nao_comprovado"),
+    }
+    status, motivo = status_map[descoberta["resultado_pre_filtro"]]
+    frases = _frases(texto_fiscal)
     trecho = next((s for s in frases if _matches(s, AMBIENTAL_AMPLIADO)
-                   and _matches(s, IMPACTO_SOCIAL)), None)
-    if trecho is None:
-        trecho = next(iter(frases_ambientais), None) or next(iter(frases_sociais), None)
-
+                   or _matches(s, IMPACTO_SOCIAL)), None)
     audit = auditoria_status(evento, hoje)
     prioridade = "ALTA_RELEVANCIA_ALERTA_VERMELHO" if (
         (audit["dias_desde_ultima_movimentacao"] is not None
@@ -196,9 +198,14 @@ def avaliar_evento(evento: dict[str, Any], hoje: date | None = None) -> dict[str
             and audit["meses_ate_marco_prescricional_estimado"] <= 12)
     ) else "EXPOSICAO_PADRAO"
     return {
-        "versao_regra": VERSAO_REGRA,
+        "versao_regra": descoberta["versao_regra"],
         "status_triagem": status,
+        "resultado_pre_filtro": descoberta["resultado_pre_filtro"],
         "motivo_status": motivo,
+        "vinculo_minerario": descoberta["vinculo_minerario"],
+        "evidencias_vinculo": descoberta["evidencias_vinculo"],
+        "portas_editoriais_ativadas": descoberta["portas_editoriais_ativadas"],
+        "semantica_evento": descoberta["semantica_evento"],
         "numero_processo": evento.get("numero_processo"),
         "razao_social_empreendedor": evento.get("razao_social_empreendedor"),
         "data_abertura_processo": evento.get("data_abertura_processo"),
@@ -214,12 +221,14 @@ def avaliar_evento(evento: dict[str, Any], hoje: date | None = None) -> dict[str
         "fonte_url": evento.get("fonte_url"),
         "documento_url": evento.get("documento_url"),
         "data_publicacao": evento.get("data_publicacao"),
-        "revisao_humana": "pendente" if status == "candidato_fila_editor" else None,
+        "revisao_humana": "pendente" if status in {"candidato_fila_editor", "em_revisao", "monitoramento_estrategico"} else None,
         "publicado": False,
         "auditoria_status": audit,
         "prioridade_exposicao": prioridade,
         "comentarios_habilitados": False,
-        "requer_conferencia_manual": not bool(trecho and evento.get("fonte_url")),
+        "requer_conferencia_manual": descoberta["requer_revisao_humana"] or not bool(trecho and evento.get("fonte_url")),
+        "score_editorial": None,
+        "checklist_12": None,
     }
 
 

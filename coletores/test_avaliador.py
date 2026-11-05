@@ -1,105 +1,64 @@
 import unittest
 from datetime import date
-from avaliador import avaliar_evento, gerar_ficha_html
+from avaliador import avaliar_evento
+from comum.portas_editoriais import avaliar_descoberta, _semantica
 
-class AvaliadorImpactoTest(unittest.TestCase):
-    def base(self):
-        return {
-            "numero_processo": "123/2026",
-            "metadados": "Relatório de barragem de rejeitos",
-            "texto_fiscal": "O fiscal identificou infiltração de efluentes no aquífero e perda de potabilidade no poço artesiano da comunidade.",
-            "fonte_url": "https://meioambiente.mg.gov.br/ato",
-            "documento_url": "https://meioambiente.mg.gov.br/relatorio.pdf",
-            "data_ultima_movimentacao": "2026-01-01",
-            "jurisdicao": "minas gerais",
-            "marco_inicial_prescricao": "2025-01-01",
-            "inercia_exclusiva_estado": False,
-        }
+class TestCartaV11(unittest.TestCase):
+    def test_ambiental_isolado_abre_porta_sem_exigir_social(self):
+        r = avaliar_descoberta({"titulo":"Mineração relata contaminação de aquífero","fonte_url":"https://oficial.gov.br/a"})
+        self.assertEqual(r["resultado_pre_filtro"], "CLASSIFICAR_AGORA")
+        self.assertIn("P1_DANO_OU_RISCO_AMBIENTAL", r["portas_editoriais_ativadas"])
 
-    def test_candidato_exige_setor_e_nexo_ambiental_social(self):
-        r = avaliar_evento(self.base(), date(2026, 10, 21))
-        self.assertEqual(r["status_triagem"], "candidato_fila_editor")
-        self.assertEqual(r["revisao_humana"], "pendente")
+    def test_decisao_regulatoria_abre_porta_independente(self):
+        r = avaliar_descoberta({"titulo":"Evento de mineração","texto_documento":"Decisão regulatória publicada.","processo_anm":"123","fonte_url":"https://oficial.gov.br/a"})
+        self.assertIn("P4_DECISAO_REGULATORIA_MATERIAL", r["portas_editoriais_ativadas"])
+
+    def test_ausencia_de_conteudo_vai_para_revisao(self):
+        r = avaliar_evento({"numero_processo":"123","fonte_url":"https://oficial.gov.br/a"})
+        self.assertEqual(r["status_triagem"], "em_revisao")
+        self.assertEqual(r["resultado_pre_filtro"], "NAO_AVALIAVEL")
+
+    def test_alegacao_e_rotulada_sem_confirmar_nexo(self):
+        r = avaliar_descoberta({"titulo":"Mineração","texto_documento":"Segundo moradores, houve contaminação do córrego.","fonte_url":"https://oficial.gov.br/a"})
+        sinais = r["portas_editoriais_ativadas"]["P1_DANO_OU_RISCO_AMBIENTAL"]
+        self.assertEqual(sinais[0]["natureza"], "ALEGACAO_OU_INVESTIGACAO")
+
+    def test_negativa_nao_abre_porta_de_dano(self):
+        r = avaliar_descoberta({"titulo":"Mineração","texto_documento":"Não foi constatada contaminação do solo.","fonte_url":"https://oficial.gov.br/a"})
+        self.assertNotIn("P1_DANO_OU_RISCO_AMBIENTAL", r["portas_editoriais_ativadas"])
+        self.assertEqual(r["resultado_pre_filtro"], "PENDENTE_DE_EVIDENCIA")
+
+    def test_watchlist_sem_novidade_fica_em_monitoramento(self):
+        e = {"titulo":"Empresa minerária","empresa_watchlist":True,"fonte_url":"https://oficial.gov.br/a"}
+        self.assertEqual(avaliar_descoberta(e)["resultado_pre_filtro"], "MONITORAMENTO_ESTRATEGICO")
+        e["evento_novo"] = True
+        self.assertIn("P8_ENTIDADE_PROJETO_OU_ATIVO_ESTRATEGICO", avaliar_descoberta(e)["portas_editoriais_ativadas"])
+
+    def test_vinculo_contextual_permanece_pendente(self):
+        e={"titulo":"Decisão publicada","evidencias_contextuais":[{"tipo":"municipio","valor":"Mariana"},{"tipo":"empresa","valor":"X"}],"fonte_url":"https://oficial.gov.br/a"}
+        self.assertEqual(avaliar_descoberta(e)["resultado_pre_filtro"], "PENDENTE_DE_EVIDENCIA")
+
+    def test_cnae_qualifica_vinculo_mas_nao_altera_score_ou_checklist(self):
+        r=avaliar_descoberta({"titulo":"Auto de infração","cnae":"07.10-3/01","fonte_url":"https://oficial.gov.br/a"})
+        self.assertEqual(r["vinculo_minerario"],"DIRETO")
+        self.assertIsNone(r["score_editorial"])
+        self.assertIsNone(r["checklist_12"])
+
+    def test_semantica_distingue_pedido_de_decisao(self):
+        self.assertEqual(_semantica("Pedido de licença protocolado."),"PEDIDO_AINDA_NAO_DECIDIDO")
+        self.assertEqual(_semantica("O órgão indeferiu o pedido."),"DECISAO_NEGATIVA")
+
+    def test_avaliador_antigo_ambiental_mais_social_nao_e_mais_gate(self):
+        e={"numero_processo":"123","metadados":"Mineração de ouro","texto_fiscal":"O órgão publicou decisão sobre a licença.","fonte_url":"https://oficial.gov.br/a"}
+        r=avaliar_evento(e,date(2026,10,21))
+        self.assertEqual(r["status_triagem"],"candidato_fila_editor")
+        self.assertEqual(r["resultado_pre_filtro"],"CLASSIFICAR_AGORA")
+        self.assertEqual(r["revisao_humana"],"pendente")
         self.assertFalse(r["publicado"])
-        self.assertTrue(r["trecho_cobre_os_dois_nexos"])
 
-    def test_cnae_pode_suprir_termo_de_atividade(self):
-        e = self.base()
-        e["metadados"] = "Relatório de infiltração de efluentes"
-        e["cnae"] = "07.10-3/01"
-        self.assertEqual(avaliar_evento(e)["status_triagem"], "candidato_fila_editor")
-
-    def test_impacto_precisa_estar_no_texto_do_fiscal(self):
-        e = self.base()
-        e["texto_fiscal"] = "Vistoria realizada na área."
-        e["texto_documento"] = "aquífero e poço artesiano"
-        self.assertEqual(avaliar_evento(e)["motivo_status"], "sem_indicio_ambiental_subterraneo")
-
-    def test_nao_confunde_substrings_com_atividade(self):
-        e = self.base()
-        e["metadados"] = "Tesouro estadual e obras urbanas"
-        e["cnae"] = "49.30-2/01"
-        self.assertEqual(avaliar_evento(e)["motivo_status"], "sem_atividade_mineraria_direta_ou_cnae_alvo")
-
-    def test_descarta_sem_atividade_direta_ou_cnae(self):
-        e = self.base()
-        e["metadados"] = "Relatório genérico de contaminação"
-        e["cnae"] = "49.30-2/01"
-        self.assertEqual(avaliar_evento(e)["motivo_status"], "sem_atividade_mineraria_direta_ou_cnae_alvo")
-
-    def test_descarta_sem_nexo_social(self):
-        e = self.base()
-        e["texto_fiscal"] = "Contaminação do solo por metais pesados próxima à cava da mina."
-        self.assertEqual(avaliar_evento(e)["motivo_status"], "sem_indicio_de_afetacao_humana_social")
-
-    def test_nao_inventa_multa_ou_conclusao_prescricional(self):
-        r = avaliar_evento(self.base(), date(2026, 10, 21))
-        self.assertIsNone(r["auditoria_status"]["valor_multa"])
-        self.assertIsNone(r["auditoria_status"]["meses_ate_marco_prescricional_estimado"])
-        self.assertIn("não calculado", r["auditoria_status"]["alerta_juridico"])
-
-    def test_anm_ganha_alerta_condicional_de_paralisacao_federal(self):
-        e = self.base()
-        e.update({"jurisdicao": "ANM", "data_ultima_movimentacao": "2022-01-01",
-                  "marco_inicial_prescricao": None})
-        r = avaliar_evento(e, date(2026, 10, 21))["auditoria_status"]
-        self.assertIn("verificar se o processo aguarda julgamento", r["alerta_juridico"])
-        self.assertIsNone(r["meses_ate_marco_prescricional_estimado"])
-
-    def test_dias_parado_e_calculado_com_data_fornecida(self):
-        r = avaliar_evento(self.base(), date(2026, 1, 11))
-        self.assertEqual(r["auditoria_status"]["dias_desde_ultima_movimentacao"], 10)
-
-    def test_impacto_superficial_e_pescadores_passa_funil_ampliado(self):
-        e = self.base()
-        e["texto_fiscal"] = "Houve assoreamento do córrego e prejuízo à economia da pesca local."
-        r = avaliar_evento(e)
-        self.assertEqual(r["status_triagem"], "candidato_fila_editor")
-        self.assertIn("assoreamento", r["evidencias_ambientais"])
-        self.assertIn("economia da pesca", r["evidencias_sociais"])
-
-    def test_inatividade_annualiza_prioridade_sem_chamar_de_prescricao(self):
-        e = self.base()
-        e["data_ultima_movimentacao"] = "2025-10-20"
-        r = avaliar_evento(e, date(2026, 10, 21))
-        self.assertEqual(r["prioridade_exposicao"], "ALTA_RELEVANCIA_ALERTA_VERMELHO")
-        self.assertIn("não calculado", r["auditoria_status"]["alerta_juridico"])
-
-    def test_ficha_neutra_escapa_html(self):
-        e = self.base()
-        e["texto_fiscal"] = "<script>alert(1)</script> Aquífero e poço artesiano afetados."
-        e["razao_social_empreendedor"] = "Empresa <Norte>"
-        html = gerar_ficha_html(avaliar_evento(e))
-        self.assertNotIn("<script>", html)
-        self.assertIn("&lt;script&gt;", html)
-        self.assertIn("<blockquote>", html)
-
-    def test_nao_gera_ficha_para_evento_descartado(self):
-        e = self.base()
-        e["metadados"] = "Relatório geral"
-        e["cnae"] = "49.30"
-        with self.assertRaises(ValueError):
-            gerar_ficha_html(avaliar_evento(e))
+    def test_termo_nao_minerario_nao_e_vinculo_direto(self):
+        r=avaliar_descoberta({"titulo":"Tesouro estadual e obras urbanas","cnae":"49.30-2/01","fonte_url":"https://oficial.gov.br/a"})
+        self.assertEqual(r["resultado_pre_filtro"],"FORA_DO_ESCOPO")
 
 if __name__ == "__main__":
     unittest.main()

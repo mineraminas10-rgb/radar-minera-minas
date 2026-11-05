@@ -23,6 +23,10 @@ import json
 import os
 import sys
 import time
+try:
+    from comum.portas_editoriais import avaliar_descoberta
+except ImportError:
+    from coletores.comum.portas_editoriais import avaliar_descoberta
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Optional
@@ -355,6 +359,27 @@ def run(caminho_microdados: str, ambiente: str = "piloto", limite_casos: int = N
             casos = consolidacao.consolidar_atos(atos)
             resumo["casos_consolidados"] = len(casos)
             itens = list(casos.values())
+            triagens_carta = []
+            for atos_caso in itens:
+                ato_base = atos_caso[0] if atos_caso else None
+                texto_carta = chr(32).join(
+                    str(getattr(ato, campo, "") or "")
+                    for ato in (atos_caso or [])
+                    for campo in ("descricao", "texto_narrativo", "id_tipo_evento", "substancia", "municipio", "processo", "empresa")
+                )
+                triagens_carta.append(avaliar_descoberta({
+                    "titulo": getattr(ato_base, "descricao", "") if ato_base else "",
+                    "texto_documento": texto_carta,
+                    "texto_fiscal": texto_carta,
+                    "descricao_evento": texto_carta,
+                    "tipo_evento": getattr(ato_base, "id_tipo_evento", "") if ato_base else "",
+                    "ementa": getattr(ato_base, "substancia", "") if ato_base else "",
+                }))
+            triagem_por_id = {id(atos_caso): triagem for atos_caso, triagem in zip(itens, triagens_carta)}
+            resumo["triagem_carta"] = {}
+            for triagem in triagens_carta:
+                status_carta = triagem.get("resultado_pre_filtro", "NAO_AVALIAVEL")
+                resumo["triagem_carta"][status_carta] = resumo["triagem_carta"].get(status_carta, 0) + 1
             crits = {}
             if aplica_regua:
                 # Ordem determinística ANTES do limite: criticidade (maior primeiro) > ato mais recente >
@@ -365,6 +390,8 @@ def run(caminho_microdados: str, ambiente: str = "piloto", limite_casos: int = N
                     -(par["niveis"].index(crits[i].nivel) if crits[i].nivel in par["niveis"] else -1), -crits[i].pontuacao,
                     (crits[i].idade_dias if crits[i].idade_dias is not None else 10 ** 9),
                     consolidacao.chave_caso_editorial(itens[i][0])))
+                rank_carta = {"CLASSIFICAR_AGORA": 0, "PENDENTE_DE_EVIDENCIA": 1, "NAO_AVALIAVEL": 1, "MONITORAMENTO_ESTRATEGICO": 1, "ROTINA": 2, "FORA_DO_ESCOPO": 3}
+                ordem.sort(key=lambda i: rank_carta.get(triagens_carta[i].get("resultado_pre_filtro"), 1))
                 itens_ord, crits_ord = [itens[i] for i in ordem], [crits[i] for i in ordem]
                 dist, dispensados, aceitos, aceitos_crit = {}, {}, [], []
                 for a_caso, c in zip(itens_ord, crits_ord):
@@ -401,6 +428,8 @@ def run(caminho_microdados: str, ambiente: str = "piloto", limite_casos: int = N
                 try:
                     r = processar_caso(sb, execucao_id, atos_do_caso, empresa_id=empresa_id, fonte_id=source_id,
                                         universo_atos=atos, crit=crit_caso)
+                    if isinstance(r, dict):
+                        r["triagem_carta"] = triagem_por_id.get(id(atos_do_caso))
                     resultados.append(r)
                     resumo["novos" if r.get("criado") else "atualizados"] += 1
                 except Exception as e:
