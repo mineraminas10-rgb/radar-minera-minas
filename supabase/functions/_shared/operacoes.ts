@@ -24,7 +24,7 @@ export const OPERACOES: Record<string, OperacaoCfg> = {
   resumo:                  { nome: 'resumo',                  max_output_tokens: 500,  esforco_padrao: 'low',    esforcos_permitidos: ['none', 'low'],  texto_livre: false },
   pre_release:             { nome: 'pre_release',             max_output_tokens: 800,  esforco_padrao: 'low',    esforcos_permitidos: ['none', 'low'],  texto_livre: false },
   // operação assistida (piloto): 7 seções separadas, saída estruturada validada no servidor
-  analise_editorial:       { nome: 'analise_editorial',       max_output_tokens: 1600, esforco_padrao: 'none',   esforcos_permitidos: ['none', 'low'],  texto_livre: false, so_master: true, dossie_servidor: true },
+  analise_editorial:       { nome: 'analise_editorial',       max_output_tokens: 2800, esforco_padrao: 'none',   esforcos_permitidos: ['none', 'low'],  texto_livre: false, so_master: true, dossie_servidor: true },
   // raciocínio médio só por operação explicitamente autorizada (master + autorizacao_explicita)
   raciocinio_complexo:     { nome: 'raciocinio_complexo',     max_output_tokens: 1500, esforco_padrao: 'medium', esforcos_permitidos: ['medium'],       texto_livre: false, so_master: true, exige_autorizacao_explicita: true },
   // painel ADMIN

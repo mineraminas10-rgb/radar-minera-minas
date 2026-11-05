@@ -130,17 +130,20 @@ Deno.test('catálogo: analise_editorial é só master, esforço none, teto próp
   assertEquals(op.so_master, true);
   assertEquals(op.esforco_padrao, 'none');
   assertEquals(op.dossie_servidor, true);
-  assert(op.max_output_tokens >= 1000 && op.max_output_tokens <= 2000);
+  assert(op.max_output_tokens >= 1000 && op.max_output_tokens <= 3000);
   assertEquals(LIMITE_MAX_LOTE, 6);
 });
 
 Deno.test('prompts de analise_editorial: um por módulo, todos com as 7 seções e regras anti-invenção', () => {
-  for (const nome of ['M6_ANALISE_EDITORIAL_V2', 'M8_ANALISE_EDITORIAL_V2', 'M9A_ANALISE_EDITORIAL_V2']) {
+  for (const nome of ['M6_ANALISE_EDITORIAL_V3', 'M8_ANALISE_EDITORIAL_V3', 'M9A_ANALISE_EDITORIAL_V3']) {
     const p = buscarPrompt(nome)!;
     assert(p, nome);
     assertEquals(p.operacao, 'analise_editorial');
     assertStringIncludes(p.instructions, 'Nunca invente');
     assertStringIncludes(p.instructions, 'Não atribua score');
+    assertStringIncludes(p.instructions, 'Título:');
+    assertStringIncludes(p.instructions, 'rascunho_pre_release');
+    assertStringIncludes(p.instructions, 'etapa final de enriquecimento editorial');
     const props = (p.schema as { properties: Record<string, unknown> }).properties;
     assertEquals(Object.keys(props), ['fato_confirmado', 'contexto_documental', 'avaliacao_editorial', 'hipotese_apuracao', 'lacunas', 'perguntas_redacao', 'proposta_abordagem']);
   }

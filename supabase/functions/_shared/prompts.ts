@@ -139,6 +139,33 @@ PROMPTS.push(
   },
 );
 
+/*
+ * V3 — enriquecimento jornalístico como última etapa, depois da coleta, evidências,
+ * filtros, score, prioridade e checklist. Mantém as 7 seções e entrega pré-release.
+ */
+const REGRA_ANALISE_V3 =
+  REGRA_ANALISE_V2.replace(
+    '(7) proposta_abordagem: sugestão de abordagem e, se couber, rascunho_pre_release (até 120 palavras, factual, só com o que está em fato_confirmado; senão null). ',
+    '(7) proposta_abordagem: produza um pacote editorial final. Em "texto", use exatamente os rótulos "Título:", "Subtítulo:" e "Abordagem:", com título informativo, subtítulo que acrescente contexto e ângulo de apuração. Em "rascunho_pre_release", redija 80 a 120 palavras em português jornalístico, claro e pronto para revisão humana: abra pelo fato novo; explique quem fez o quê, onde e quando apenas se constar no dossiê; contextualize o instrumento/decisão e o efeito documentado; encerre com prazo, próximos passos ou lacunas somente quando sustentados. Identifique consulta/proposta como não aprovada quando o dossiê disser que está em consulta. Atribua a informação à fonte oficial quando identificável. Não invente nem transforme hipótese em fato; se faltarem dados para um texto responsável, use null e explique em "lacunas". '
+  );
+PROMPTS.push(
+  {
+    nome: 'M8_ANALISE_EDITORIAL', versao: 'V3', modulo: 'm8', operacao: 'analise_editorial', ativo: true,
+    instructions: 'O evento SEMAD/MG já passou pela coleta, extração, triagem determinística, score, prioridade e checklist. Esta é a etapa final de enriquecimento editorial. ' + REGRA_ANALISE_V3,
+    schema: SCHEMA_ANALISE_EDITORIAL,
+  },
+  {
+    nome: 'M9A_ANALISE_EDITORIAL', versao: 'V3', modulo: 'm9a', operacao: 'analise_editorial', ativo: true,
+    instructions: 'O ato ou movimentação da ANM já passou pela coleta, consolidação, evidências, triagem, score, prioridade e checklist. Esta é a etapa final de enriquecimento editorial. ' + REGRA_ANALISE_V3,
+    schema: SCHEMA_ANALISE_EDITORIAL,
+  },
+  {
+    nome: 'M6_ANALISE_EDITORIAL', versao: 'V3', modulo: 'm6', operacao: 'analise_editorial', ativo: true,
+    instructions: 'O ato de outorga ou portaria do IGAM já passou pela coleta, evidências, triagem, score, prioridade e checklist. O vínculo minerário pode não estar provado; explicite essa limitação em lacunas. Esta é a etapa final de enriquecimento editorial. ' + REGRA_ANALISE_V3,
+    schema: SCHEMA_ANALISE_EDITORIAL,
+  },
+);
+
 export function buscarPrompt(nomeCompleto: string): PromptReg | null {
   return PROMPTS.find((p) => `${p.nome}_${p.versao}` === nomeCompleto) ?? null;
 }
