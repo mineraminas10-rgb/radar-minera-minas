@@ -402,7 +402,7 @@
     <div class="adminSub" id="adminSubTabs">
       <button type="button" data-sub="empresas" class="active">Empresas</button>
       <button type="button" data-sub="usuarios">Usuários</button>
-      <button type="button" data-sub="api">API</button>
+      <button type="button" data-sub="api">API</button><button type="button" data-sub="coletores">Coletores</button>
       <button type="button" data-sub="piloto">Piloto IA</button>
       <button type="button" data-sub="consumo">Consumo</button>
       <button type="button" data-sub="auditoria">Auditoria</button>
@@ -2451,7 +2451,7 @@ function renderAdminSub(){
   body.onclick = null;
   if (adminState.sub === 'usuarios') adminUsuarios();
   else if (adminState.sub === 'empresas') adminEmpresas();
-  else if (adminState.sub === 'api') adminApi();
+  else if (adminState.sub === 'api') adminApi(); else if (adminState.sub === 'coletores') adminColetores();
   else if (adminState.sub === 'piloto') adminPiloto();
   else if (adminState.sub === 'consumo') montarConsumo(body);
   else if (adminState.sub === 'auditoria') adminAuditoria();
@@ -2787,6 +2787,66 @@ async function apiPreco(){
 }
 
 // ---------------------------------------------------------------------------
+async function adminColetores(){
+  const body = document.getElementById('adminBody');
+  const meu = adminState.seq;
+  const empresaId = adminState.empresaId;
+  if (!empresaId) { body.innerHTML = '<div class="empty">Escolha a empresa ativa.</div>'; return; }
+  body.innerHTML = '<div class="empty">Carregando configuração dos coletores…</div>';
+
+  let cfgR = null, carteiras = [];
+  const [cfgRes, carRes] = await Promise.allSettled([
+    chamarFuncao('admin-api', { acao: 'obter_config', empresa_id: empresaId }),
+    sb.from('carteiras').select('id, nome, ativa').eq('empresa_id', empresaId).eq('ativa', true).order('nome'),
+  ]);
+  if (cfgRes.status === 'fulfilled') cfgR = cfgRes.value;
+  if (carRes.status === 'fulfilled' && !carRes.value.error) carteiras = carRes.value.data || [];
+  if (meu !== adminState.seq || empresaId !== adminState.empresaId) return;
+
+  const cfg = cfgR?.config || {};
+  const apiAtiva = cfg.ativo === true;
+  const credencialOk = cfgR?.credencial_presente === true;
+  const statusApi = apiAtiva && credencialOk
+    ? 'OpenAI ativa e credencial cadastrada'
+    : (!apiAtiva ? 'OpenAI pausada ou sem configuração' : 'Credencial OpenAI não cadastrada');
+  const workflows = [
+    { id:'m6', nome:'M6 · Outorgas do IGAM', fonte:'IGAM', arquivo:'coletor_m6.yml', detalhe:'Portarias de outorga e documentos relacionados.' },
+    { id:'m8', nome:'M8 · Acidentes ambientais', fonte:'SEMAD-MG', arquivo:'coletor_m8.yml', detalhe:'Comunicados e ocorrências ambientais da SEMAD.' },
+    { id:'m9a', nome:'M9A · Movimentações minerárias', fonte:'ANM', arquivo:'coletor_m9a.yml', detalhe:'Movimentações e atos minerários do SCM.' },
+  ];
+  const cards = workflows.map(w => {
+    const url = 'https://github.com/mineraminas10-rgb/radar-minera-minas/actions/workflows/' + w.arquivo;
+    return `<div class="card" style="margin:0">
+      <strong>${esc(w.nome)}</strong>
+      <div class="sub" style="margin-top:5px">Fonte: ${esc(w.fonte)}. ${esc(w.detalhe)}</div>
+      <div class="sub">A execução abre no GitHub Actions; confira o ambiente e inicie o workflow por lá.</div>
+      <a class="smallBtn" style="display:inline-block;text-decoration:none;margin-top:10px" href="${esc(url)}" target="_blank" rel="noopener noreferrer">Abrir execução</a>
+    </div>`;
+  }).join('');
+  body.innerHTML = `
+    <div class="card">
+      <strong>Execução manual dos coletores</strong>
+      <div class="sub" style="margin-top:6px">Escolha um coletor abaixo. Os workflows existentes começam em modo piloto por padrão e registram os dados na empresa/carteira configuradas nas variáveis do GitHub Actions.</div>
+      <div class="sub" style="margin-top:6px">Empresa ativa nesta tela: <b>${esc(nomeEmpresaPorId(empresaId))}</b> · Carteiras ativas: <b>${fmtNum(carteiras.length)}</b>. Antes de iniciar, confira se RADAR_EMPRESA_ID e RADAR_CARTEIRA_ID no GitHub Actions correspondem ao escopo desejado.</div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px;margin-bottom:12px">${cards}</div>
+    <div class="card">
+      <strong>Tratamento pela API da OpenAI</strong>
+      <div class="sub" style="margin-top:6px">Situação para esta empresa: <b>${esc(statusApi)}</b>${cfg.modelo_padrao ? ' · Modelo: <b>' + esc(cfg.modelo_padrao) + '</b>' : ''}. A chave permanece no cofre do Supabase.</div>
+      <div class="sub" style="margin-top:6px">Depois que a coleta terminar, use o Piloto IA para selecionar os casos elegíveis e confirmar o lote. Essa confirmação aplica os limites configurados e mantém score, prioridade e publicação sob revisão humana.</div>
+      <button type="button" class="smallBtn" id="colIrPiloto" style="margin-top:10px">Processar casos coletados com IA</button>
+      <div class="sub" id="colMsg" role="status" aria-live="polite"></div>
+    </div>
+    <div class="card">
+      <strong>M10 · Contaminação com impacto socioambiental</strong>
+      <div class="sub" style="margin-top:6px">O avaliador de regras está no repositório, mas ainda não há workflow de captura integrado. Ele não aparece como botão executável até existir um adaptador de fonte ligado à fila.</div>
+    </div>`;
+  document.getElementById('colIrPiloto')?.addEventListener('click', () => {
+    adminState.sub = 'piloto';
+    renderAdminSub();
+  });
+}
+
 // ADMIN > PILOTO IA — OPERAÇÃO ASSISTIDA MANUAL (só master). Sem cron, sem consulta automática.
 // Fluxo: o servidor (executar-ai) decide a elegibilidade a partir do que os coletores já gravaram, monta o dossiê
 // do evento, chama a IA UMA vez por caso e valida a resposta. A IA nunca altera score, status nem publica:
