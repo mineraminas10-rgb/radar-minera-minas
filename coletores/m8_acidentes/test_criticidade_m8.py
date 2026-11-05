@@ -93,7 +93,7 @@ class TestCriticidadeM8(unittest.TestCase):
             dbm["upsert_evento"].return_value = ("EV", True)
             dbm["gravar_evidencias_campo"].return_value = []
             dbm["buscar_antecedentes_m8"].return_value = []
-            m.processar_item(sb, "EXE", "SRC", it, empresa_id="EMP")
+            m.processar_item(sb, "EXE", "SRC", it, empresa_id="EMP", config_carteira={"nome": "Carteira de teste", "url_base": "https://meioambiente.mg.gov.br/comunicados-de-acidentes-ambientais-2026", "url_secundaria": None, "bandas": {"A": 80, "B": 60, "C": 40}, "criterios": {}, "pesos": []})
             detalhe = dbm["upsert_m8_detalhe"].call_args.args[4]
         self.assertEqual(detalhe["modalidade"], "Instalaçao industrial")
         self.assertEqual(detalhe["data_hora_ocorrencia"], "2026-08-29T16:30:00-03:00")
