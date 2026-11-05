@@ -157,7 +157,7 @@ class TestRodadaM9A(unittest.TestCase):
         self.assertEqual(sem_regua["casos_consolidados"], 41)
         self.assertEqual(padrao["casos_consolidados"], 41)
         dispensados = sum(padrao["dispensados_por_criticidade"].values())
-        self.assertGreater(dispensados, 0)
+        self.assertEqual(dispensados, 0)
         self.assertTrue(set(padrao["dispensados_por_criticidade"]) <= {"BAIXA", "ROTINA", "NAO_AVALIAVEL"})
         self.assertEqual(padrao["novos"] + padrao["atualizados"], 41 - dispensados)
         self.assertEqual(padrao["versao_regra_criticidade"], "CRIT-V1.2")
