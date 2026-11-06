@@ -14,9 +14,13 @@ on:
         required: false
         default: 'piloto'
       limite_casos:
-        description: 'Processar só os N primeiros casos consolidados (deixar vazio para todos)'
+        description: 'Tamanho do lote de casos; use offset_casos para continuar (padrão 100)'
         required: false
-        default: ''
+        default: '100'
+      offset_casos:
+        description: 'Índice inicial do lote, após a ordenação determinística (padrão 0)'
+        required: false
+        default: '0'
       max_linhas_evento:
         description: 'Modo amostra: ler só as N primeiras linhas de ProcessoEvento.txt (ex.: 200000)'
         required: false
@@ -33,7 +37,7 @@ on:
 jobs:
   coletar:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -79,11 +83,14 @@ jobs:
           RADAR_CARTEIRA_ID: ${{ vars.RADAR_CARTEIRA_ID }}
         run: |
           # Leitura em BLOCOS (ProcessoEvento.txt ~1 GB não cabe inteiro em memória no runner padrão).
-          # PRIMEIRA execução real: usar workflow_dispatch com amostra pequena (max_linhas_evento) e
-          # limite_casos; só depois liberar o cron noturno. Este coletor NÃO chama IA.
+          # Lotes pequenos e retomáveis evitam processar dezenas de milhares de casos num único job.
+          # Este coletor NÃO chama IA; o score ponderado depende das rubricas e evidências da carteira.
           ARGS="--microdados ../../.scm_dump/microdados --registro-download ../../.scm_dump/registro_download.json --ambiente ${{ github.event.inputs.ambiente || 'piloto' }}"
           if [ -n "${{ github.event.inputs.limite_casos }}" ]; then
             ARGS="$ARGS --limite-casos ${{ github.event.inputs.limite_casos }}"
+          fi
+          if [ -n "${{ github.event.inputs.offset_casos }}" ]; then
+            ARGS="$ARGS --offset-casos ${{ github.event.inputs.offset_casos }}"
           fi
           if [ -n "${{ github.event.inputs.max_linhas_evento }}" ]; then
             ARGS="$ARGS --max-linhas-evento ${{ github.event.inputs.max_linhas_evento }}"
