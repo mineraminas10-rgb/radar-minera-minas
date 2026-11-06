@@ -227,6 +227,21 @@ class TestRodadaM9A(unittest.TestCase):
         self.assertEqual(self.logs[0]["analisados"], 2)
         self.assertEqual(self.logs[0]["novos"] + self.logs[0]["atualizados"], 2)
 
+    def test_offset_casos_avanca_lotes_sem_repetir(self):
+        import consolidacion
+        with tempfile.TemporaryDirectory() as d:
+            dump_sintetico(d)
+            m.run(d, sb=SB(), env=ENV_OK, tamanho_bloco=50, limite_casos=2, offset_casos=0, registro_download=REG_OK)
+            lote_1 = [consolidacion.chave_caso_editorial(caso[0]) for caso in self.chamados]
+            self.chamados.clear()
+            resultado = m.run(d, sb=SB(), env=ENV_OK, tamanho_bloco=50, limite_casos=2, offset_casos=2, registro_download=REG_OK)
+            lote_2 = [consolidacion.chave_caso_editorial(caso[0]) for caso in self.chamados]
+        self.assertEqual(len(lote_1), 2)
+        self.assertEqual(len(lote_2), 2)
+        self.assertTrue(set(lote_1).isdisjoint(lote_2))
+        self.assertEqual(resultado["resumo"]["lote"]["offset"], 2)
+        self.assertEqual(resultado["resumo"]["lote"]["selecionados"], 2)
+
     def test_limite_casos_e_amostra(self):
         with tempfile.TemporaryDirectory() as d:
             dump_sintetico(d)
