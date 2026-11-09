@@ -1,6 +1,6 @@
 import os, sys, tempfile, unittest
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "comum"))
-import main as m; consolidacion = m.consolidacion
+import main as m; consolidacion = m.consolidacao
 import db_writer
 from test_ingestao_blocos import dump_sintetico
 
