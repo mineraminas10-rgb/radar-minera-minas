@@ -228,7 +228,7 @@ class TestRodadaM9A(unittest.TestCase):
         self.assertEqual(self.logs[0]["novos"] + self.logs[0]["atualizados"], 2)
 
     def test_offset_casos_avanca_lotes_sem_repetir(self):
-        consolidacion = m.consolidacion
+        consolidacion = m.consolidacao
         with tempfile.TemporaryDirectory() as d:
             dump_sintetico(d)
             m.run(d, sb=SB(), env=ENV_OK, tamanho_bloco=50, limite_casos=2, offset_casos=0, registro_download=REG_OK)
