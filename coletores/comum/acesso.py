@@ -55,6 +55,13 @@ def sha256(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
 
+def _descricao_erro(erro: Exception) -> str:
+    """Preserva contexto de rede/TLS útil no log sem permitir linhas de log injetadas."""
+    detalhe = re.sub(r"[\r\n]+", " ", str(erro)).strip()
+    detalhe = re.sub(r"sk-[A-Za-z0-9_-]{10,}", "[redacted]", detalhe)
+    return f"{type(erro).__name__}: {detalhe[:240]}" if detalhe else type(erro).__name__
+
+
 def detectar_barreira_no_corpo(ctype: str, corpo: bytes) -> Optional[str]:
     if not (ctype.startswith("text/html") or ctype == "" or "xhtml" in ctype):
         return None
@@ -129,9 +136,9 @@ class Acessador:
             try:
                 r = self.s.get(url, params=params, timeout=self.timeout, headers={"User-Agent": USER_AGENT}, allow_redirects=True)
             except (requests.Timeout, requests.ConnectionError) as e:
-                ultimo_erro = f"{type(e).__name__}"
+                ultimo_erro = _descricao_erro(e)
                 if tent < self.tentativas:
-                    self.espera(2 ** tent)
+                    self.espera(min(30, 2 ** tent))
                     continue
                 self._fechar(reg, "erro_rede", ultimo_erro)
                 raise AcessoInterrompido("erro_rede", ultimo_erro, reg)
@@ -148,7 +155,7 @@ class Acessador:
                 self._fechar(reg, "barreira", motivo)
                 raise BarreiraDeAcesso("barreira", motivo, reg)
             if r.status_code >= 500 and tent < self.tentativas:
-                self.espera(2 ** tent)
+                self.espera(min(30, 2 ** tent))
                 continue
             if r.status_code >= 400:
                 self._fechar(reg, "erro_http", f"{r.status_code}")
@@ -198,7 +205,7 @@ class Acessador:
                     ultimo_erro = f"HTTP {r.status_code}"
                     if tent < self.tentativas:
                         preservar_parte = os.path.exists(parte)
-                        self.espera(2 ** tent)
+                        self.espera(min(30, 2 ** tent))
                         continue
                     self._fechar(reg, "erro_http", ultimo_erro)
                     raise AcessoInterrompido("erro_http", ultimo_erro, reg)
@@ -267,10 +274,10 @@ class Acessador:
                 return reg
             except (requests.Timeout, requests.ConnectionError,
                     requests.exceptions.ChunkedEncodingError) as e:
-                ultimo_erro = type(e).__name__
+                ultimo_erro = _descricao_erro(e)
                 if tent < self.tentativas:
                     preservar_parte = os.path.exists(parte)
-                    self.espera(2 ** tent)
+                    self.espera(min(30, 2 ** tent))
                     continue
                 self._fechar(reg, "erro_rede", ultimo_erro)
                 raise AcessoInterrompido("erro_rede", ultimo_erro, reg) from e
