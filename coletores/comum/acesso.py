@@ -179,9 +179,13 @@ class Acessador:
             self.n += 1
             reg["tentativa"] = tent
             r = None
+            preservar_parte = False
+            offset = os.path.getsize(parte) if os.path.exists(parte) else 0
+            headers = {"User-Agent": USER_AGENT, "Accept-Encoding": "identity"}
+            if offset:
+                headers["Range"] = f"bytes={offset}-"
             try:
-                r = self.s.get(url, stream=True, timeout=self.timeout,
-                               headers={"User-Agent": USER_AGENT}, allow_redirects=True)
+                r = self.s.get(url, stream=True, timeout=self.timeout, headers=headers, allow_redirects=True)
                 reg.update(status_http=r.status_code, url_final=r.url)
                 ctype = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
                 reg["mime"] = ctype
@@ -193,6 +197,7 @@ class Acessador:
                 if r.status_code >= 500:
                     ultimo_erro = f"HTTP {r.status_code}"
                     if tent < self.tentativas:
+                        preservar_parte = os.path.exists(parte)
                         self.espera(2 ** tent)
                         continue
                     self._fechar(reg, "erro_http", ultimo_erro)
@@ -201,39 +206,70 @@ class Acessador:
                     self._fechar(reg, "erro_http", str(r.status_code))
                     raise AcessoInterrompido("erro_http", f"HTTP {r.status_code}", reg)
                 if ctype.startswith("text/html"):
-                    # dado aberto servido como HTML = página de erro/antibot/redirecionamento, não o arquivo
                     self._fechar(reg, "barreira" if "captcha" in r.text[:200000].lower() else "erro_http",
                                  "recebido HTML no lugar do arquivo")
                     raise AcessoInterrompido("erro_http", "recebido HTML no lugar do arquivo", reg)
                 if mimes_aceitos and ctype not in mimes_aceitos:
                     self._fechar(reg, "erro_http", f"MIME inesperado: {ctype}")
                     raise AcessoInterrompido("erro_http", f"MIME inesperado: {ctype}", reg)
+
+                content_range = r.headers.get("Content-Range", "")
+                total_esperado = None
+                if r.status_code == 206:
+                    match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+|\*)", content_range.strip(), re.I)
+                    if not match or int(match.group(1)) != offset:
+                        self._fechar(reg, "erro_http", f"Content-Range inválido para offset {offset}")
+                        raise AcessoInterrompido("erro_http", reg["motivo_interrupcao"], reg)
+                    fim = int(match.group(2))
+                    if fim < offset:
+                        self._fechar(reg, "erro_http", "intervalo parcial inválido")
+                        raise AcessoInterrompido("erro_http", reg["motivo_interrupcao"], reg)
+                    bytes_resposta = fim - offset + 1
+                    total_esperado = None if match.group(3) == "*" else int(match.group(3))
+                else:
+                    # A fonte pode ignorar Range. Nesse caso, reinicia o arquivo em vez de anexar bytes duplicados.
+                    offset = 0
+                    bytes_resposta = None
+
                 declarado = int(r.headers.get("Content-Length") or 0)
                 if declarado and declarado > max_bytes:
                     self._fechar(reg, "erro_http", f"tamanho declarado {declarado} > limite {max_bytes}")
                     raise AcessoInterrompido("erro_http", reg["motivo_interrupcao"], reg)
-                h, total = hashlib.sha256(), 0
-                with open(parte, "wb") as f:
+                esperado_corpo = declarado or bytes_resposta
+                if esperado_corpo and offset + esperado_corpo > max_bytes:
+                    self._fechar(reg, "erro_http", f"download excederia o limite {max_bytes}")
+                    raise AcessoInterrompido("erro_http", reg["motivo_interrupcao"], reg)
+                modo = "ab" if offset and r.status_code == 206 else "wb"
+                total_bloco = 0
+                with open(parte, modo) as f:
                     for bloco in r.iter_content(chunk_size=1 << 20):
                         if not bloco:
                             continue
-                        total += len(bloco)
-                        if total > max_bytes:
+                        total_bloco += len(bloco)
+                        if (offset + total_bloco + len(bloco)) > max_bytes:
                             self._fechar(reg, "erro_http", f"download passou do limite {max_bytes}")
                             raise AcessoInterrompido("erro_http", reg["motivo_interrupcao"], reg)
-                        h.update(bloco)
                         f.write(bloco)
-                if declarado and total != declarado:
-                    self._fechar(reg, "erro_http", f"download truncado: {total} de {declarado} bytes")
+                if esperado_corpo and total_bloco != esperado_corpo:
+                    self._fechar(reg, "erro_http", f"download truncado: {total_bloco} de {esperado_corpo} bytes nesta resposta")
                     raise AcessoInterrompido("erro_http", reg["motivo_interrupcao"], reg)
-                reg.update(tamanho=total, hash=h.hexdigest())
+                tamanho_final = os.path.getsize(parte)
+                if total_esperado is not None and tamanho_final != total_esperado:
+                    self._fechar(reg, "erro_http", f"download incompleto: {tamanho_final} de {total_esperado} bytes")
+                    raise AcessoInterrompido("erro_http", reg["motivo_interrupcao"], reg)
+                h = hashlib.sha256()
+                with open(parte, "rb") as f:
+                    for bloco in iter(lambda: f.read(1 << 20), b""):
+                        h.update(bloco)
                 os.replace(parte, destino)
+                reg.update(tamanho=tamanho_final, hash=h.hexdigest())
                 self._fechar(reg, "ok")
                 return reg
             except (requests.Timeout, requests.ConnectionError,
                     requests.exceptions.ChunkedEncodingError) as e:
                 ultimo_erro = type(e).__name__
                 if tent < self.tentativas:
+                    preservar_parte = os.path.exists(parte)
                     self.espera(2 ** tent)
                     continue
                 self._fechar(reg, "erro_rede", ultimo_erro)
@@ -241,13 +277,11 @@ class Acessador:
             finally:
                 if r is not None:
                     r.close()
-                if os.path.exists(parte):
+                if not preservar_parte and os.path.exists(parte):
                     os.remove(parte)
 
-        # Não deve ser alcançado; mantém a falha explícita caso o limite de tentativas mude.
         self._fechar(reg, "erro_rede", ultimo_erro or "falha")
         raise AcessoInterrompido("erro_rede", ultimo_erro or "falha", reg)
-
 
 # -- expansão documental reproduzível e limitada -------------------------------------
 def inventariar_links(html: str, base_url: str, limite: int = 40) -> List[dict]:
