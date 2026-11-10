@@ -38,6 +38,8 @@ ROTAS: Dict[str, dict] = {
         "descoberta": ["https://dadosabertos.anm.gov.br/SCM/microdados/"],
         "estruturada": ["https://www.gov.br/anm/pt-br/acesso-a-informacao/dados-abertos/bases-de-dados"],
         "confirmacao": ["https://dadosabertos.anm.gov.br/SIGMINE/PROCESSOS_MINERARIOS/"],
+        # Espelho legado ANM: tentativa oportunista; só usado se ainda responder com TLS válido e ZIP íntegro.
+        "alternativas": ["https://app.anm.gov.br/DadosAbertos/SCM/microdados/microdados-scm.zip"],
         "complementares": ["https://www.in.gov.br/", "https://sistemas.meioambiente.mg.gov.br/licenciamento/",
                             "SEI/ANM", "processo judicial", "documentos ambientais oficiais", "manifestação oficial da empresa"],
         "regras": ["SCM descobre; SIGMINE confirma atributos espaciais; DOU/SEI/documentos aprofundam",

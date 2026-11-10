@@ -14,7 +14,9 @@ Não faz chamada de IA.
 import argparse
 import json
 import os
+import shutil
 import sys
+import tempfile
 import zipfile
 from typing import Optional
 
@@ -38,7 +40,7 @@ def baixar_e_extrair(destino: str, url: str = URL_SCM, hash_anterior: Optional[s
                      max_membro_bytes: int = MAX_MEMBRO_BYTES) -> dict:
     os.makedirs(destino, exist_ok=True)
     etapas = diagnostico.Etapas("M9A-download", saida=saida)
-    ac = acessador or acesso.Acessador("M9A", sem_checar_rota=False, timeout=60, tentativas=8)
+    ac = acessador or acesso.Acessador("M9A", sem_checar_rota=False, timeout=60, tentativas=1)
     caminho_zip = os.path.join(destino, "microdados-scm.zip")
     res = {"url": url, "mudou": True, "registro_http": None}
 
@@ -113,6 +115,58 @@ def baixar_e_extrair(destino: str, url: str = URL_SCM, hash_anterior: Optional[s
     return res
 
 
+def _eh_barreira_de_acesso(erro: Exception) -> bool:
+    atual = erro
+    vistos = set()
+    while atual is not None and id(atual) not in vistos:
+        vistos.add(id(atual))
+        if isinstance(atual, acesso.BarreiraDeAcesso):
+            return True
+        atual = getattr(atual, "__cause__", None) or getattr(atual, "__context__", None)
+    return False
+
+
+def baixar_com_fallback(destino: str, hash_anterior: Optional[str] = None, urls=None, saida=print) -> dict:
+    """Tenta os espelhos oficiais do mesmo dump; só publica arquivos após validação completa."""
+    urls = tuple(urls or (URL_SCM, *rotas.rota_do_modulo("M9A").get("alternativas", [])))
+    falhas = []
+    for url in urls:
+        permitido, motivo = rotas.url_permitida(url)
+        if not permitido:
+            falhas.append(f"{url}: rota não aprovada ({motivo})")
+            saida(f"[M9A-download] rota ignorada: {url} ({motivo})")
+            continue
+
+        saida(f"[M9A-download] tentando fonte oficial: {url}")
+        try:
+            with tempfile.TemporaryDirectory(prefix="m9a-scm-") as temporario:
+                # Uma tentativa por host: falha de DNS/TLS/servidor leva rapidamente ao próximo espelho.
+                ac = acesso.Acessador("M9A", sem_checar_rota=False, timeout=60, tentativas=1)
+                res = baixar_e_extrair(temporario, url, hash_anterior, acessador=ac, saida=saida)
+                os.makedirs(destino, exist_ok=True)
+                zip_tmp = os.path.join(temporario, "microdados-scm.zip")
+                if os.path.isfile(zip_tmp):
+                    os.replace(zip_tmp, os.path.join(destino, "microdados-scm.zip"))
+                dir_tmp = os.path.join(temporario, "microdados")
+                if os.path.isdir(dir_tmp):
+                    dir_final = os.path.join(destino, "microdados")
+                    if os.path.isdir(dir_final):
+                        shutil.rmtree(dir_final)
+                    os.replace(dir_tmp, dir_final)
+                    res["dir_microdados"] = dir_final
+                res["rotas_tentadas"] = [*falhas, f"{url}: sucesso"]
+                return res
+        except Exception as erro:
+            if _eh_barreira_de_acesso(erro):
+                # 401/403/429/CAPTCHA são barreiras explícitas; não se tenta contorná-las por outro host.
+                raise
+            falhas.append(f"{url}: {type(erro).__name__}: {erro}")
+            saida(f"[M9A-download] fonte falhou; seguindo para a próxima: {url} ({erro})")
+
+    resumo = " | ".join(falhas) if falhas else "nenhuma rota SCM configurada"
+    raise diagnostico.ErroEtapa("download", f"todas as fontes oficiais do SCM falharam; consulta interrompida sem processar dados incompletos. {resumo}")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Baixa e valida o dump SCM da ANM")
     ap.add_argument("--destino", required=True)
@@ -125,9 +179,11 @@ def main():
         print(f"[M9A] URL fora das fontes oficiais: {motivo}")
         sys.exit(2)
     try:
-        r = baixar_e_extrair(a.destino, a.url, a.hash_anterior)
+        r = (baixar_com_fallback(a.destino, a.hash_anterior) if a.url == URL_SCM else baixar_e_extrair(a.destino, a.url, a.hash_anterior))
     except Exception as e:
         print(f"[M9A-download] FALHA: {e}")
+        for falha in getattr(e, "rotas_tentadas", []):
+            print(f"[M9A-download] rota: {falha}")
         if isinstance(e, diagnostico.ErroEtapa) and isinstance(e.__cause__, acesso.AcessoInterrompido):
             print(f"[M9A-download] registro: {json.dumps(e.__cause__.registro, default=str)}")
         sys.exit(1)
