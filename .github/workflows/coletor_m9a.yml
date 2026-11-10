@@ -65,6 +65,37 @@ jobs:
         run: |
           python -m unittest test_acesso.py test_diagnostico.py test_pre_ia.py -v
 
+      - name: Diagnosticar certificado da ANM e completar a cadeia (verificação SSL continua LIGADA)
+        # Só diagnostica e, se a ANM não enviar o certificado intermediário, busca-o no endereço (AIA) que o próprio
+        # certificado do site informa. O intermediário só é aceito se encadear até uma raiz confiável (certifi).
+        # Não desliga a verificação, não usa curl -k e não baixa dados. Se algo falhar, o passo seguinte roda como antes.
+        continue-on-error: true
+        run: |
+          mkdir -p .scm_dump/certs && cd .scm_dump/certs
+          CERTIFI="$(python -c 'import certifi; print(certifi.where())')"
+          for H in dadosabertos.anm.gov.br app.anm.gov.br; do
+            echo "=== $H"
+            echo | openssl s_client -connect "$H:443" -servername "$H" -showcerts -CAfile "$CERTIFI" > "$H.txt" 2>&1 || true
+            grep -E "^ *[0-9]+ s:|^ *i:|Verify return code|verify error|Protocol  :|Cipher    :" "$H.txt" || echo "(sem resposta TLS de $H)"
+          done
+          H=dadosabertos.anm.gov.br
+          openssl x509 -in <(awk '/BEGIN CERTIFICATE/{f=1} f{print} /END CERTIFICATE/{exit}' "$H.txt") -out leaf.pem 2>/dev/null || { echo "não consegui ler o certificado do site"; exit 0; }
+          if openssl verify -CAfile "$CERTIFI" leaf.pem >/dev/null 2>&1; then
+            echo "Cadeia já completa: nada a corrigir."; exit 0
+          fi
+          AIA="$(openssl x509 -in leaf.pem -noout -text | grep -A1 'CA Issuers' | grep -o 'http[^ ]*' | head -1)"
+          echo "Cadeia incompleta. Endereço do intermediário informado no certificado (AIA): ${AIA:-nenhum}"
+          [ -n "$AIA" ] || exit 0
+          curl -fsSL --max-time 30 "$AIA" -o inter.bin || { echo "falha ao baixar o intermediário"; exit 0; }
+          openssl x509 -inform DER -in inter.bin -out inter.pem 2>/dev/null || openssl x509 -inform PEM -in inter.bin -out inter.pem 2>/dev/null || { echo "intermediário ilegível"; exit 0; }
+          if openssl verify -CAfile "$CERTIFI" -untrusted inter.pem leaf.pem; then
+            cat "$CERTIFI" inter.pem > bundle.pem
+            echo "REQUESTS_CA_BUNDLE=$PWD/bundle.pem" >> "$GITHUB_ENV"
+            echo "OK: intermediário encadeia até uma raiz confiável; usando bundle.pem no download."
+          else
+            echo "Intermediário NÃO encadeia até uma raiz confiável: não será usado."
+          fi
+
       - name: Baixar e validar microdados SCM (rota oficial, barreiras não contornadas)
         working-directory: coletores/m9a_movimentacoes
         run: |
