@@ -246,7 +246,7 @@ class Acessador:
                         if not bloco:
                             continue
                         total_bloco += len(bloco)
-                        if (offset + total_bloco + len(bloco)) > max_bytes:
+                        if (offset + total_bloco) > max_bytes:
                             self._fechar(reg, "erro_http", f"download passou do limite {max_bytes}")
                             raise AcessoInterrompido("erro_http", reg["motivo_interrupcao"], reg)
                         f.write(bloco)
