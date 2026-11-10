@@ -1900,7 +1900,7 @@ async function atualizarStatus(eventId, novoStatus){
     .eq('id', eventId).eq('empresa_id', clienteSelecionado).select('id');
   if(error){ alert('Não consegui atualizar: ' + error.message); return; }
   if(!data || !data.length){ alert('Não consegui atualizar: ' + MSG_SEM_PERMISSAO); return; }
-  await carregarFila();
+  const itemAtualizado = filaData.find(x => x.event.id === eventId); if(itemAtualizado) itemAtualizado.event.status_editorial = novoStatus; renderFila();
 }
 
 // ---------------------------------------------------------------------------
