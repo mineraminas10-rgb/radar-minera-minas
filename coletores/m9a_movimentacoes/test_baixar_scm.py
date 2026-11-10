@@ -1,5 +1,6 @@
 import io, os, pathlib, sys, tempfile, threading, unittest, zipfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from unittest.mock import patch
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "comum"))
 import acesso, diagnostico
 import baixar_scm as b
@@ -113,6 +114,28 @@ class TestBaixar(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, self.assertRaises(diagnostico.ErroEtapa) as c:
             b.baixar_e_extrair(d, "https://exemplo.com/microdados-scm.zip", acessador=ac, saida=lambda s: None)
         self.assertIsInstance(c.exception.__cause__, acesso.ForaDaRota)
+
+    def test_fallback_tenta_outra_rota_oficial_apos_falha_de_host(self):
+        urls = (b.URL_SCM, "https://app.anm.gov.br/DadosAbertos/SCM/microdados/microdados-scm.zip")
+        chamadas = []
+
+        def fake_download(destino, url, hash_anterior=None, acessador=None, saida=print, **kw):
+            chamadas.append(url)
+            if len(chamadas) == 1:
+                raise diagnostico.ErroEtapa("download", "falha TLS simulada")
+            pathlib.Path(destino, "microdados-scm.zip").write_bytes(b"zip validado")
+            md = pathlib.Path(destino, "microdados")
+            md.mkdir()
+            (md / "Processo.txt").write_text("dados")
+            return {"url": url, "mudou": True, "registro_http": {"url": url}, "sha256": "abc"}
+
+        with tempfile.TemporaryDirectory() as d, patch.object(b, "baixar_e_extrair", side_effect=fake_download):
+            r = b.baixar_com_fallback(d, urls=urls, saida=lambda s: None)
+            self.assertEqual(chamadas, list(urls))
+            self.assertEqual(r["url"], urls[1])
+            self.assertTrue(pathlib.Path(d, "microdados-scm.zip").is_file())
+            self.assertTrue(pathlib.Path(d, "microdados", "Processo.txt").is_file())
+            self.assertIn("sucesso", r["rotas_tentadas"][-1])
 
     def test_url_padrao_esta_dentro_da_rota_m9a(self):
         self.assertTrue(b.rotas.url_permitida(b.URL_SCM)[0])
