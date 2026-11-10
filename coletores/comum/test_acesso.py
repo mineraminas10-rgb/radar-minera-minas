@@ -134,6 +134,30 @@ class TestAcesso(unittest.TestCase):
         with self.assertRaises(a.LimiteDeRequisicoes):
             ac.get(URL + "?x=1")
 
+    def test_download_repete_erro_ssl_transitorio(self):
+        corpo = b"PK\x03\x04" + b"x" * 5000
+        ac, s, logs = mk(requests.exceptions.SSLError("handshake"), FakeResp(
+            body=corpo, ctype="application/zip", headers={"Content-Length": str(len(corpo))}))
+        with tempfile.TemporaryDirectory() as d:
+            dest = os.path.join(d, "a.zip")
+            reg = ac.baixar_arquivo("https://dadosabertos.anm.gov.br/x.zip", dest, max_bytes=10_000)
+            self.assertEqual(len(s.chamadas), 2)
+            self.assertEqual(reg["tentativa"], 2)
+            self.assertEqual(os.path.getsize(dest), len(corpo))
+            self.assertEqual(logs[0]["resultado"], "ok")
+
+    def test_download_repete_http_5xx_transitorio(self):
+        corpo = b"PK\x03\x04" + b"x" * 5000
+        ac, s, logs = mk(FakeResp(status=503, body=b"indisponivel", ctype="text/plain"),
+                         FakeResp(body=corpo, ctype="application/zip",
+                                  headers={"Content-Length": str(len(corpo))}))
+        with tempfile.TemporaryDirectory() as d:
+            dest = os.path.join(d, "a.zip")
+            reg = ac.baixar_arquivo("https://dadosabertos.anm.gov.br/x.zip", dest, max_bytes=10_000)
+            self.assertEqual(len(s.chamadas), 2)
+            self.assertEqual(reg["tentativa"], 2)
+            self.assertEqual(os.path.getsize(dest), len(corpo))
+
     def test_download_stream_ok_e_hash(self):
         corpo = b"PK\x03\x04" + b"x" * 5000
         ac, s, logs = mk(FakeResp(body=corpo, ctype="application/zip", headers={"Content-Length": str(len(corpo))}))
