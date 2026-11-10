@@ -38,7 +38,7 @@ def baixar_e_extrair(destino: str, url: str = URL_SCM, hash_anterior: Optional[s
                      max_membro_bytes: int = MAX_MEMBRO_BYTES) -> dict:
     os.makedirs(destino, exist_ok=True)
     etapas = diagnostico.Etapas("M9A-download", saida=saida)
-    ac = acessador or acesso.Acessador("M9A", sem_checar_rota=False, tentativas=5)
+    ac = acessador or acesso.Acessador("M9A", sem_checar_rota=False, timeout=60, tentativas=8)
     caminho_zip = os.path.join(destino, "microdados-scm.zip")
     res = {"url": url, "mudou": True, "registro_http": None}
 
