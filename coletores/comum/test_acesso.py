@@ -165,7 +165,8 @@ class TestAcesso(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             dest = os.path.join(d, "a.zip")
             reg = ac.baixar_arquivo("https://dadosabertos.anm.gov.br/x.zip", dest, max_bytes=10_000)
-            self.assertEqual(open(dest, "rb").read(), completo)
+            with open(dest, "rb") as arquivo:
+                self.assertEqual(arquivo.read(), completo)
             self.assertEqual(reg["hash"], a.sha256(completo))
         self.assertEqual(s.kwargs[1]["headers"]["Range"], f"bytes={len(prefixo)}-")
         self.assertEqual(logs[0]["resultado"], "ok")
