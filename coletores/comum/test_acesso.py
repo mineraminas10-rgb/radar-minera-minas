@@ -18,9 +18,10 @@ class FakeResp:
 
 class FakeSession:
     def __init__(self, *respostas):
-        self.fila, self.chamadas = list(respostas), []
+        self.fila, self.chamadas, self.kwargs = list(respostas), [], []
     def get(self, url, **kw):
         self.chamadas.append(url)
+        self.kwargs.append(kw)
         r = self.fila.pop(0)
         if isinstance(r, Exception):
             raise r
@@ -145,6 +146,29 @@ class TestAcesso(unittest.TestCase):
             self.assertEqual(reg["tentativa"], 2)
             self.assertEqual(os.path.getsize(dest), len(corpo))
             self.assertEqual(logs[0]["resultado"], "ok")
+
+    def test_download_retorna_por_range_apos_queda_no_meio(self):
+        prefixo = b"PK\x03\x04" + b"x" * 1000
+        sufixo = b"y" * 500
+        completo = prefixo + sufixo
+
+        class RespostaInterrompida(FakeResp):
+            def iter_content(self, chunk_size=1):
+                yield self.content
+                raise requests.exceptions.SSLError("queda durante o fluxo")
+
+        primeira = RespostaInterrompida(body=prefixo, ctype="application/zip")
+        segunda = FakeResp(status=206, body=sufixo, ctype="application/zip",
+                           headers={"Content-Length": str(len(sufixo)),
+                                    "Content-Range": f"bytes {len(prefixo)}-{len(completo) - 1}/{len(completo)}"})
+        ac, s, logs = mk(primeira, segunda)
+        with tempfile.TemporaryDirectory() as d:
+            dest = os.path.join(d, "a.zip")
+            reg = ac.baixar_arquivo("https://dadosabertos.anm.gov.br/x.zip", dest, max_bytes=10_000)
+            self.assertEqual(open(dest, "rb").read(), completo)
+            self.assertEqual(reg["hash"], a.sha256(completo))
+        self.assertEqual(s.kwargs[1]["headers"]["Range"], f"bytes={len(prefixo)}-")
+        self.assertEqual(logs[0]["resultado"], "ok")
 
     def test_download_repete_http_5xx_transitorio(self):
         corpo = b"PK\x03\x04" + b"x" * 5000
