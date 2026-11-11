@@ -7,8 +7,8 @@ import type { Dossie, Elegibilidade, Repo } from './types.ts';
 
 // Lote fixo do piloto: o navegador NÃO escolhe (um lote novo por requisição burlaria o teto).
 // Para um novo lote de testes, troque este valor num deploy — nunca por parâmetro.
-export const LOTE_PILOTO_ID = 'PILOTO_M6_M8_M9A_2026_10_R2';
-export const LIMITE_MAX_LOTE = 6;
+export const LOTE_PILOTO_ID = 'PILOTO_M6_M8_M9A_2026_11_R3';
+export const LIMITE_MAX_LOTE = 100;
 
 // 'M8_acidentes_ambientais' -> 'm8'; 'M9A_anm_movimentacoes' -> 'm9a'; 'M6_outorgas' -> 'm6'
 export function moduloCurto(moduloEnum: string | undefined | null): string | null {
@@ -192,8 +192,8 @@ export async function consultarElegibilidade(repo: Repo, ch: Chamador, body: Rec
   if (!isUuid(body.empresa_id)) throw new HttpError(400, 'dados_invalidos', 'empresa_id inválido.');
   const empresaId = body.empresa_id.toLowerCase();
   const ids = body.event_ids;
-  if (!Array.isArray(ids) || ids.length === 0 || ids.length > 50 || !ids.every(isUuid)) {
-    throw new HttpError(400, 'dados_invalidos', 'event_ids deve ter de 1 a 50 UUIDs.');
+  if (!Array.isArray(ids) || ids.length === 0 || ids.length > 100 || !ids.every(isUuid)) {
+    throw new HttpError(400, 'dados_invalidos', 'event_ids deve ter de 1 a 100 UUIDs.');
   }
   const itens = [];
   for (const id of ids as string[]) {
