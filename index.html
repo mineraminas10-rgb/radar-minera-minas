@@ -2790,12 +2790,12 @@ async function apiPreco(){
 // ADMIN > PILOTO IA — OPERAÇÃO ASSISTIDA MANUAL (só master). Sem cron, sem consulta automática.
 // Fluxo: o servidor (executar-ai) decide a elegibilidade a partir do que os coletores já gravaram, monta o dossiê
 // do evento, chama a IA UMA vez por caso e valida a resposta. A IA nunca altera score, status nem publica:
-// a resposta fica em api_execucoes e a revisão humana continua Pendente. Máx. 6 chamadas reais, sem nova tentativa.
+// resposta fica em api_execucoes; limite 100.
 // O navegador NÃO envia texto nem filtros pré-IA: só escolhe quais eventos consultar.
 // ---------------------------------------------------------------------------
-const PILOTO_MAX = 6;
-const PILOTO_RECENTES = 40;   // eventos mais recentes listados; o servidor aceita no máximo 50 por consulta de elegibilidade
-const PILOTO_EXTRAS_MAX = 10; // eventos incluídos à mão pelo código (id_evento)
+const PILOTO_MAX = 100;
+const PILOTO_RECENTES = 250; // eventos mais recentes listados; consulta aceita a
+const PILOTO_EXTRAS_MAX = 100; // IDs manuais
 const PILOTO_CODIGO_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{2,79}$/;
 const PILOTO_MODULOS = ['M6_outorgas', 'M8_acidentes_ambientais', 'M9A_anm_movimentacoes'];
 const PILOTO_PROMPT = { m6: 'M6_ANALISE_EDITORIAL_V3', m8: 'M8_ANALISE_EDITORIAL_V3', m9a: 'M9A_ANALISE_EDITORIAL_V3' };
