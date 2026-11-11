@@ -192,8 +192,8 @@ export async function consultarElegibilidade(repo: Repo, ch: Chamador, body: Rec
   if (!isUuid(body.empresa_id)) throw new HttpError(400, 'dados_invalidos', 'empresa_id inválido.');
   const empresaId = body.empresa_id.toLowerCase();
   const ids = body.event_ids;
-  if (!Array.isArray(ids) || ids.length === 0 || ids.length > 100 || !ids.every(isUuid)) {
-    throw new HttpError(400, 'dados_invalidos', 'event_ids deve ter de 1 a 100 UUIDs.');
+  if (!Array.isArray(ids) || ids.length === 0 || ids.length > 500 || !ids.every(isUuid)) {
+    throw new HttpError(400, 'dados_invalidos', 'event_ids deve ter de 1 a 500 UUIDs.');
   }
   const itens = [];
   for (const id of ids as string[]) {
