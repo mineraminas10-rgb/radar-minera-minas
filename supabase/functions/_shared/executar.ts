@@ -42,7 +42,7 @@ export interface ExecInput {
   pre_ia?: unknown;                  // resultado das etapas determinísticas (ver gate.ts)
   // --- operação assistida (analise_editorial) ---
   usar_api_real?: unknown;           // boolean OBRIGATÓRIO: false => nenhuma chamada paga (registra bloqueio)
-  limite_ia?: unknown;               // inteiro 0..6 OBRIGATÓRIO: teto de chamadas reais do lote
+  limite_ia?: unknown;               // inteiro 0..100 OBRIGATÓRIO: teto de chamadas reais do lote
 }
 
 export interface ExecOpts {
@@ -171,7 +171,7 @@ async function executarIAInterno(
   if (porDossie) {
     if (typeof input.usar_api_real !== 'boolean') throw new HttpError(400, 'usar_api_real_obrigatorio', 'Informe usar_api_real (verdadeiro/falso).');
     usarApiReal = input.usar_api_real;
-    if (!Number.isInteger(input.limite_ia) || (input.limite_ia as number) < 0) throw new HttpError(400, 'limite_ia_obrigatorio', 'Informe limite_ia (inteiro de 0 a 6).');
+    if (!Number.isInteger(input.limite_ia) || (input.limite_ia as number) < 0) throw new HttpError(400, 'limite_ia_obrigatorio', 'Informe limite_ia (inteiro de 0 a 100).');
     if ((input.limite_ia as number) > LIMITE_MAX_LOTE) throw new HttpError(400, 'limite_ia_maximo', `limite_ia máximo é ${LIMITE_MAX_LOTE}.`);
     limiteIa = input.limite_ia as number;
   }
