@@ -43,7 +43,7 @@
   #connStatus .dot{width:8px;height:8px;border-radius:50%;background:var(--muted);}
   #connStatus.ok .dot{background:var(--ok);}
   #connStatus.err .dot{background:var(--danger);}
-  main{max-width:980px;margin:0 auto;padding:20px;}
+  main{max-width:1440px;margin:0 auto;padding:20px;}
   .view{display:none;}
   .view.active{display:block;}
 
@@ -137,6 +137,27 @@
   .st-arquivado{background:#e7e9ee;color:#5a6479;}
   .st-descartado{background:#fbdcdb;color:#b3241b;text-decoration:line-through;}
   .empty{color:var(--muted);padding:30px;text-align:center;font-size:13px;}
+
+  /* Fila organizada por carteira */
+  .filaLayout{display:grid;grid-template-columns:230px minmax(0,1fr);gap:18px;align-items:start;}
+  .filaCarteiras{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;position:sticky;top:78px;}
+  .filaCarteirasTitle{padding:12px 14px;border-bottom:1px solid var(--border);font-weight:600;}
+  .filaCarteirasNav{display:flex;flex-direction:column;}
+  .filaCarteiraBtn{width:100%;display:flex;justify-content:space-between;align-items:center;gap:8px;text-align:left;background:var(--surface);border:0;border-bottom:1px solid var(--border);padding:11px 14px;color:var(--text);font:inherit;cursor:pointer;}
+  .filaCarteiraBtn:hover{background:var(--surface2);}
+  .filaCarteiraBtn.sel{background:var(--accent-weak);box-shadow:inset 3px 0 0 var(--accent);}
+  .filaCarteiraBtn .count{font-size:11px;color:var(--muted);white-space:nowrap;}
+  .filaCarteirasHint{padding:10px 14px;color:var(--muted);font-size:11.5px;line-height:1.4;}
+  .filaMain{min-width:0;}
+  .filaHeading{margin:0 0 12px;font-size:16px;font-weight:600;}
+  @media(max-width:900px){
+    .filaLayout{grid-template-columns:1fr;gap:12px;}
+    .filaCarteiras{position:static;}
+    .filaCarteirasNav{flex-direction:row;overflow-x:auto;scrollbar-width:thin;-webkit-overflow-scrolling:touch;}
+    .filaCarteiraBtn{width:auto;min-width:max-content;border-bottom:0;border-right:1px solid var(--border);}
+    .filaCarteiraBtn.sel{box-shadow:inset 0 -3px 0 var(--accent);}
+    .filaCarteirasHint{display:none;}
+  }
 
   /* Carteiras admin */
   .carteirasLayout{display:flex;gap:18px;align-items:flex-start;}
@@ -332,6 +353,16 @@
 
   <!-- ===================== FILA DO EDITOR ===================== -->
   <section id="view-fila" class="view active">
+    <div class="filaLayout">
+      <aside class="filaCarteiras" aria-label="Fila por carteira">
+        <div class="filaCarteirasTitle">Carteiras</div>
+        <nav class="filaCarteirasNav" id="filaCarteirasNav" aria-label="Selecionar carteira">
+          <div class="empty">Carregando carteiras…</div>
+        </nav>
+        <div class="filaCarteirasHint">A fila e os filtros acompanham a carteira selecionada.</div>
+      </aside>
+      <div class="filaMain">
+    <h2 class="filaHeading" id="filaHeading">Fila do Editor</h2>
     <div class="toolbar">
       <input type="text" id="busca" placeholder="Busca livre: título, empresa, processo, decisão, palavras-chave…">
       <label><input type="checkbox" id="mostrarTodos"> mostrar publicados/arquivados/descartados e fora da seleção (score &lt; 40)</label>
@@ -375,6 +406,8 @@
     </div>
 
     <div id="filaWrap"><div class="empty">Carregando…</div></div>
+      </div>
+    </div>
   </section>
 
   <!-- ===================== CARTEIRAS ===================== -->
@@ -658,7 +691,7 @@ function bloqueiosPublicacao(item, acao){
   return r;
 }
 
-let sb, filaData = [];
+let sb, filaData = [], filaCarteiras = [], filaCarteiraSelecionada = null;
 let iaAnalisados = {};   // event_id -> data da última análise de IA concluída (só master; vazio para os demais)
 let clientesCache = [], clienteSelecionado = null;
 
@@ -776,15 +809,16 @@ function exibirBloqueio({ titulo, msg, detalhe, acoes }){
 // Esvazia estado em memória e DOM do dashboard — assim, depois do logout (ou
 // troca de usuário) nada do usuário anterior fica no HTML nem em variáveis.
 function limparEstadoDoApp(){
-  filaData = []; clientesCache = []; clienteSelecionado = null;
+  filaData = []; filaCarteiras = []; filaCarteiraSelecionada = null; clientesCache = []; clienteSelecionado = null;
   carteirasCache = []; sourcesCache = []; camposCriterioCache = []; carteiraSelecionada = null;
   window.__erroFontes = '';
   authState = { user: null, perfil: null, empresas: [], permissoes: null };
   const set = (id, html)=>{ const el = document.getElementById(id); if (el) el.innerHTML = html; };
-  set('filaWrap', ''); set('carteirasList', ''); set('carteiraDetail', '');
+  set('filaWrap', ''); set('filaCarteirasNav', '<div class="empty">Selecione uma empresa.</div>'); set('carteirasList', ''); set('carteiraDetail', '');
   set('clienteSelect', '<option value="">—</option>');
   set('fEmpresa', '<option value="">Todas</option>'); set('fMunicipio', '<option value="">Todos</option>');
   document.getElementById('filterSummary').textContent = '';
+  document.getElementById('filaHeading').textContent = 'Fila do Editor';
   ['busca','fStatus','fPrioridade','fScoreMin','fScoreMax','fTipoEvento','fProcesso','fDecisao','fSituacao','fPalavra','fFonte','fDataIni','fDataFim']
     .forEach(id=>{ const el = document.getElementById(id); if (el) el.value = ''; });
   document.getElementById('mostrarTodos').checked = false;
@@ -1218,11 +1252,13 @@ function escopoVigente(e){ return e.seq === escopoSeq && e.empresa === clienteSe
 // Zera TUDO o que depende da empresa ativa (memória + tela). Chamado em toda troca/perda de empresa.
 function limparEscopoDaEmpresa(){
   escopoSeq++;
-  filaData = [];
+  filaData = []; filaCarteiras = []; filaCarteiraSelecionada = null;
   carteirasCache = []; sourcesCache = []; carteiraSelecionada = null;
   window.__erroFontes = '';
   const set = (id, html)=>{ const el = document.getElementById(id); if (el) el.innerHTML = html; };
   set('carteirasList', ''); set('carteiraDetail', '<div class="empty">Selecione uma carteira à esquerda ou crie uma nova.</div>');
+  set('filaCarteirasNav', '<div class="empty">Selecione uma empresa.</div>');
+  const fh = document.getElementById('filaHeading'); if (fh) fh.textContent = 'Fila do Editor';
   set('filaWrap', '');
   set('fEmpresa', '<option value="">Todas</option>'); set('fMunicipio', '<option value="">Todos</option>');
   ['busca','fStatus','fPrioridade','fScoreMin','fScoreMax','fTipoEvento','fProcesso','fDecisao','fSituacao','fPalavra','fFonte','fDataIni','fDataFim']
@@ -1234,6 +1270,7 @@ function limparEscopoDaEmpresa(){
 function mostrarEscolhaDeEmpresa(){
   const msg = '<div class="empty">Selecione a <b>empresa ativa</b> no seletor acima. Enquanto nenhuma empresa estiver escolhida, nenhuma fila, carteira, fonte ou peso é carregado.</div>';
   const w = document.getElementById('filaWrap'); if (w) w.innerHTML = msg;
+  const fn = document.getElementById('filaCarteirasNav'); if (fn) fn.innerHTML = '<div class="empty">Selecione uma empresa.</div>';
   const l = document.getElementById('carteirasList'); if (l) l.innerHTML = '';
   const d = document.getElementById('carteiraDetail'); if (d) d.innerHTML = msg;
   setEstado('carregado');
@@ -1430,12 +1467,20 @@ async function carregarFila(){
     const fontesEventoPorId = {};
     (fontesEvento || []).forEach(s => { fontesEventoPorId[s.id] = s; });
 
+    const { data: carteirasDaEmpresa, error: eCarteiras } = await comLimiteDeTempo(
+      sb.from('carteiras').select('id, nome, ativa, empresa_id').eq('empresa_id', clienteSelecionado).order('nome'),
+      TIMEOUT_MS, 'carteiras da fila'
+    );
+    if (!escopoVigente(esc0)) return;
+    if (eCarteiras) throw eCarteiras;
+    filaCarteiras = (carteirasDaEmpresa || []).filter(c => c.empresa_id === esc0.empresa);
+
     // Fila única: todos os eventos são carregados diretamente de events.
     // O campo tecnico "modulo" pode continuar existindo no banco por compatibilidade,
     // mas não é consultado, exibido, filtrado nem usado para separar a interface.
     const { data: allEvents, error: eEv } = await comLimiteDeTempo(
       sb.from('events')
-        .select(`id, id_evento, titulo_fato, resumo_factual, empresa, municipio, fonte_id,
+        .select(`id, id_evento, carteira_id, titulo_fato, resumo_factual, empresa, municipio, fonte_id,
           status_editorial, revisao_humana, pre_release, url_oficial, data_evento, data_publicacao, created_at, processo, tipo_evento,
           decisao, situacao_processual, proximo_marco, palavras_chave, justificativa_editorial,
           event_scores ( score_bruto, score_normalizado, score_relevancia, componentes, prioridade, justificativa_score, versao_score, vigente, estagio ),
@@ -1477,6 +1522,7 @@ async function carregarFila(){
     }
     if (!escopoVigente(esc0)) return;
 
+    renderFilaCarteiras();
     preencherOpcoesFiltros();
     setEstado('carregado');
     renderFila();
@@ -1491,6 +1537,37 @@ function todosItensFila(){
   return filaData;
 }
 
+function itensDaCarteiraSelecionada(){
+  if(filaCarteiraSelecionada === 'todas') return filaData;
+  if(filaCarteiraSelecionada === 'sem_carteira') return filaData.filter(i => !i.event.carteira_id || !filaCarteiras.some(c=>c.id===i.event.carteira_id));
+  return filaData.filter(i => i.event.carteira_id === filaCarteiraSelecionada);
+}
+
+function renderFilaCarteiras(){
+  const nav = document.getElementById('filaCarteirasNav');
+  if(!nav) return;
+  const porCarteira = new Map(filaCarteiras.map(c => [c.id, 0]));
+  let semCarteira = 0;
+  filaData.forEach(i => {
+    if(i.event.carteira_id && porCarteira.has(i.event.carteira_id)) porCarteira.set(i.event.carteira_id, porCarteira.get(i.event.carteira_id) + 1);
+    else semCarteira++;
+  });
+  if(!filaCarteiras.some(c => c.id === filaCarteiraSelecionada) && !['todas','sem_carteira'].includes(filaCarteiraSelecionada)) filaCarteiraSelecionada = null;
+  if(!filaCarteiraSelecionada) filaCarteiraSelecionada = filaCarteiras.find(c => c.ativa !== false)?.id || filaCarteiras[0]?.id || 'todas';
+  const botoes = [{id:'todas',nome:'Todas as carteiras',total:filaData.length}, ...filaCarteiras.map(c=>({id:c.id,nome:c.nome,total:porCarteira.get(c.id)||0}))];
+  if(semCarteira) botoes.push({id:'sem_carteira',nome:'Sem carteira',total:semCarteira});
+  nav.innerHTML = botoes.map(c=>`<button type="button" class="filaCarteiraBtn ${filaCarteiraSelecionada===c.id?'sel':''}" data-carteira="${esc(c.id)}" aria-pressed="${filaCarteiraSelecionada===c.id}"><span>${esc(c.nome)}${filaCarteiras.find(x=>x.id===c.id)?.ativa===false?' <span class="sub">(inativa)</span>':''}</span><span class="count">${c.total}</span></button>`).join('');
+  nav.querySelectorAll('[data-carteira]').forEach(btn=>btn.addEventListener('click',()=>{
+    filaCarteiraSelecionada = btn.dataset.carteira;
+    renderFilaCarteiras();
+    preencherOpcoesFiltros();
+    renderFila();
+  }));
+  const atual = filaCarteiras.find(c=>c.id===filaCarteiraSelecionada);
+  const titulo = filaCarteiraSelecionada === 'todas' ? 'Todas as carteiras' : filaCarteiraSelecionada === 'sem_carteira' ? 'Sem carteira' : atual?.nome || 'Fila do Editor';
+  document.getElementById('filaHeading').textContent = `Fila do Editor — ${titulo}`;
+}
+
 function preencherSelect(id, valores, rotulo){
   const sel = document.getElementById(id);
   const atual = sel.value;
@@ -1501,7 +1578,7 @@ function preencherSelect(id, valores, rotulo){
 }
 
 function preencherOpcoesFiltros(){
-  const itens = todosItensFila();
+  const itens = itensDaCarteiraSelecionada();
   preencherSelect('fEmpresa', itens.map(i=>i.event.empresa), 'Todas');
   preencherSelect('fMunicipio', itens.map(i=>i.event.municipio), 'Todos');
 }
@@ -1627,11 +1704,12 @@ function compararItens(a,b){
 
 function renderFila(){
   const wrap = document.getElementById('filaWrap');
-  const itens = filaData.filter(passaFiltro).sort(compararItens);
-  const total = filaData.length;
-  const ocultosScore = document.getElementById('mostrarTodos').checked ? 0 : filaData.filter(i => i.situacao && i.situacao.foraDaSelecao).length;
+  const escopo = itensDaCarteiraSelecionada();
+  const itens = escopo.filter(passaFiltro).sort(compararItens);
+  const total = escopo.length;
+  const ocultosScore = document.getElementById('mostrarTodos').checked ? 0 : escopo.filter(i => i.situacao && i.situacao.foraDaSelecao).length;
   document.getElementById('filterSummary').textContent = `${itens.length} de ${total} assunto(s)` + (ocultosScore ? ` · ${ocultosScore} fora da seleção (score < 40) oculto(s) — marque "mostrar" para ver` : '')
-    + (filaData.some(i => i.regrasOrigem === 'transicao') ? ' · regras da fila em MODO DE TRANSIÇÃO (o banco ainda não tem as regras)' : '');
+    + (escopo.some(i => i.regrasOrigem === 'transicao') ? ' · regras da fila em MODO DE TRANSIÇÃO (o banco ainda não tem as regras)' : '');
 
   if(itens.length===0){
     wrap.innerHTML = '<div class="empty">Nenhum assunto corresponde aos filtros selecionados.</div>';
