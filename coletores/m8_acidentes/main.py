@@ -340,13 +340,44 @@ def processar_item(sb, execucao_id: str, source_id: str, item: discovery.ItemInv
         return evidencia_padrao_id
 
     if faixa_v == "descartado":
-        detalhe_m8["motivo_descarte"] = "; ".join(justificativa_v) or "score de vínculo abaixo de 2"
-        event_id, criado = db_writer.upsert_evento(sb, id_evento, campos_evento, execucao_id, empresa_id=empresa_id)
-        _retirar_novo_da_fila(sb, id_evento, event_id, criado, "descartado",
-                              "Vínculo minerário abaixo do piso do M8; score e evidências preservados no histórico.",
-                              execucao_id, empresa_id)
+        # O vínculo minerário fraco não deve apagar um sinal relevante de
+        # dano ambiental/social. Calcular a gravidade antes de descartar para
+        # encaminhar ocorrências com evidência textual de impacto à revisão
+        # humana, sem afirmar que a mineração foi responsável pelo acidente.
+        sig_gravidade = signals.extrair_signais_gravidade(resultado_extracao.texto)
+        score_g, nivel_g = scoring.score_gravidade(sig_gravidade)
+        impacto_sinalizado = any((
+            sig_gravidade.atingiu_ou_pode_atingir_curso_dagua,
+            sig_gravidade.ultrapassou_limites_operacao,
+            sig_gravidade.rejeito_ou_produto_perigoso_ou_volume_significativo,
+            sig_gravidade.risco_estrutural_ou_interrupcao_abastecimento,
+            sig_gravidade.vitimas_evacuacao_bloqueio_ou_risco_comunidade,
+        ))
+        encaminhar_revisao = impacto_sinalizado
+        if encaminhar_revisao:
+            detalhe_m8.update({"score_gravidade": score_g, "nivel_gravidade": nivel_g})
+        else:
+            detalhe_m8["motivo_descarte"] = "; ".join(justificativa_v) or "score de vínculo abaixo de 2"
+
+        campos_evento_saida = dict(campos_evento)
+        status_saida = "em_apuracao" if encaminhar_revisao else "descartado"
+        if encaminhar_revisao:
+            campos_evento_saida["status_enriquecimento"] = (
+                "Revisão humana: sinal de impacto ambiental/social; vínculo minerário não confirmado."
+            )
+        event_id, criado = db_writer.upsert_evento(
+            sb, id_evento, campos_evento_saida, execucao_id, empresa_id=empresa_id
+        )
+        motivo_saida = (
+            "Sinal de impacto ambiental/social identificado; confirmar natureza do impacto e vínculo minerário."
+            if encaminhar_revisao else
+            "Vínculo minerário abaixo do piso do M8; score e evidências preservados no histórico."
+        )
+        _retirar_novo_da_fila(sb, id_evento, event_id, criado, status_saida,
+                              motivo_saida, execucao_id, empresa_id)
         db_writer.upsert_m8_detalhe(sb, event_id, item.protocolo, item.ano, detalhe_m8, empresa_id=empresa_id)
-        _gravar_criticidade_m8(sb, event_id, item, empresa_id, "descartado", faixa_v, data_ocorrencia=data_oc)
+        _gravar_criticidade_m8(sb, event_id, item, empresa_id, "descartado", faixa_v,
+                               sig_gravidade=sig_gravidade, score_g=score_g, data_ocorrencia=data_oc)
         evidencia_padrao_id = _finalizar_evidencias_e_checklist(event_id)
         respostas = checklist_editorial.derivar_checklist_m8(
             extracao_falhou=False, faixa_vinculo=faixa_v,
@@ -362,7 +393,9 @@ def processar_item(sb, execucao_id: str, source_id: str, item: discovery.ItemInv
             sb, event_id, hash_entrada=resultado_extracao.hash_documento, status="concluido",
             tempo_gasto_segundos=time.monotonic() - t0, empresa_id=empresa_id,
         )
-        return {"protocolo": item.protocolo, "acao": "descartado", "faixa": faixa_v, "criado": criado,
+        return {"protocolo": item.protocolo,
+                "acao": "revisao_humana" if encaminhar_revisao else "descartado",
+                "faixa": faixa_v, "impacto_sinalizado": encaminhar_revisao, "criado": criado,
                 "paginas_ocr": resultado_extracao.paginas_processadas or 0}
 
     # faixa 'contextual' fica no histórico sem alerta automático (carta §8);
