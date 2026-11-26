@@ -142,10 +142,10 @@ def processar_caso(sb, execucao_id: str, atos: list, empresa_id=None, fonte_id=N
         "municipio": "; ".join(sorted({a.municipio for a in atos if a.municipio})),
         "tipo_evento": "movimentacao_scm_anm",
     }
-    criterio_ok, criterios_pendentes = carteira_config.criterios_atendidos(contexto_carteira, config_carteira)
-    elegivel_fila = prioridade_carteira in {"A", "B"} and criterio_ok and not pesos_nao_aplicados
-    if not criterio_ok:
-        motivo_fila = "criterio_da_carteira_nao_atendido:" + ",".join(criterios_pendentes)
+    criterio_ok, criterios_pendentes = carteira_config.criterios_atendidos(contexto_carteira, config_carteira); ato_titularidade_sem_impacto = (lambda xs: any(any(p in (str(a.descricao or "") + " " + str(a.texto_narrativo or "")).lower() for p in ("decaimento", "caducidade", "cessao", "cessão", "transferencia", "transferência", "renuncia", "renúncia", "penhora", "indisponibilidade")) for a in xs) and not any(any(p in (str(a.descricao or "") + " " + str(a.texto_narrativo or "")).lower() for p in ("contamin", "polui", "vazament", "rompiment", "extravasament", "rejeit", "dano ambiental", "degradacao ambiental", "degradação ambiental", "mortandade", "morte de peixes", "desmat", "supressao de vegetacao", "supressão de vegetação", "evacuac", "evacuação", "desabrig", "desaloj", "desapropri", "reassent", "deslocamento", "abastecimento de agua", "abastecimento de água", "agua potavel", "água potável", "vitima", "vítima", "morte", "ferid", "quilomb", "povos tradicionais", "comunidade indigena", "comunidade indígena", "patrimonio cultural", "patrimônio cultural", "sitio arqueologico", "sítio arqueológico", "unidade de conservacao", "unidade de conservação", "area de preservacao", "área de preservação", "terra indigena", "terra indígena", "area protegida")) for a in xs))(atos)
+    elegivel_fila = prioridade_carteira in {"A", "B"} and criterio_ok and not pesos_nao_aplicados and not ato_titularidade_sem_impacto
+    if not criterio_ok or ato_titularidade_sem_impacto:
+        motivo_fila = ("ato_de_titularidade_sem_impacto_publico_explicito" if ato_titularidade_sem_impacto else "criterio_da_carteira_nao_atendido:" + ",".join(criterios_pendentes))
     elif pesos_nao_aplicados:
         motivo_fila = "score_ponderado_pendente:" + ",".join(pesos_nao_aplicados)
     elif prioridade_carteira not in {"A", "B"}:
