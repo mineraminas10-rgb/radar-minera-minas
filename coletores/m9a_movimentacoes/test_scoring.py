@@ -92,9 +92,9 @@ class TestScoreM9ARegras(unittest.TestCase):
 
     def test_relatorio_pesquisa_com_dimensao_nao_tem_teto_b(self):
         sig = SignaisM9A(avanco_pesquisa=True, dimensao_objetiva=True, empresa_relevante=True, mineral_estrategico=True)
-        # 3+2+2+2 = 9 -> sem teto porque tem_reforco=True
+        # 3+2+1+2 = 8; sem teto porque dimensão objetiva e mineral estratégico reforçam o incidente.
         score, faixa, just = score_m9a(sig)
-        self.assertEqual(score, 9)
+        self.assertEqual(score, 8)
         self.assertEqual(faixa, "A")
 
     def test_alvara_comum_sozinho_tem_teto_c(self):
@@ -111,9 +111,9 @@ class TestScoreM9ARegras(unittest.TestCase):
 
     def test_reavaliacao_reserva_sem_dimensao_tem_teto_b(self):
         sig = SignaisM9A(reserva_ou_substancia=True, empresa_relevante=True, mineral_estrategico=True)
-        # 1+2+2 = 5, sem dimensao_objetiva -> teto B (7), aqui já é 5 (B), sem efeito visível
+        # 1+1+2 = 4; empresa relevante vale +1 e o resultado permanece na faixa C.
         score, faixa, just = score_m9a(sig)
-        self.assertEqual(faixa, "B")
+        self.assertEqual(faixa, "C")
 
     def test_decaimento_caducidade_interdicao_lavra_tem_piso_a(self):
         # §7: alerta mínimo A mesmo com poucos outros sinais
