@@ -65,10 +65,35 @@ jobs:
         run: |
           python -m unittest test_acesso.py test_diagnostico.py test_pre_ia.py -v
 
+      - name: Diagnosticar certificado da ANM e completar a cadeia (verificação SSL continua LIGADA)
+        # Usa apenas o intermediário indicado pelo certificado do próprio site; SSL permanece validado.
+        continue-on-error: true
+        run: |
+          mkdir -p .scm_dump/certs && cd .scm_dump/certs
+          CERTIFI="$(python -c 'import certifi; print(certifi.where())')"
+          H=dadosabertos.anm.gov.br
+          echo | openssl s_client -connect "$H:443" -servername "$H" -showcerts -CAfile "$CERTIFI" > "$H.txt" 2>&1 || true
+          openssl x509 -in <(awk '/BEGIN CERTIFICATE/{f=1} f{print} /END CERTIFICATE/{exit}' "$H.txt") -out leaf.pem 2>/dev/null || { echo "não consegui ler o certificado da ANM"; exit 0; }
+          if openssl verify -CAfile "$CERTIFI" leaf.pem >/dev/null 2>&1; then
+            cp "$CERTIFI" bundle.pem
+            echo "Cadeia TLS já completa; usando bundle certifi."
+            exit 0
+          fi
+          AIA="$(openssl x509 -in leaf.pem -noout -text | grep -A1 'CA Issuers' | grep -o 'http[^ ]*' | head -1)"
+          echo "Intermediário informado pelo certificado: ${AIA:-nenhum}"
+          [ -n "$AIA" ] || exit 0
+          curl -fsSL --max-time 30 "$AIA" -o inter.bin || { echo "falha ao baixar o intermediário"; exit 0; }
+          openssl x509 -inform DER -in inter.bin -out inter.pem 2>/dev/null || openssl x509 -inform PEM -in inter.bin -out inter.pem 2>/dev/null || { echo "intermediário ilegível"; exit 0; }
+          if openssl verify -CAfile "$CERTIFI" -untrusted inter.pem leaf.pem; then
+            cat "$CERTIFI" inter.pem > bundle.pem
+            echo "Intermediário confiável verificado."
+          else
+            echo "Intermediário não encadeia até raiz confiável; não será usado."
+          fi
+
       - name: Baixar e validar microdados SCM (rota oficial, barreiras não contornadas)
         env:
-          # Usa o trust store do runner Ubuntu, mantendo a validação TLS ativa.
-          REQUESTS_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+          REQUESTS_CA_BUNDLE: ../../.scm_dump/certs/bundle.pem
         working-directory: coletores/m9a_movimentacoes
         run: |
           # Substitui o antigo `curl | unzip`: valida rota, status, MIME, tamanho, assinatura PK, integridade,
