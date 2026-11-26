@@ -1,16 +1,16 @@
 """
 Módulo 9A (Movimentações dos Processos Minerários da ANM) — motor de
-pontuação. Implementa a rubrica SCORE-M9A-V0.2 da Carta Operacional
+pontuação. Implementa a rubrica SCORE-M9A-V0.3 da Carta Operacional
 Módulo 9A v1.0 (19/09/2026), seções 6 e 7 (travas semânticas).
 
 Escala 0 a 10 (§6). Faixas: A 8-10, B 5-7, C 2-4, D 0-1.
 
-Versão da regra: SCORE-M9A-V0.2.
+Versão da regra: SCORE-M9A-V0.3.
 """
 from dataclasses import dataclass
 from typing import List, Tuple
 
-VERSAO_REGRA_SCORE = "SCORE-M9A-V0.2"
+VERSAO_REGRA_SCORE = "SCORE-M9A-V0.3"
 
 # ----------------------------------------------------------------------------
 # Pesos documentados (extração pura dos números já usados dentro de
@@ -24,7 +24,7 @@ PESOS_M9A = {
     "avanco_pesquisa": 3,
     "alvara_comum_pesquisa": 2,
     "dimensao_objetiva": 2,
-    "empresa_relevante": 2,
+    "empresa_relevante": 1,
     "mineral_estrategico": 2,
     "reserva_ou_substancia": 1,
     "varios_municipios": 1,
@@ -58,7 +58,7 @@ class SignaisM9A:
     avanco_pesquisa: bool = False             # +3 — relatório aprovado, nova substância ou reavaliação aprovada
     alvara_comum_pesquisa: bool = False       # +2 — só como sinal de monitoramento quando isolado
     dimensao_objetiva: bool = False           # +2 — área, volume, tonelagem, produção ou outra grandeza
-    empresa_relevante: bool = False           # +2 — grande porte ou importância regional/nacional
+    empresa_relevante: bool = False           # +1 — fator secundário de relevância empresarial
     mineral_estrategico: bool = False         # +2 — ferro, ouro, lítio, manganês, nióbio, grafite, terras raras, cobalto, níquel, fosfato, titânio
     reserva_ou_substancia: bool = False       # +1 — nova substância ou reavaliação de reserva
     varios_municipios: bool = False           # +1 — dois ou mais municípios no mesmo processo
@@ -90,10 +90,10 @@ def score_m9a(sig: SignaisM9A) -> Tuple[float, str, List[str]]:
         (sig.avanco_pesquisa, 3, "avanço de pesquisa (+3)"),
         (sig.alvara_comum_pesquisa, 2, "alvará comum de pesquisa (+2)"),
         (sig.dimensao_objetiva, 2, "dimensão objetiva (+2)"),
-        (sig.empresa_relevante, 2, "empresa relevante (+2)"),
         (sig.mineral_estrategico, 2, "mineral estratégico (+2)"),
         (sig.reserva_ou_substancia, 1, "reserva ou substância (+1)"),
         (sig.varios_municipios, 1, "vários municípios (+1)"),
+        (sig.empresa_relevante, 1, "empresa relevante — fator secundário (+1)"),
     ]
     for ativo, valor, texto in positivos:
         if ativo:
@@ -125,14 +125,14 @@ def score_m9a(sig: SignaisM9A) -> Tuple[float, str, List[str]]:
         pontos = min(pontos, 4)
         justificativa.append("teto: exigência genérica não vira alerta isolado (§7)")
 
-    tem_reforco = sig.dimensao_objetiva or sig.empresa_relevante or sig.mineral_estrategico
+    tem_reforco = sig.dimensao_objetiva or sig.mineral_estrategico
     if sig.avanco_pesquisa and not tem_reforco:
         pontos = min(pontos, 7)
-        justificativa.append("teto B: relatório de pesquisa aprovado sem dimensão/empresa relevante/mineral estratégico (§7)")
+        justificativa.append("teto B: relatório de pesquisa aprovado sem dimensão objetiva/mineral estratégico (§7)")
 
     outro_gatilho = any([
         sig.mudanca_material_direito, sig.autorizacao_extracao, sig.avanco_pesquisa,
-        sig.dimensao_objetiva, sig.empresa_relevante, sig.mineral_estrategico,
+        sig.dimensao_objetiva, sig.mineral_estrategico,
         sig.reserva_ou_substancia, sig.varios_municipios,
     ])
     if sig.alvara_comum_pesquisa and not outro_gatilho:
