@@ -67,7 +67,9 @@ def _preclassificar_carteira(atos: list, config: dict) -> dict:
                 setattr(sinais, campo, True)
     bruto, faixa, _ = scoring.score_m9a(sinais)
     base = scoring.calcular_score_normalizado(bruto)
-    score, pesos_nao_aplicados = carteira_config.score_ponderado(base, {"score_m9a": base}, config)
+    score = base
+    pesos_nao_aplicados = []  # M9A usa sua rubrica nativa; pesos genéricos não têm mapeamento aprovado.
+    pesos_externos_nao_aplicados = [p["componente"] for p in (config.get("pesos") or [])]
     processos = sorted({a.processo for a in atos})
     contexto = {"processo": "; ".join(processos),
                 "titulo_fato": primeiro.texto_narrativo or primeiro.descricao,
@@ -79,7 +81,7 @@ def _preclassificar_carteira(atos: list, config: dict) -> dict:
     prioridade = faixa
     return {"score": score, "prioridade": prioridade, "criterio_ok": criterio_ok,
             "componentes_disponiveis": not pesos_nao_aplicados,
-            "pesos_nao_aplicados": pesos_nao_aplicados}
+            "pesos_nao_aplicados": pesos_externos_nao_aplicados}
 
 
 def processar_caso(sb, execucao_id: str, atos: list, empresa_id=None, fonte_id=None,
@@ -128,8 +130,11 @@ def processar_caso(sb, execucao_id: str, atos: list, empresa_id=None, fonte_id=N
 
     score, faixa, justificativa = scoring.score_m9a(sig_agregado)
     score_norm_base = scoring.calcular_score_normalizado(score)
-    score_carteira, pesos_nao_aplicados = carteira_config.score_ponderado(
-        score_norm_base, {"score_m9a": score_norm_base}, config_carteira)
+    score_carteira = score_norm_base
+    # O módulo M9A segue SCORE-M9A-V0.3 (incidente primeiro; relevância da empresa é fator secundário).
+    # Os oito pesos genéricos da carteira não têm mapeamento M9A aprovado; não inventar equivalências.
+    pesos_externos_nao_aplicados = [p["componente"] for p in (config_carteira or {}).get("pesos", [])]
+    pesos_nao_aplicados = []
     if pesos_nao_aplicados:
         print(f"[M9A] componentes ponderados não disponíveis: {pesos_nao_aplicados}; caso fica fora da fila ativa")
     prioridade_carteira = (None if pesos_nao_aplicados else
@@ -239,7 +244,8 @@ def processar_caso(sb, execucao_id: str, atos: list, empresa_id=None, fonte_id=N
                      "score_normalizado_carteira": (round(score_carteira, 2) if not pesos_nao_aplicados else None),
                      "prioridade_m9a": faixa, "prioridade_carteira": prioridade_carteira, "criterios_carteira_atendidos": criterio_ok,
                      "criterios_carteira_pendentes": criterios_pendentes,
-                     "pesos_carteira_nao_aplicados": pesos_nao_aplicados,
+                     "pesos_carteira_nao_aplicados": pesos_externos_nao_aplicados,
+                     "modelo_score_carteira": "SCORE-M9A-V0.3 nativo; relevância da empresa é fator secundário",
                      "faixa": faixa, "justificativa": justificativa,
                      "processos": processos_envolvidos,
                      "elegibilidade_fila_editorial": {"selecionavel": elegivel_fila, "motivo": motivo_fila}},
