@@ -66,6 +66,9 @@ jobs:
           python -m unittest test_acesso.py test_diagnostico.py test_pre_ia.py -v
 
       - name: Baixar e validar microdados SCM (rota oficial, barreiras não contornadas)
+        env:
+          # Usa o trust store do runner Ubuntu, mantendo a validação TLS ativa.
+          REQUESTS_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
         working-directory: coletores/m9a_movimentacoes
         run: |
           # Substitui o antigo `curl | unzip`: valida rota, status, MIME, tamanho, assinatura PK, integridade,
