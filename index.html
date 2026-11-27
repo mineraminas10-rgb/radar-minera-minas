@@ -2879,11 +2879,11 @@ const PILOTO_RECENTES = 250; // eventos mais recentes listados; consulta aceita 
 const PILOTO_EXTRAS_MAX = 100; // IDs manuais
 const PILOTO_CODIGO_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{2,79}$/;
 const PILOTO_MODULOS = ['M6_outorgas', 'M8_acidentes_ambientais', 'M9A_anm_movimentacoes'];
-const PILOTO_PROMPT = { m6: 'M6_ANALISE_EDITORIAL_V3', m8: 'M8_ANALISE_EDITORIAL_V3', m9a: 'M9A_ANALISE_EDITORIAL_V3' };
+const PILOTO_PROMPT = { m6: 'M6_ANALISE_EDITORIAL_V4', m8: 'M8_ANALISE_EDITORIAL_V4', m9a: 'M9A_ANALISE_EDITORIAL_V4' };
 // recusas que interrompem o lote inteiro (as demais só encerram aquele caso — e nunca há nova tentativa)
 const PILOTO_FATAIS = ['api_pausada', 'api_nao_configurada', 'credencial_ausente', 'modelo_nao_definido', 'modelo_sem_preco', 'limite_atingido',
   'limite_ia_do_lote', 'limite_ia_zero', 'usar_api_real_desligado', 'sem_permissao', 'nao_autenticado', 'trocar_senha', 'erro_provider', 'operacao_desconhecida', 'prompt_desconhecido'];
-const PILOTO_SECOES = [['fato_confirmado', 'Fato confirmado'], ['contexto_documental', 'Contexto documental'], ['avaliacao_editorial', 'Avaliação editorial'],
+const PILOTO_SECOES = [['fato_confirmado', 'Fato confirmado'], ['contexto_documental', 'Contexto documental'], ['gatilho_pontuavel', 'Gatilho pontuável · classificação assistida'], ['avaliacao_editorial', 'Avaliação editorial'],
   ['hipotese_apuracao', 'Hipótese de apuração'], ['lacunas', 'Lacunas'], ['perguntas_redacao', 'Perguntas para a redação'], ['proposta_abordagem', 'Proposta de abordagem']];
 const pilotoState = { dados: null, itens: [], sel: new Set(), rodando: false, usarReal: true, limite: PILOTO_MAX, loteId: null, resultado: null, extras: [], extrasMsg: '' };
 
@@ -2906,7 +2906,12 @@ function iaRespostaHTML(texto){
   return PILOTO_SECOES.map(([k, rot]) => {
     const v = j[k]; let corpo = '';
     if (Array.isArray(v)) corpo = lista(v);
-    else if (v && typeof v === 'object') {
+    else if (k === 'gatilho_pontuavel' && v && typeof v === 'object') {
+      const rotulos = { CRITICO: 'Crítico', ALTA: 'Alta', MEDIA: 'Média', BAIXA: 'Baixa', ROTINA: 'Rotina · sem gatilho pontuável', NAO_AVALIAVEL: 'Não avaliável · evidência insuficiente' };
+      const cats = { contaminacao: 'Contaminação', dano_ambiental: 'Dano ambiental', impacto_social: 'Impacto social', impacto_cultural: 'Impacto cultural', area_protegida: 'Área protegida', risco_estrutural: 'Risco estrutural', interrupcao_servico_essencial: 'Interrupção de serviço essencial', perda_direito_minerario: 'Perda de direito minerário', outorga_agua: 'Outorga de água', ato_administrativo_rotineiro: 'Ato administrativo rotineiro', nenhum: 'Nenhum gatilho identificado', indeterminado: 'Indeterminado' };
+      const cit = Array.isArray(v.citacoes) && v.citacoes.length ? ` <span class="sub">[evidências: ${v.citacoes.map(esc).join(', ')}]</span>` : '';
+      corpo = `<b>${esc(rotulos[v.classificacao] || v.classificacao || 'Não classificado')}</b>${Array.isArray(v.categorias) && v.categorias.length ? ` · ${v.categorias.map(c => esc(cats[c] || c)).join(', ')}` : ''}<div>${esc(v.justificativa || '')}${cit}</div><div class="sub">Classificação assistida; score e estágio não foram alterados.</div>`;
+    } else if (v && typeof v === 'object') {
       corpo = esc(v.texto || '');
       if (Array.isArray(v.citacoes) && v.citacoes.length) corpo += ` <span class="sub">[evidências: ${v.citacoes.map(esc).join(', ')}]</span>`;
       if (v.rascunho_pre_release) corpo += `<div class="sub" style="margin-top:4px"><b>Rascunho de pré-release (não aplicado ao evento):</b> ${esc(v.rascunho_pre_release)}</div>`;
