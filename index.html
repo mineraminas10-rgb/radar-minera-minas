@@ -1493,17 +1493,28 @@ async function carregarFila(){
     if (!escopoVigente(esc0)) return;
     if (eEv) throw eEv;
 
-    // REGRAS NO BANCO: a fila já vem classificada e ordenada. Função ausente (migração não aplicada) => modo de transição; outro erro => falha.
+    // Em filas grandes, evita a RPC editorial, que pode exceder o statement_timeout.
+    // montarItemFila aplica as regras locais e a tela informa essa condição ao editor.
+    const FILA_LIMITE_RPC_REGRAS = 500;
     let regrasDb = null;
-    const rr = await comLimiteDeTempo(sb.rpc('fila_editorial', { p_empresa: clienteSelecionado }), TIMEOUT_MS, 'fila_editorial');
-    if (!escopoVigente(esc0)) return;
-    if (rr.error) {
-      if (!['PGRST202', '42883'].includes(rr.error.code)) throw rr.error;
-    } else regrasDb = Object.fromEntries((rr.data || []).map(x => [x.event_id, x]));
+    let fallbackRegras = null;
+    if ((allEvents || []).length > FILA_LIMITE_RPC_REGRAS) {
+      fallbackRegras = 'volume';
+    } else {
+      const rr = await comLimiteDeTempo(sb.rpc('fila_editorial', { p_empresa: clienteSelecionado }), TIMEOUT_MS, 'fila_editorial');
+      if (!escopoVigente(esc0)) return;
+      if (rr.error) {
+        if (['PGRST202', '42883'].includes(rr.error.code)) { /* modo de transição */ }
+        else if (rr.error.code === '57014' || /statement timeout/i.test(rr.error.message || '')) fallbackRegras = 'timeout';
+        else throw rr.error;
+      } else regrasDb = Object.fromEntries((rr.data || []).map(x => [x.event_id, x]));
+    }
 
     filaData = (allEvents || []).map(e=>{
       const vig = (e.event_scores||[]).find(s=>s.vigente) || (e.event_scores||[])[0];
-      return montarItemFila(e, vig, fontesEventoPorId, regrasDb ? (regrasDb[e.id] || null) : null);
+      const item = montarItemFila(e, vig, fontesEventoPorId, regrasDb ? (regrasDb[e.id] || null) : null);
+      if (fallbackRegras) { item.regrasOrigem = 'fallback'; item.regrasFallback = fallbackRegras; }
+      return item;
     });
 
     // Selo "IA analisada" (só master): leitura dos registros de chamadas concluídas; falha aqui não derruba a fila.
@@ -1711,7 +1722,9 @@ function renderFila(){
   const itens = escopo.filter(passaFiltro).sort(compararItens);
   const total = escopo.length;
   const ocultosScore = document.getElementById('mostrarTodos').checked ? 0 : escopo.filter(i => i.situacao && i.situacao.foraDaSelecao).length;
-  document.getElementById('filterSummary').textContent = `${itens.length} de ${total} assunto(s)` + (ocultosScore ? ` · ${ocultosScore} fora da seleção (score < 40) oculto(s) — marque "mostrar" para ver` : '')
+  const motivosFallback = [...new Set(escopo.filter(i => i.regrasOrigem === 'fallback').map(i => i.regrasFallback))];
+  const avisoFallback = motivosFallback.length ? ' · classificação local para evitar timeout da consulta editorial (' + motivosFallback.map(m => m === 'volume' ? 'fila grande' : 'tempo excedido').join(', ') + ')' : '';
+  document.getElementById('filterSummary').textContent = `${itens.length} de ${total} assunto(s)` + (ocultosScore ? ` · ${ocultosScore} fora da seleção (score < 40) oculto(s) — marque "mostrar" para ver` : '') + avisoFallback
     + (escopo.some(i => i.regrasOrigem === 'transicao') ? ' · regras da fila em MODO DE TRANSIÇÃO (o banco ainda não tem as regras)' : '');
 
   if(itens.length===0){
