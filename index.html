@@ -396,7 +396,7 @@
         <div class="filterField"><label>Data inicial</label><input type="date" id="fDataIni"></div>
         <div class="filterField"><label>Data final</label><input type="date" id="fDataFim"></div>
         <div class="filterField"><label>Ordem</label><select id="fOrdenar" disabled>
-          <option value="lote_score_desc">Dia do lote ↓ · score ↓</option>
+          <option value="entrada_desc">Fila editorial — atualizados, criticidade, prioridade, atualidade, score</option>
         </select></div>
       </div>
       <div class="filterActions">
@@ -1481,7 +1481,7 @@ async function carregarFila(){
     const { data: allEvents, error: eEv } = await comLimiteDeTempo(
       sb.from('events')
         .select(`id, id_evento, carteira_id, titulo_fato, resumo_factual, empresa, municipio, fonte_id,
-          status_editorial, revisao_humana, pre_release, url_oficial, data_evento, data_publicacao, created_at, execucao_criacao_id, processo, tipo_evento,
+          status_editorial, revisao_humana, pre_release, url_oficial, data_evento, data_publicacao, created_at, processo, tipo_evento,
           decisao, situacao_processual, proximo_marco, palavras_chave, justificativa_editorial,
           event_scores ( score_bruto, score_normalizado, score_relevancia, componentes, prioridade, justificativa_score, versao_score, vigente, estagio ),
           documentos ( id, url, tipo, orgao ),
@@ -1493,22 +1493,7 @@ async function carregarFila(){
     if (!escopoVigente(esc0)) return;
     if (eEv) throw eEv;
 
-    // Data real em que cada lote do coletor começou; usada para agrupar a fila por dia.
-    const execucaoIds = [...new Set((allEvents || []).map(e => e.execucao_criacao_id).filter(Boolean))];
-    const inicioLotePorExecucao = {};
-    if (execucaoIds.length) {
-      try {
-        const xr = await comLimiteDeTempo(
-          sb.rpc('execucoes_datas_lotes', { p_ids: execucaoIds }),
-          TIMEOUT_MS, 'datas dos lotes'
-        );
-        if (!escopoVigente(esc0)) return;
-        if (!xr.error) (xr.data || []).forEach(x => { inicioLotePorExecucao[x.id] = x.inicio; });
-        else console.warn('Não foi possível carregar a data dos lotes:', xr.error);
-      } catch (err) { console.warn('Não foi possível carregar a data dos lotes:', err); }
-    }
-
-    // REGRAS NO BANCO: a fila é reordenada por dia do lote e score, conforme o seletor visível. Função ausente (migração não aplicada) => modo de transição; outro erro => falha.
+    // REGRAS NO BANCO: a fila já vem classificada e ordenada. Função ausente (migração não aplicada) => modo de transição; outro erro => falha.
     let regrasDb = null;
     const rr = await comLimiteDeTempo(sb.rpc('fila_editorial', { p_empresa: clienteSelecionado }), TIMEOUT_MS, 'fila_editorial');
     if (!escopoVigente(esc0)) return;
@@ -1518,9 +1503,7 @@ async function carregarFila(){
 
     filaData = (allEvents || []).map(e=>{
       const vig = (e.event_scores||[]).find(s=>s.vigente) || (e.event_scores||[])[0];
-      const item = montarItemFila(e, vig, fontesEventoPorId, regrasDb ? (regrasDb[e.id] || null) : null);
-      item.inicioLote = inicioLotePorExecucao[e.execucao_criacao_id] || null;
-      return item;
+      return montarItemFila(e, vig, fontesEventoPorId, regrasDb ? (regrasDb[e.id] || null) : null);
     });
 
     // Selo "IA analisada" (só master): leitura dos registros de chamadas concluídas; falha aqui não derruba a fila.
@@ -1703,24 +1686,19 @@ function compararItens(a,b){
     if ((xa !== null) !== (xb !== null)) return xa !== null ? -1 : 1;
     if (xa !== null && xb !== null && xa !== xb) return xb - xa;
   }
-  const diaLote = x => {
-    if (!x.inicioLote) return '';
-    const d = new Date(x.inicioLote);
-    if (Number.isNaN(d.getTime())) return '';
-    return new Intl.DateTimeFormat('sv-SE', {
-      timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit'
-    }).format(d);
-  };
-  const da = diaLote(a), db = diaLote(b);
-  if (da !== db) {
-    if (!da) return 1; if (!db) return -1;
-    return db.localeCompare(da);                       // dia do lote mais recente primeiro
-  }
-  const sc = x => { const v = x.score ?? (x.decisao && x.decisao.score_valor); return v == null ? -Infinity : Number(v); };
-  if (sc(a) !== sc(b)) return sc(b) - sc(a);           // score decrescente dentro do dia
-  const ta = a.inicioLote ? new Date(a.inicioLote).getTime() : 0;
-  const tb = b.inicioLote ? new Date(b.inicioLote).getTime() : 0;
-  if (ta !== tb) return tb - ta;
+  if(a.ordem != null && b.ordem != null) return a.ordem - b.ordem;      // ordem calculada pelo BANCO (fila_editorial)
+  // MODO DE TRANSIÇÃO (sem as regras no banco). Ordem da fila editorial: ATUALIZADO -> prioridade editorial -> criticidade -> atualidade/materialidade -> ineditismo -> score decisório DESC
+  // -> qualidade da evidência -> id estável. Nada é média: cada critério só desempata o anterior.
+  if(a.atual.atualizado !== b.atual.atualizado) return a.atual.atualizado ? -1 : 1;
+  const rpe = x => RANK_PRIORIDADE_EDITORIAL[x.prioridadeEditorial.codigo] ?? -1;
+  if(rpe(a) !== rpe(b)) return rpe(b) - rpe(a);
+  const rc = x => RANK_CRITICIDADE[x.criticidade] ?? -1;
+  if(rc(a) !== rc(b)) return rc(b) - rc(a);
+  if(a.atual.material.ts !== b.atual.material.ts) return b.atual.material.ts - a.atual.material.ts;
+  if(a.ineditismo.inedito !== b.ineditismo.inedito) return a.ineditismo.inedito ? -1 : 1;     // inédito antes de já publicado
+  const sc = x => x.score == null ? -Infinity : x.score;      // preliminar/sem score não pontua na ordem
+  if(sc(a) !== sc(b)) return sc(b) - sc(a);
+  if(a.qualidadeEvidencia !== b.qualidadeEvidencia) return b.qualidadeEvidencia - a.qualidadeEvidencia;
   return String(b.event.id || '').localeCompare(String(a.event.id || ''));
 }
 
@@ -1792,7 +1770,9 @@ function cardHTML(item){
     ineditismo: 'Ineditismo',
     score_cruzamentos_reincidencia: 'Cruzamentos / reincidência',
     score_classificacao_legal: 'Classificação legal',
-    score_relevancia_empresa_projeto: 'Relevância empresa / projeto'
+    score_relevancia_empresa_projeto: 'Relevância empresa / projeto',
+    score_incidente: 'Incidente e impacto (máx. 80)',
+    bonus_empresa: 'Porte da empresa (máx. 20)'
   };
   const compRows = Object.entries(item.componentes||{})
     .filter(([k,v])=>{
@@ -1808,6 +1788,7 @@ function cardHTML(item){
 
   const explicacaoScore = [
     item.versaoScore ? `<div class="sub"><strong>Versão:</strong> ${esc(item.versaoScore)}</div>` : '',
+    item.versaoScore === 'CRIT-V1.3' ? `<div class="sub" style="margin-top:6px;"><strong>Regra CRIT-V1.3:</strong> ${esc(item.componentes?.score_incidente ?? 0)}/80 pelo incidente e impacto + ${esc(item.componentes?.bonus_empresa ?? 0)}/20 pelo porte da empresa. A empresa só acrescenta pontos quando há um fato pontuável.</div>` : '',
     item.justificativaScore ? `<div class="resumo" style="margin-top:8px;"><strong>Justificativa do score:</strong> ${esc(item.justificativaScore)}</div>` : '',
     e.justificativa_editorial ? `<div class="resumo" style="margin-top:8px;"><strong>Justificativa editorial:</strong> ${esc(e.justificativa_editorial)}</div>` : ''
   ].join('');
@@ -1858,12 +1839,12 @@ function cardHTML(item){
   const critTxt = item.criticidade ? (ROTULO_CRITICIDADE[item.criticidade] || item.criticidade) : '—';
   const critClass = item.criticidade ? 'crit-' + String(item.criticidade).toLowerCase() : '';
   const faixa = faixaScore(dec.score_valor);
-  const scoreTxt = dec.score_valor == null ? 'PENDENTE_DE_SCORE' : (Number(dec.score_valor) === 0 && /rotina_anula_gatilhos/.test(String(item.justificativaScore || '')) ? 'Rotina · sem gatilho pontuável' : (dec.score_decisorio ? String(dec.score_valor) : `${dec.score_valor} · Provisório`));
+  const scoreTxt = dec.score_valor == null ? 'PENDENTE_DE_SCORE' : (dec.score_decisorio ? String(dec.score_valor) : `${dec.score_valor} · Preliminar`);
   const scoreBadge = dec.score_valor == null ? '' : (dec.score_decisorio
     ? `<span class="faixa faixa-${faixa.replace(/\s/g,'').toLowerCase()}">${esc(faixa)}</span>`
-    : `<span class="badgeProv" title="Score provisório não é decisório: não descarta, não ordena e não habilita publicação">PROVISÓRIO</span><span class="faixaRef" title="Faixa apenas como referência">ref.: ${esc(faixa)}</span>`);
+    : `<span class="badgeProv" title="Score preliminar não é decisório enquanto faltarem evidência ou classificação consolidadas">PRELIMINAR</span><span class="faixaRef" title="Faixa apenas como referência">ref.: ${esc(faixa)}</span>`);
   const scoreClass = dec.score_valor == null ? 'sem' : (dec.score_decisorio ? 'dec' : 'prov');
-  const scoreTitulo = dec.score_decisorio ? 'Score decisório' : (dec.score_valor == null ? 'Nenhum score registrado' : 'Score provisório (fórmula ainda não homologada): só para consulta e auditoria');
+  const scoreTitulo = dec.score_decisorio ? 'Score decisório' : (dec.score_valor == null ? 'Nenhum score registrado' : 'Score preliminar: aguardando consolidação de evidência ou classificação');
   const atualTxt = item.atual.material.texto ? formatarDataCurta(item.atual.material.texto) : '—';
   const justResumo = item.justificativaScore ? (String(item.justificativaScore).length > 140 ? String(item.justificativaScore).slice(0,140)+'…' : String(item.justificativaScore)) : '—';
   const temPre = Boolean(e.pre_release && String(e.pre_release).trim());
@@ -1878,7 +1859,6 @@ function cardHTML(item){
       <span class="ind ind-prio" title="Prioridade editorial (derivada de criticidade, score decisório e atualidade). Prioridade CRIT histórica: ${esc(prioCrit)}"><span class="indLbl">Prioridade editorial</span>${prio!=='—'?`<span class="prio ${prioClass}">${esc(prio)}</span>`:''}<b>${esc(pe.rotulo)}</b>${pe.aviso?`<span class="avisoPrio">${esc(pe.aviso)}</span>`:''}</span>
       <span class="ind ind-score ${scoreClass}" title="${esc(scoreTitulo)}"><span class="indLbl">Score</span><b class="score">${esc(scoreTxt)}</b>${scoreBadge}</span>
       <span class="ind ind-atual" title="Data material do caso (última atualização material, data do evento/ato ou entrada)"><span class="indLbl">Atualidade</span><b>${esc(atualTxt)}</b>${item.atual.atualizado?'<span class="badgeAtualizado">ATUALIZADO</span>':''}</span>
-      <span class="ind ind-lote" title="Dia em que o lote do coletor começou"><span class="indLbl">Dia do lote</span><b>${esc(item.inicioLote ? formatarDataCurta(item.inicioLote) : '—')}</b></span>
       <span class="ind ind-entrada entradaTopo" title="Data e hora em que o assunto entrou no sistema"><span class="indLbl">Entrada</span><b>${esc(formatarEntradaSistema(e.created_at))}</b></span>
       <span class="ind ind-ined" title="Ineditismo: conteúdo ainda não publicado antes"><span class="indLbl">Ineditismo</span><b class="${item.ineditismo.inedito?'ined-sim':'ined-nao'}">${esc(item.ineditismo.texto)}</b></span>
       <span class="ind"><span class="indLbl">Status</span><span class="statusTag st-${e.status_editorial}">${STATUS_LABEL[e.status_editorial]||e.status_editorial}</span></span>
@@ -1907,7 +1887,7 @@ function cardHTML(item){
 
     <details>
       <summary>Por que esse score</summary>
-      <div class="sub" style="margin:8px 0;"><strong>Score:</strong> ${dec.score_valor == null ? 'PENDENTE_DE_SCORE' : esc(dec.score_valor) + (dec.score_decisorio ? ' (decisório)' : ' (provisório — não decisório; fórmula ainda não homologada)')} · Prioridade editorial ${esc(pe.codigo)} (${esc(pe.motivo)}) · Prioridade CRIT (histórica): ${esc(prioCrit)}</div>
+      <div class="sub" style="margin:8px 0;"><strong>Score:</strong> ${dec.score_valor == null ? 'PENDENTE_DE_SCORE' : esc(dec.score_valor) + (dec.score_decisorio ? ' (decisório)' : ' (preliminar — não decisório; aguardando consolidação)')} · Prioridade editorial ${esc(pe.codigo)} (${esc(pe.motivo)}) · Prioridade CRIT (histórica): ${esc(prioCrit)}</div>
       ${explicacaoScore}
       <table class="compTable" style="margin-top:8px;"><tbody>${compRows || '<tr><td colspan="4" style="color:var(--muted)">Esta versão de score não possui decomposição numérica reproduzível registrada. Use a justificativa editorial acima como explicação oficial.</td></tr>'}</tbody></table>
     </details>
