@@ -40,7 +40,7 @@ class TestCriticidadeM8(unittest.TestCase):
         m._gravar_criticidade_m8(sb, "E1", item("Comunicado 05/10/2026"), "EMP", "falha_extracao", "contextual", tem_evidencia=False,
                                  motivo_falha="OCR não produziu texto legível")
         self.assertEqual(len(sb.rows), 1)
-        self.assertEqual(sb.rows[0]["versao_score"], "CRIT-V1.2")
+        self.assertEqual(sb.rows[0]["versao_score"], "CRIT-V1.3")
         self.assertEqual(sb.rows[0]["componentes"]["criticidade"], "NAO_AVALIAVEL")
         self.assertIsNone(sb.rows[0]["prioridade"])
         self.assertEqual(sb.rows[0]["componentes"]["motivos"], ["nao_avaliavel_falha_de_extracao"])
@@ -102,7 +102,7 @@ class TestCriticidadeM8(unittest.TestCase):
         for proibido in ("atingiu_curso_agua", "vitimas", "evacuacao", "bloqueio_via", "saiu_limite_operacao"):
             self.assertNotIn(proibido, detalhe)
         # a data do cabeçalho (29/08) alimentou a régua: ocorrência de 46 dias antes de 14/10 => fora dos 30 dias de ALTA, dentro dos 90 de MEDIA
-        self.assertEqual(sb.rows[-1]["versao_score"], "CRIT-V1.2")
+        self.assertEqual(sb.rows[-1]["versao_score"], "CRIT-V1.3")
 
     def test_processar_item_no_teto_nao_grava_nada_e_devolve_adiado(self):
         import extractor

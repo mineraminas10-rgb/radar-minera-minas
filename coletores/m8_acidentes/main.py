@@ -135,7 +135,7 @@ def _gravar_criticidade_m8(sb, event_id: str, item, empresa_id, status: str, fai
                            sig_gravidade=None, score_g=None, tem_evidencia: bool = True,
                            hoje=None, motivo_falha: Optional[str] = None,
                            data_ocorrencia: Optional[str] = None) -> Optional[str]:
-    """Régua CRIT-V1.2 (nova versão de score; o score legado SCORE-M8-V1.0 não é apagado). Falha aqui NUNCA
+    """Régua CRIT-V1.3 (nova versão de score; o score legado SCORE-M8-V1.0 não é apagado). Falha aqui NUNCA
     derruba a coleta: o score legado já está gravado e a criticidade pode ser recalculada depois."""
     global _PARAMETROS_CRIT
     try:
