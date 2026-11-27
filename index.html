@@ -43,7 +43,7 @@
   #connStatus .dot{width:8px;height:8px;border-radius:50%;background:var(--muted);}
   #connStatus.ok .dot{background:var(--ok);}
   #connStatus.err .dot{background:var(--danger);}
-  main{max-width:1440px;margin:0 auto;padding:20px;}
+  main{max-width:980px;margin:0 auto;padding:20px;}
   .view{display:none;}
   .view.active{display:block;}
 
@@ -137,27 +137,6 @@
   .st-arquivado{background:#e7e9ee;color:#5a6479;}
   .st-descartado{background:#fbdcdb;color:#b3241b;text-decoration:line-through;}
   .empty{color:var(--muted);padding:30px;text-align:center;font-size:13px;}
-
-  /* Fila organizada por carteira */
-  .filaLayout{display:grid;grid-template-columns:230px minmax(0,1fr);gap:18px;align-items:start;}
-  .filaCarteiras{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;position:sticky;top:78px;}
-  .filaCarteirasTitle{padding:12px 14px;border-bottom:1px solid var(--border);font-weight:600;}
-  .filaCarteirasNav{display:flex;flex-direction:column;}
-  .filaCarteiraBtn{width:100%;display:flex;justify-content:space-between;align-items:center;gap:8px;text-align:left;background:var(--surface);border:0;border-bottom:1px solid var(--border);padding:11px 14px;color:var(--text);font:inherit;cursor:pointer;}
-  .filaCarteiraBtn:hover{background:var(--surface2);}
-  .filaCarteiraBtn.sel{background:var(--accent-weak);box-shadow:inset 3px 0 0 var(--accent);}
-  .filaCarteiraBtn .count{font-size:11px;color:var(--muted);white-space:nowrap;}
-  .filaCarteirasHint{padding:10px 14px;color:var(--muted);font-size:11.5px;line-height:1.4;}
-  .filaMain{min-width:0;}
-  .filaHeading{margin:0 0 12px;font-size:16px;font-weight:600;}
-  @media(max-width:900px){
-    .filaLayout{grid-template-columns:1fr;gap:12px;}
-    .filaCarteiras{position:static;}
-    .filaCarteirasNav{flex-direction:row;overflow-x:auto;scrollbar-width:thin;-webkit-overflow-scrolling:touch;}
-    .filaCarteiraBtn{width:auto;min-width:max-content;border-bottom:0;border-right:1px solid var(--border);}
-    .filaCarteiraBtn.sel{box-shadow:inset 0 -3px 0 var(--accent);}
-    .filaCarteirasHint{display:none;}
-  }
 
   /* Carteiras admin */
   .carteirasLayout{display:flex;gap:18px;align-items:flex-start;}
@@ -353,16 +332,6 @@
 
   <!-- ===================== FILA DO EDITOR ===================== -->
   <section id="view-fila" class="view active">
-    <div class="filaLayout">
-      <aside class="filaCarteiras" aria-label="Fila por carteira">
-        <div class="filaCarteirasTitle">Carteiras</div>
-        <nav class="filaCarteirasNav" id="filaCarteirasNav" aria-label="Selecionar carteira">
-          <div class="empty">Carregando carteiras…</div>
-        </nav>
-        <div class="filaCarteirasHint">A fila e os filtros acompanham a carteira selecionada.</div>
-      </aside>
-      <div class="filaMain">
-    <h2 class="filaHeading" id="filaHeading">Fila do Editor</h2>
     <div class="toolbar">
       <input type="text" id="busca" placeholder="Busca livre: título, empresa, processo, decisão, palavras-chave…">
       <label><input type="checkbox" id="mostrarTodos"> mostrar publicados/arquivados/descartados e fora da seleção (score &lt; 40)</label>
@@ -396,7 +365,7 @@
         <div class="filterField"><label>Data inicial</label><input type="date" id="fDataIni"></div>
         <div class="filterField"><label>Data final</label><input type="date" id="fDataFim"></div>
         <div class="filterField"><label>Ordem</label><select id="fOrdenar" disabled>
-          <option value="entrada_desc">Data de entrada — mais recentes primeiro</option>
+          <option value="entrada_desc">Fila editorial — atualizados, criticidade, prioridade, atualidade, score</option>
         </select></div>
       </div>
       <div class="filterActions">
@@ -406,8 +375,6 @@
     </div>
 
     <div id="filaWrap"><div class="empty">Carregando…</div></div>
-      </div>
-    </div>
   </section>
 
   <!-- ===================== CARTEIRAS ===================== -->
@@ -691,7 +658,7 @@ function bloqueiosPublicacao(item, acao){
   return r;
 }
 
-let sb, filaData = [], filaCarteiras = [], filaCarteiraSelecionada = null;
+let sb, filaData = [];
 let iaAnalisados = {};   // event_id -> data da última análise de IA concluída (só master; vazio para os demais)
 let clientesCache = [], clienteSelecionado = null;
 
@@ -809,16 +776,15 @@ function exibirBloqueio({ titulo, msg, detalhe, acoes }){
 // Esvazia estado em memória e DOM do dashboard — assim, depois do logout (ou
 // troca de usuário) nada do usuário anterior fica no HTML nem em variáveis.
 function limparEstadoDoApp(){
-  filaData = []; filaCarteiras = []; filaCarteiraSelecionada = null; clientesCache = []; clienteSelecionado = null;
+  filaData = []; clientesCache = []; clienteSelecionado = null;
   carteirasCache = []; sourcesCache = []; camposCriterioCache = []; carteiraSelecionada = null;
   window.__erroFontes = '';
   authState = { user: null, perfil: null, empresas: [], permissoes: null };
   const set = (id, html)=>{ const el = document.getElementById(id); if (el) el.innerHTML = html; };
-  set('filaWrap', ''); set('filaCarteirasNav', '<div class="empty">Selecione uma empresa.</div>'); set('carteirasList', ''); set('carteiraDetail', '');
+  set('filaWrap', ''); set('carteirasList', ''); set('carteiraDetail', '');
   set('clienteSelect', '<option value="">—</option>');
   set('fEmpresa', '<option value="">Todas</option>'); set('fMunicipio', '<option value="">Todos</option>');
   document.getElementById('filterSummary').textContent = '';
-  document.getElementById('filaHeading').textContent = 'Fila do Editor';
   ['busca','fStatus','fPrioridade','fScoreMin','fScoreMax','fTipoEvento','fProcesso','fDecisao','fSituacao','fPalavra','fFonte','fDataIni','fDataFim']
     .forEach(id=>{ const el = document.getElementById(id); if (el) el.value = ''; });
   document.getElementById('mostrarTodos').checked = false;
@@ -1252,13 +1218,11 @@ function escopoVigente(e){ return e.seq === escopoSeq && e.empresa === clienteSe
 // Zera TUDO o que depende da empresa ativa (memória + tela). Chamado em toda troca/perda de empresa.
 function limparEscopoDaEmpresa(){
   escopoSeq++;
-  filaData = []; filaCarteiras = []; filaCarteiraSelecionada = null;
+  filaData = [];
   carteirasCache = []; sourcesCache = []; carteiraSelecionada = null;
   window.__erroFontes = '';
   const set = (id, html)=>{ const el = document.getElementById(id); if (el) el.innerHTML = html; };
   set('carteirasList', ''); set('carteiraDetail', '<div class="empty">Selecione uma carteira à esquerda ou crie uma nova.</div>');
-  set('filaCarteirasNav', '<div class="empty">Selecione uma empresa.</div>');
-  const fh = document.getElementById('filaHeading'); if (fh) fh.textContent = 'Fila do Editor';
   set('filaWrap', '');
   set('fEmpresa', '<option value="">Todas</option>'); set('fMunicipio', '<option value="">Todos</option>');
   ['busca','fStatus','fPrioridade','fScoreMin','fScoreMax','fTipoEvento','fProcesso','fDecisao','fSituacao','fPalavra','fFonte','fDataIni','fDataFim']
@@ -1270,7 +1234,6 @@ function limparEscopoDaEmpresa(){
 function mostrarEscolhaDeEmpresa(){
   const msg = '<div class="empty">Selecione a <b>empresa ativa</b> no seletor acima. Enquanto nenhuma empresa estiver escolhida, nenhuma fila, carteira, fonte ou peso é carregado.</div>';
   const w = document.getElementById('filaWrap'); if (w) w.innerHTML = msg;
-  const fn = document.getElementById('filaCarteirasNav'); if (fn) fn.innerHTML = '<div class="empty">Selecione uma empresa.</div>';
   const l = document.getElementById('carteirasList'); if (l) l.innerHTML = '';
   const d = document.getElementById('carteiraDetail'); if (d) d.innerHTML = msg;
   setEstado('carregado');
@@ -1467,20 +1430,12 @@ async function carregarFila(){
     const fontesEventoPorId = {};
     (fontesEvento || []).forEach(s => { fontesEventoPorId[s.id] = s; });
 
-    const { data: carteirasDaEmpresa, error: eCarteiras } = await comLimiteDeTempo(
-      sb.from('carteiras').select('id, nome, ativa, empresa_id').eq('empresa_id', clienteSelecionado).order('nome'),
-      TIMEOUT_MS, 'carteiras da fila'
-    );
-    if (!escopoVigente(esc0)) return;
-    if (eCarteiras) throw eCarteiras;
-    filaCarteiras = (carteirasDaEmpresa || []).filter(c => c.empresa_id === esc0.empresa);
-
     // Fila única: todos os eventos são carregados diretamente de events.
     // O campo tecnico "modulo" pode continuar existindo no banco por compatibilidade,
     // mas não é consultado, exibido, filtrado nem usado para separar a interface.
     const { data: allEvents, error: eEv } = await comLimiteDeTempo(
       sb.from('events')
-        .select(`id, id_evento, carteira_id, titulo_fato, resumo_factual, empresa, municipio, fonte_id,
+        .select(`id, id_evento, titulo_fato, resumo_factual, empresa, municipio, fonte_id,
           status_editorial, revisao_humana, pre_release, url_oficial, data_evento, data_publicacao, created_at, processo, tipo_evento,
           decisao, situacao_processual, proximo_marco, palavras_chave, justificativa_editorial,
           event_scores ( score_bruto, score_normalizado, score_relevancia, componentes, prioridade, justificativa_score, versao_score, vigente, estagio ),
@@ -1493,28 +1448,17 @@ async function carregarFila(){
     if (!escopoVigente(esc0)) return;
     if (eEv) throw eEv;
 
-    // Em filas grandes, evita a RPC editorial, que pode exceder o statement_timeout.
-    // montarItemFila aplica as regras locais e a tela informa essa condição ao editor.
-    const FILA_LIMITE_RPC_REGRAS = 500;
+    // REGRAS NO BANCO: a fila já vem classificada e ordenada. Função ausente (migração não aplicada) => modo de transição; outro erro => falha.
     let regrasDb = null;
-    let fallbackRegras = null;
-    if ((allEvents || []).length > FILA_LIMITE_RPC_REGRAS) {
-      fallbackRegras = 'volume';
-    } else {
-      const rr = await comLimiteDeTempo(sb.rpc('fila_editorial', { p_empresa: clienteSelecionado }), TIMEOUT_MS, 'fila_editorial');
-      if (!escopoVigente(esc0)) return;
-      if (rr.error) {
-        if (['PGRST202', '42883'].includes(rr.error.code)) { /* modo de transição */ }
-        else if (rr.error.code === '57014' || /statement timeout/i.test(rr.error.message || '')) fallbackRegras = 'timeout';
-        else throw rr.error;
-      } else regrasDb = Object.fromEntries((rr.data || []).map(x => [x.event_id, x]));
-    }
+    const rr = await comLimiteDeTempo(sb.rpc('fila_editorial', { p_empresa: clienteSelecionado }), TIMEOUT_MS, 'fila_editorial');
+    if (!escopoVigente(esc0)) return;
+    if (rr.error) {
+      if (!['PGRST202', '42883'].includes(rr.error.code)) throw rr.error;
+    } else regrasDb = Object.fromEntries((rr.data || []).map(x => [x.event_id, x]));
 
     filaData = (allEvents || []).map(e=>{
       const vig = (e.event_scores||[]).find(s=>s.vigente) || (e.event_scores||[])[0];
-      const item = montarItemFila(e, vig, fontesEventoPorId, regrasDb ? (regrasDb[e.id] || null) : null);
-      if (fallbackRegras) { item.regrasOrigem = 'fallback'; item.regrasFallback = fallbackRegras; }
-      return item;
+      return montarItemFila(e, vig, fontesEventoPorId, regrasDb ? (regrasDb[e.id] || null) : null);
     });
 
     // Selo "IA analisada" (só master): leitura dos registros de chamadas concluídas; falha aqui não derruba a fila.
@@ -1533,7 +1477,6 @@ async function carregarFila(){
     }
     if (!escopoVigente(esc0)) return;
 
-    renderFilaCarteiras();
     preencherOpcoesFiltros();
     setEstado('carregado');
     renderFila();
@@ -1548,37 +1491,6 @@ function todosItensFila(){
   return filaData;
 }
 
-function itensDaCarteiraSelecionada(){
-  if(filaCarteiraSelecionada === 'todas') return filaData;
-  if(filaCarteiraSelecionada === 'sem_carteira') return filaData.filter(i => !i.event.carteira_id || !filaCarteiras.some(c=>c.id===i.event.carteira_id));
-  return filaData.filter(i => i.event.carteira_id === filaCarteiraSelecionada);
-}
-
-function renderFilaCarteiras(){
-  const nav = document.getElementById('filaCarteirasNav');
-  if(!nav) return;
-  const porCarteira = new Map(filaCarteiras.map(c => [c.id, 0]));
-  let semCarteira = 0;
-  filaData.forEach(i => {
-    if(i.event.carteira_id && porCarteira.has(i.event.carteira_id)) porCarteira.set(i.event.carteira_id, porCarteira.get(i.event.carteira_id) + 1);
-    else semCarteira++;
-  });
-  if(!filaCarteiras.some(c => c.id === filaCarteiraSelecionada) && !['todas','sem_carteira'].includes(filaCarteiraSelecionada)) filaCarteiraSelecionada = null;
-  if(!filaCarteiraSelecionada) filaCarteiraSelecionada = filaCarteiras.find(c => c.ativa !== false)?.id || filaCarteiras[0]?.id || 'todas';
-  const botoes = [{id:'todas',nome:'Todas as carteiras',total:filaData.length}, ...filaCarteiras.map(c=>({id:c.id,nome:c.nome,total:porCarteira.get(c.id)||0}))];
-  if(semCarteira) botoes.push({id:'sem_carteira',nome:'Sem carteira',total:semCarteira});
-  nav.innerHTML = botoes.map(c=>`<button type="button" class="filaCarteiraBtn ${filaCarteiraSelecionada===c.id?'sel':''}" data-carteira="${esc(c.id)}" aria-pressed="${filaCarteiraSelecionada===c.id}"><span>${esc(c.nome)}${filaCarteiras.find(x=>x.id===c.id)?.ativa===false?' <span class="sub">(inativa)</span>':''}</span><span class="count">${c.total}</span></button>`).join('');
-  nav.querySelectorAll('[data-carteira]').forEach(btn=>btn.addEventListener('click',()=>{
-    filaCarteiraSelecionada = btn.dataset.carteira;
-    renderFilaCarteiras();
-    preencherOpcoesFiltros();
-    renderFila();
-  }));
-  const atual = filaCarteiras.find(c=>c.id===filaCarteiraSelecionada);
-  const titulo = filaCarteiraSelecionada === 'todas' ? 'Todas as carteiras' : filaCarteiraSelecionada === 'sem_carteira' ? 'Sem carteira' : atual?.nome || 'Fila do Editor';
-  document.getElementById('filaHeading').textContent = `Fila do Editor — ${titulo}`;
-}
-
 function preencherSelect(id, valores, rotulo){
   const sel = document.getElementById(id);
   const atual = sel.value;
@@ -1589,7 +1501,7 @@ function preencherSelect(id, valores, rotulo){
 }
 
 function preencherOpcoesFiltros(){
-  const itens = itensDaCarteiraSelecionada();
+  const itens = todosItensFila();
   preencherSelect('fEmpresa', itens.map(i=>i.event.empresa), 'Todas');
   preencherSelect('fMunicipio', itens.map(i=>i.event.municipio), 'Todos');
 }
@@ -1689,9 +1601,6 @@ function passaFiltro(item){
 }
 
 function compararItens(a,b){
-  // Data de entrada é o critério principal; demais critérios só desempatarão entradas iguais.
-  const entrada = x => { const t = x.event && x.event.created_at ? new Date(x.event.created_at).getTime() : NaN; return Number.isNaN(t) ? 0 : t; };
-  if(entrada(a) !== entrada(b)) return entrada(b) - entrada(a);
   // Opcional (só master): eventos com análise de IA concluída primeiro, a análise mais recente no topo.
   const chk = document.getElementById('iaPrimeiro');
   if (chk && chk.checked) {
@@ -1718,14 +1627,11 @@ function compararItens(a,b){
 
 function renderFila(){
   const wrap = document.getElementById('filaWrap');
-  const escopo = itensDaCarteiraSelecionada();
-  const itens = escopo.filter(passaFiltro).sort(compararItens);
-  const total = escopo.length;
-  const ocultosScore = document.getElementById('mostrarTodos').checked ? 0 : escopo.filter(i => i.situacao && i.situacao.foraDaSelecao).length;
-  const motivosFallback = [...new Set(escopo.filter(i => i.regrasOrigem === 'fallback').map(i => i.regrasFallback))];
-  const avisoFallback = motivosFallback.length ? ' · classificação local para evitar timeout da consulta editorial (' + motivosFallback.map(m => m === 'volume' ? 'fila grande' : 'tempo excedido').join(', ') + ')' : '';
-  document.getElementById('filterSummary').textContent = `${itens.length} de ${total} assunto(s)` + (ocultosScore ? ` · ${ocultosScore} fora da seleção (score < 40) oculto(s) — marque "mostrar" para ver` : '') + avisoFallback
-    + (escopo.some(i => i.regrasOrigem === 'transicao') ? ' · regras da fila em MODO DE TRANSIÇÃO (o banco ainda não tem as regras)' : '');
+  const itens = filaData.filter(passaFiltro).sort(compararItens);
+  const total = filaData.length;
+  const ocultosScore = document.getElementById('mostrarTodos').checked ? 0 : filaData.filter(i => i.situacao && i.situacao.foraDaSelecao).length;
+  document.getElementById('filterSummary').textContent = `${itens.length} de ${total} assunto(s)` + (ocultosScore ? ` · ${ocultosScore} fora da seleção (score < 40) oculto(s) — marque "mostrar" para ver` : '')
+    + (filaData.some(i => i.regrasOrigem === 'transicao') ? ' · regras da fila em MODO DE TRANSIÇÃO (o banco ainda não tem as regras)' : '');
 
   if(itens.length===0){
     wrap.innerHTML = '<div class="empty">Nenhum assunto corresponde aos filtros selecionados.</div>';
@@ -1786,9 +1692,7 @@ function cardHTML(item){
     ineditismo: 'Ineditismo',
     score_cruzamentos_reincidencia: 'Cruzamentos / reincidência',
     score_classificacao_legal: 'Classificação legal',
-    score_relevancia_empresa_projeto: 'Relevância empresa / projeto',
-    score_incidente: 'Incidente e impacto (máx. 80)',
-    bonus_empresa: 'Porte da empresa (máx. 20)'
+    score_relevancia_empresa_projeto: 'Relevância empresa / projeto'
   };
   const compRows = Object.entries(item.componentes||{})
     .filter(([k,v])=>{
@@ -1804,7 +1708,6 @@ function cardHTML(item){
 
   const explicacaoScore = [
     item.versaoScore ? `<div class="sub"><strong>Versão:</strong> ${esc(item.versaoScore)}</div>` : '',
-    item.versaoScore === 'CRIT-V1.3' ? `<div class="sub" style="margin-top:6px;"><strong>Regra CRIT-V1.3:</strong> ${esc(item.componentes?.score_incidente ?? 0)}/80 pelo incidente e impacto + ${esc(item.componentes?.bonus_empresa ?? 0)}/20 pelo porte da empresa. A empresa só acrescenta pontos quando há um fato pontuável.</div>` : '',
     item.justificativaScore ? `<div class="resumo" style="margin-top:8px;"><strong>Justificativa do score:</strong> ${esc(item.justificativaScore)}</div>` : '',
     e.justificativa_editorial ? `<div class="resumo" style="margin-top:8px;"><strong>Justificativa editorial:</strong> ${esc(e.justificativa_editorial)}</div>` : ''
   ].join('');
@@ -1855,12 +1758,12 @@ function cardHTML(item){
   const critTxt = item.criticidade ? (ROTULO_CRITICIDADE[item.criticidade] || item.criticidade) : '—';
   const critClass = item.criticidade ? 'crit-' + String(item.criticidade).toLowerCase() : '';
   const faixa = faixaScore(dec.score_valor);
-  const scoreTxt = dec.score_valor == null ? 'PENDENTE_DE_SCORE' : (dec.score_decisorio ? String(dec.score_valor) : `${dec.score_valor} · Preliminar`);
+  const scoreTxt = dec.score_valor == null ? 'PENDENTE_DE_SCORE' : (dec.score_decisorio ? String(dec.score_valor) : `${dec.score_valor} · Provisório`);
   const scoreBadge = dec.score_valor == null ? '' : (dec.score_decisorio
     ? `<span class="faixa faixa-${faixa.replace(/\s/g,'').toLowerCase()}">${esc(faixa)}</span>`
-    : `<span class="badgeProv" title="Score preliminar não é decisório enquanto faltarem evidência ou classificação consolidadas">PRELIMINAR</span><span class="faixaRef" title="Faixa apenas como referência">ref.: ${esc(faixa)}</span>`);
+    : `<span class="badgeProv" title="Score provisório não é decisório: não descarta, não ordena e não habilita publicação">PROVISÓRIO</span><span class="faixaRef" title="Faixa apenas como referência">ref.: ${esc(faixa)}</span>`);
   const scoreClass = dec.score_valor == null ? 'sem' : (dec.score_decisorio ? 'dec' : 'prov');
-  const scoreTitulo = dec.score_decisorio ? 'Score decisório' : (dec.score_valor == null ? 'Nenhum score registrado' : 'Score preliminar: aguardando consolidação de evidência ou classificação');
+  const scoreTitulo = dec.score_decisorio ? 'Score decisório' : (dec.score_valor == null ? 'Nenhum score registrado' : 'Score provisório (fórmula ainda não homologada): só para consulta e auditoria');
   const atualTxt = item.atual.material.texto ? formatarDataCurta(item.atual.material.texto) : '—';
   const justResumo = item.justificativaScore ? (String(item.justificativaScore).length > 140 ? String(item.justificativaScore).slice(0,140)+'…' : String(item.justificativaScore)) : '—';
   const temPre = Boolean(e.pre_release && String(e.pre_release).trim());
@@ -1898,12 +1801,12 @@ function cardHTML(item){
     ${chkResumoHTML}
 
     ${temPre
-      ? `<div class="prerelease"><span class="lbl"><span class="badgePre">${e.status_editorial==='publicado'?'PRÉ-RELEASE · PUBLICADO':'PRÉ-RELEASE · NÃO PUBLICADO'}</span> Proposta de release (rascunho) — revisão do editor decide se publica</span>${esc(e.pre_release)}</div>`
+      ? `<div class="prerelease"><span class="lbl"><span class="badgePre">${e.status_editorial==='publicado'?'PRÉ-RELEASE · PUBLICADO':'PRÉ-RELEASE · NÃO PUBLICADO'}</span> Proposta de release (rascunho) — não publicada automaticamente</span>${esc(e.pre_release)}</div>`
       : `<div class="prerelease empty"><span class="lbl"><span class="badgePre vazio">Sem pré-release</span></span>Ainda sem pré-release gerado para este assunto.</div>`}
 
     <details>
       <summary>Por que esse score</summary>
-      <div class="sub" style="margin:8px 0;"><strong>Score:</strong> ${dec.score_valor == null ? 'PENDENTE_DE_SCORE' : esc(dec.score_valor) + (dec.score_decisorio ? ' (decisório)' : ' (preliminar — não decisório; aguardando consolidação)')} · Prioridade editorial ${esc(pe.codigo)} (${esc(pe.motivo)}) · Prioridade CRIT (histórica): ${esc(prioCrit)}</div>
+      <div class="sub" style="margin:8px 0;"><strong>Score:</strong> ${dec.score_valor == null ? 'PENDENTE_DE_SCORE' : esc(dec.score_valor) + (dec.score_decisorio ? ' (decisório)' : ' (provisório — não decisório; fórmula ainda não homologada)')} · Prioridade editorial ${esc(pe.codigo)} (${esc(pe.motivo)}) · Prioridade CRIT (histórica): ${esc(prioCrit)}</div>
       ${explicacaoScore}
       <table class="compTable" style="margin-top:8px;"><tbody>${compRows || '<tr><td colspan="4" style="color:var(--muted)">Esta versão de score não possui decomposição numérica reproduzível registrada. Use a justificativa editorial acima como explicação oficial.</td></tr>'}</tbody></table>
     </details>
@@ -2895,11 +2798,11 @@ const PILOTO_RECENTES = 250; // eventos mais recentes listados; consulta aceita 
 const PILOTO_EXTRAS_MAX = 100; // IDs manuais
 const PILOTO_CODIGO_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{2,79}$/;
 const PILOTO_MODULOS = ['M6_outorgas', 'M8_acidentes_ambientais', 'M9A_anm_movimentacoes'];
-const PILOTO_PROMPT = { m6: 'M6_ANALISE_EDITORIAL_V4', m8: 'M8_ANALISE_EDITORIAL_V4', m9a: 'M9A_ANALISE_EDITORIAL_V4' };
+const PILOTO_PROMPT = { m6: 'M6_ANALISE_EDITORIAL_V3', m8: 'M8_ANALISE_EDITORIAL_V3', m9a: 'M9A_ANALISE_EDITORIAL_V3' };
 // recusas que interrompem o lote inteiro (as demais só encerram aquele caso — e nunca há nova tentativa)
 const PILOTO_FATAIS = ['api_pausada', 'api_nao_configurada', 'credencial_ausente', 'modelo_nao_definido', 'modelo_sem_preco', 'limite_atingido',
   'limite_ia_do_lote', 'limite_ia_zero', 'usar_api_real_desligado', 'sem_permissao', 'nao_autenticado', 'trocar_senha', 'erro_provider', 'operacao_desconhecida', 'prompt_desconhecido'];
-const PILOTO_SECOES = [['fato_confirmado', 'Fato confirmado'], ['contexto_documental', 'Contexto documental'], ['gatilho_pontuavel', 'Gatilho pontuável · classificação assistida'], ['avaliacao_editorial', 'Avaliação editorial'],
+const PILOTO_SECOES = [['fato_confirmado', 'Fato confirmado'], ['contexto_documental', 'Contexto documental'], ['avaliacao_editorial', 'Avaliação editorial'],
   ['hipotese_apuracao', 'Hipótese de apuração'], ['lacunas', 'Lacunas'], ['perguntas_redacao', 'Perguntas para a redação'], ['proposta_abordagem', 'Proposta de abordagem']];
 const pilotoState = { dados: null, itens: [], sel: new Set(), rodando: false, usarReal: true, limite: PILOTO_MAX, loteId: null, resultado: null, extras: [], extrasMsg: '' };
 
@@ -2922,12 +2825,7 @@ function iaRespostaHTML(texto){
   return PILOTO_SECOES.map(([k, rot]) => {
     const v = j[k]; let corpo = '';
     if (Array.isArray(v)) corpo = lista(v);
-    else if (k === 'gatilho_pontuavel' && v && typeof v === 'object') {
-      const rotulos = { CRITICO: 'Crítico', ALTA: 'Alta', MEDIA: 'Média', BAIXA: 'Baixa', ROTINA: 'Rotina · sem gatilho pontuável', NAO_AVALIAVEL: 'Não avaliável · evidência insuficiente' };
-      const cats = { contaminacao: 'Contaminação', dano_ambiental: 'Dano ambiental', impacto_social: 'Impacto social', impacto_cultural: 'Impacto cultural', area_protegida: 'Área protegida', risco_estrutural: 'Risco estrutural', interrupcao_servico_essencial: 'Interrupção de serviço essencial', perda_direito_minerario: 'Perda de direito minerário', outorga_agua: 'Outorga de água', ato_administrativo_rotineiro: 'Ato administrativo rotineiro', nenhum: 'Nenhum gatilho identificado', indeterminado: 'Indeterminado' };
-      const cit = Array.isArray(v.citacoes) && v.citacoes.length ? ` <span class="sub">[evidências: ${v.citacoes.map(esc).join(', ')}]</span>` : '';
-      corpo = `<b>${esc(rotulos[v.classificacao] || v.classificacao || 'Não classificado')}</b>${Array.isArray(v.categorias) && v.categorias.length ? ` · ${v.categorias.map(c => esc(cats[c] || c)).join(', ')}` : ''}<div>${esc(v.justificativa || '')}${cit}</div><div class="sub">Classificação assistida; score e estágio não foram alterados.</div>`;
-    } else if (v && typeof v === 'object') {
+    else if (v && typeof v === 'object') {
       corpo = esc(v.texto || '');
       if (Array.isArray(v.citacoes) && v.citacoes.length) corpo += ` <span class="sub">[evidências: ${v.citacoes.map(esc).join(', ')}]</span>`;
       if (v.rascunho_pre_release) corpo += `<div class="sub" style="margin-top:4px"><b>Rascunho de pré-release (não aplicado ao evento):</b> ${esc(v.rascunho_pre_release)}</div>`;
@@ -3018,7 +2916,7 @@ function pilotoDesenhar(){
   };
   body.innerHTML = `
     <div class="card"><strong>Operação assistida — análise editorial por IA (manual)</strong>
-      <div class="sub">Não há consulta automática nem agendamento: a IA só roda quando você confirma aqui. O servidor escolhe o texto (dossiê do evento no banco), confere a elegibilidade pré-IA, faz <b>uma</b> chamada por caso — sem nova tentativa — e valida a resposta. A IA <b>não</b> altera score, prioridade nem status e <b>não</b> libera publicação; a revisão humana continua Pendente.</div>
+      <div class="sub">Não há consulta automática nem agendamento: a IA só roda quando você confirma aqui. O servidor escolhe o texto (dossiê do evento no banco), confere a elegibilidade pré-IA, faz <b>uma</b> chamada por caso — sem nova tentativa — e valida a resposta. Respostas válidas dispensam a revisão humana e ficam registradas no evento. A IA <b>não</b> altera score, prioridade nem status editorial e <b>não</b> publica automaticamente.</div>
       <div class="roNotice" style="margin-top:8px">Empresa: <b>${esc(nomeEmpresaPorId(d.empresaId))}</b> · API: <b>${cfg && cfg.ativo ? 'Ativa' : 'Pausada'}</b> · Modelo: <b>${esc(cfg && cfg.modelo_padrao || '—')}</b> · Limites: dia ${esc(cfg && cfg.limite_diario_usd != null ? fmtUsd(cfg.limite_diario_usd) : 'sem limite')} / mês ${esc(cfg && cfg.limite_mensal_usd != null ? fmtUsd(cfg.limite_mensal_usd) : 'sem limite')} · Lote ${esc(pilotoState.loteId || '—')}: ${(pilotoState.lote || []).length} de ${PILOTO_MAX} chamadas já usadas
         ${pronta ? '' : '<br><b>A API está pausada, sem modelo ou sem preço.</b> Para rodar, ative a API em ADMIN &gt; API (ação sua) e use "Atualizar".'}</div>
     </div>
@@ -3121,6 +3019,11 @@ async function pilotoExecutar(){
       if (r.execucao_id) ids.push(r.execucao_id);
       if (r.chamou_provider) chamadasReais++;
       const u = r.uso || {}; totalUsd += Number(r.custo_estimado_usd || 0); totalTok += Number(u.total_tokens || 0);
+      if (r.ok === true && r.execucao_id) {
+        const dispensa = await sb.rpc('fila_dispensar_revisao_ia', { p_event_id: ev.id, p_execucao_id: r.execucao_id });
+        if (dispensa.error) throw new Error('Análise concluída, mas não foi possível registrar a dispensa da revisão: ' + dispensa.error.message);
+        r.revisao_humana = (dispensa.data || {}).revisao_humana || 'Dispensada pela IA';
+      }
       linhas.push(`<div class="roNotice"><b>${esc(rot)}</b><br>Concluída · modelo ${esc(r.modelo)} · ${esc(r.latencia_ms)} ms · tokens: entrada ${fmtNum(u.input_tokens)} / saída ${fmtNum(u.output_tokens)} · custo ${esc(fmtUsd(r.custo_estimado_usd))} · revisão humana: ${esc(r.revisao_humana || 'Pendente')}</div>`);
     } catch (e) {
       const det = e.detalhe || {};
@@ -3153,7 +3056,13 @@ async function pilotoConferencia(ids, alvo, limiteIa){
   const evNovo = {}; (er.data || []).forEach(x => { evNovo[x.id] = x; });
   const reais = (ar.data || []).filter(x => ['sucesso', 'erro', 'pendente'].includes(x.status));
   const todasMeta = alvo.every(i => { const rs = porEv[i.ev.id] || []; return rs.length === 1; });
-  const revPend = alvo.every(i => (evNovo[i.ev.id] || {}).revisao_humana === 'Pendente');
+  const revisaoCoerente = alvo.every(i => {
+    const resultado = (porEv[i.ev.id] || [])[0];
+    const atual = (evNovo[i.ev.id] || {}).revisao_humana;
+    return resultado?.status === 'sucesso'
+      ? ['Dispensada pela IA', 'Aprovada'].includes(atual)
+      : atual === i.ev.revisao_humana;
+  });
   const statusInalterado = alvo.every(i => (evNovo[i.ev.id] || {}).status_editorial === i.ev.status_editorial);
   const sem = reais.filter(x => x.status === 'sucesso').length;
   const tot = (ar.data || []).reduce((s, x) => ({ usd: s.usd + Number(x.custo_estimado_usd || 0), tok: s.tok + Number(x.total_tokens || 0), ms: s.ms + Number(x.latencia_ms || 0) }), { usd: 0, tok: 0, ms: 0 });
@@ -3174,7 +3083,7 @@ async function pilotoConferencia(ids, alvo, limiteIa){
     <ul style="list-style:none;padding:0;margin:10px 0 0">
       ${ok(reais.length <= PILOTO_MAX && Number(lote.count || 0) <= PILOTO_MAX, `Chamadas reais do lote: ${lote.count ?? '?'} (máximo ${PILOTO_MAX})`)}
       ${ok(todasMeta, 'Uma única linha registrada por caso (sem nova tentativa)')}
-      ${ok(revPend, 'Revisão humana continua Pendente em todos os casos')}
+      ${ok(revisaoCoerente, 'Respostas válidas dispensaram a revisão; falhas preservaram o estado anterior')}
       ${ok(statusInalterado, 'Status editorial dos eventos não foi alterado')}
       ${ok(alvo.length <= PILOTO_MAX, 'Nenhum 7º caso foi enviado')}
     </ul>
@@ -3230,7 +3139,7 @@ async function iaEventoCarregar(det){
     const tecnico = completo ? ` · Modelo: ${esc(ult.modelo || '—')} · Custo: ${esc(fmtUsd(ult.custo_estimado_usd))} · Prompt: ${esc(ult.versao_prompt || '—')}` : '';
     const erroTxt = completo ? (ult.erro ? '<div class="sub">' + esc(ult.erro) + '</div>' : '') : (ult.tem_erro ? '<div class="sub">A chamada terminou com erro.</div>' : '');
     box.innerHTML = avisoIa + `<div>Passou no pré-IA: <b>${passou ? 'sim' : 'não'}</b>${passou ? '' : ' (' + esc(Object.keys(flags).filter(k => flags[k]).map(k => ptMotivoDispensa[k] || k).join('; ') || ult.motivo_bloqueio || '') + ')'}
-      · Enviado à IA: <b>${real ? 'sim' : 'não'}</b> · Chamada: <b>${esc(ptStatusIa[ult.status] || ult.status)}</b>${tecnico} · Revisão humana: <b>${esc(det.dataset.revisao || '—')}</b></div>
+      · Enviado à IA: <b>${real ? 'sim' : 'não'}</b> · Chamada: <b>${esc(ptStatusIa[ult.status] || ult.status)}</b>${tecnico} · Revisão: <b>${esc((ult.metadata && ult.metadata.dispensa_revisao && ult.metadata.dispensa_revisao.status) || det.dataset.revisao || '—')}</b></div>
       ${ult.status === 'sucesso' ? iaRespostaHTML(ult.resposta_texto) : erroTxt}
       <div class="rascunhoPre" data-event="${esc(eventId)}"></div>`;
     rascunhoPreCarregar(box.querySelector('.rascunhoPre'), eventId);
@@ -3249,7 +3158,7 @@ async function rascunhoPreCarregar(div, eventId){
   const d = r.data || {};
   if (!d.execucao_id || !d.rascunho) { div.innerHTML = ''; return; }
   const aviso = d.bloqueio ? `<div class="avisoFila pendente">Não é possível aplicar: ${esc(({ STATUS_JA_DECIDIDO: 'o evento já foi decidido (pronto/publicado/arquivado/descartado)', FORA_DA_SELECAO: 'score decisório abaixo do corte (fora da seleção)', ANALISE_SEM_RASCUNHO: 'a análise não trouxe rascunho' })[d.bloqueio] || d.bloqueio)}.</div>` : '';
-  div.innerHTML = `<div class="prerelease"><span class="lbl">Rascunho de pré-release da IA (revisão do editor decide)${d.ja_tem_pre_release ? ' — o evento JÁ TEM pré-release' : ''}</span>${esc(d.rascunho)}</div>${aviso}
+  div.innerHTML = `<div class="prerelease"><span class="lbl">Rascunho de pré-release da IA — não publicado automaticamente${d.ja_tem_pre_release ? ' — o evento JÁ TEM pré-release' : ''}</span>${esc(d.rascunho)}</div>${aviso}
     ${d.pode_aplicar ? `<button type="button" class="btnAplicarRascunho">${d.ja_tem_pre_release ? 'Substituir o pré-release por este rascunho' : 'Aplicar como pré-release do evento'}</button>` : ''}`;
   const btn = div.querySelector('.btnAplicarRascunho');
   if (!btn) return;
