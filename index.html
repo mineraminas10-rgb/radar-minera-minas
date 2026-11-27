@@ -396,7 +396,7 @@
         <div class="filterField"><label>Data inicial</label><input type="date" id="fDataIni"></div>
         <div class="filterField"><label>Data final</label><input type="date" id="fDataFim"></div>
         <div class="filterField"><label>Ordem</label><select id="fOrdenar" disabled>
-          <option value="entrada_desc">Fila editorial — atualizados, criticidade, prioridade, atualidade, score</option>
+          <option value="lote_score_desc">Dia do lote ↓ · score ↓</option>
         </select></div>
       </div>
       <div class="filterActions">
@@ -1481,7 +1481,7 @@ async function carregarFila(){
     const { data: allEvents, error: eEv } = await comLimiteDeTempo(
       sb.from('events')
         .select(`id, id_evento, carteira_id, titulo_fato, resumo_factual, empresa, municipio, fonte_id,
-          status_editorial, revisao_humana, pre_release, url_oficial, data_evento, data_publicacao, created_at, processo, tipo_evento,
+          status_editorial, revisao_humana, pre_release, url_oficial, data_evento, data_publicacao, created_at, execucao_criacao_id, processo, tipo_evento,
           decisao, situacao_processual, proximo_marco, palavras_chave, justificativa_editorial,
           event_scores ( score_bruto, score_normalizado, score_relevancia, componentes, prioridade, justificativa_score, versao_score, vigente, estagio ),
           documentos ( id, url, tipo, orgao ),
@@ -1493,7 +1493,22 @@ async function carregarFila(){
     if (!escopoVigente(esc0)) return;
     if (eEv) throw eEv;
 
-    // REGRAS NO BANCO: a fila já vem classificada e ordenada. Função ausente (migração não aplicada) => modo de transição; outro erro => falha.
+    // Data real em que cada lote do coletor começou; usada para agrupar a fila por dia.
+    const execucaoIds = [...new Set((allEvents || []).map(e => e.execucao_criacao_id).filter(Boolean))];
+    const inicioLotePorExecucao = {};
+    if (execucaoIds.length) {
+      try {
+        const xr = await comLimiteDeTempo(
+          sb.from('execucoes').select('id, inicio').in('id', execucaoIds),
+          TIMEOUT_MS, 'datas dos lotes'
+        );
+        if (!escopoVigente(esc0)) return;
+        if (!xr.error) (xr.data || []).forEach(x => { inicioLotePorExecucao[x.id] = x.inicio; });
+        else console.warn('Não foi possível carregar a data dos lotes:', xr.error);
+      } catch (err) { console.warn('Não foi possível carregar a data dos lotes:', err); }
+    }
+
+    // REGRAS NO BANCO: a fila é reordenada por dia do lote e score, conforme o seletor visível. Função ausente (migração não aplicada) => modo de transição; outro erro => falha.
     let regrasDb = null;
     const rr = await comLimiteDeTempo(sb.rpc('fila_editorial', { p_empresa: clienteSelecionado }), TIMEOUT_MS, 'fila_editorial');
     if (!escopoVigente(esc0)) return;
@@ -1503,7 +1518,9 @@ async function carregarFila(){
 
     filaData = (allEvents || []).map(e=>{
       const vig = (e.event_scores||[]).find(s=>s.vigente) || (e.event_scores||[])[0];
-      return montarItemFila(e, vig, fontesEventoPorId, regrasDb ? (regrasDb[e.id] || null) : null);
+      const item = montarItemFila(e, vig, fontesEventoPorId, regrasDb ? (regrasDb[e.id] || null) : null);
+      item.inicioLote = inicioLotePorExecucao[e.execucao_criacao_id] || null;
+      return item;
     });
 
     // Selo "IA analisada" (só master): leitura dos registros de chamadas concluídas; falha aqui não derruba a fila.
@@ -1686,19 +1703,24 @@ function compararItens(a,b){
     if ((xa !== null) !== (xb !== null)) return xa !== null ? -1 : 1;
     if (xa !== null && xb !== null && xa !== xb) return xb - xa;
   }
-  if(a.ordem != null && b.ordem != null) return a.ordem - b.ordem;      // ordem calculada pelo BANCO (fila_editorial)
-  // MODO DE TRANSIÇÃO (sem as regras no banco). Ordem da fila editorial: ATUALIZADO -> prioridade editorial -> criticidade -> atualidade/materialidade -> ineditismo -> score decisório DESC
-  // -> qualidade da evidência -> id estável. Nada é média: cada critério só desempata o anterior.
-  if(a.atual.atualizado !== b.atual.atualizado) return a.atual.atualizado ? -1 : 1;
-  const rpe = x => RANK_PRIORIDADE_EDITORIAL[x.prioridadeEditorial.codigo] ?? -1;
-  if(rpe(a) !== rpe(b)) return rpe(b) - rpe(a);
-  const rc = x => RANK_CRITICIDADE[x.criticidade] ?? -1;
-  if(rc(a) !== rc(b)) return rc(b) - rc(a);
-  if(a.atual.material.ts !== b.atual.material.ts) return b.atual.material.ts - a.atual.material.ts;
-  if(a.ineditismo.inedito !== b.ineditismo.inedito) return a.ineditismo.inedito ? -1 : 1;     // inédito antes de já publicado
-  const sc = x => x.score == null ? -Infinity : x.score;      // preliminar/sem score não pontua na ordem
-  if(sc(a) !== sc(b)) return sc(b) - sc(a);
-  if(a.qualidadeEvidencia !== b.qualidadeEvidencia) return b.qualidadeEvidencia - a.qualidadeEvidencia;
+  const diaLote = x => {
+    if (!x.inicioLote) return '';
+    const d = new Date(x.inicioLote);
+    if (Number.isNaN(d.getTime())) return '';
+    return new Intl.DateTimeFormat('sv-SE', {
+      timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit'
+    }).format(d);
+  };
+  const da = diaLote(a), db = diaLote(b);
+  if (da !== db) {
+    if (!da) return 1; if (!db) return -1;
+    return db.localeCompare(da);                       // dia do lote mais recente primeiro
+  }
+  const sc = x => x.score == null ? -Infinity : x.score;
+  if (sc(a) !== sc(b)) return sc(b) - sc(a);           // score decrescente dentro do dia
+  const ta = a.inicioLote ? new Date(a.inicioLote).getTime() : 0;
+  const tb = b.inicioLote ? new Date(b.inicioLote).getTime() : 0;
+  if (ta !== tb) return tb - ta;
   return String(b.event.id || '').localeCompare(String(a.event.id || ''));
 }
 
@@ -1856,6 +1878,7 @@ function cardHTML(item){
       <span class="ind ind-prio" title="Prioridade editorial (derivada de criticidade, score decisório e atualidade). Prioridade CRIT histórica: ${esc(prioCrit)}"><span class="indLbl">Prioridade editorial</span>${prio!=='—'?`<span class="prio ${prioClass}">${esc(prio)}</span>`:''}<b>${esc(pe.rotulo)}</b>${pe.aviso?`<span class="avisoPrio">${esc(pe.aviso)}</span>`:''}</span>
       <span class="ind ind-score ${scoreClass}" title="${esc(scoreTitulo)}"><span class="indLbl">Score</span><b class="score">${esc(scoreTxt)}</b>${scoreBadge}</span>
       <span class="ind ind-atual" title="Data material do caso (última atualização material, data do evento/ato ou entrada)"><span class="indLbl">Atualidade</span><b>${esc(atualTxt)}</b>${item.atual.atualizado?'<span class="badgeAtualizado">ATUALIZADO</span>':''}</span>
+      <span class="ind ind-lote" title="Dia em que o lote do coletor começou"><span class="indLbl">Dia do lote</span><b>${esc(item.inicioLote ? formatarDataCurta(item.inicioLote) : '—')}</b></span>
       <span class="ind ind-entrada entradaTopo" title="Data e hora em que o assunto entrou no sistema"><span class="indLbl">Entrada</span><b>${esc(formatarEntradaSistema(e.created_at))}</b></span>
       <span class="ind ind-ined" title="Ineditismo: conteúdo ainda não publicado antes"><span class="indLbl">Ineditismo</span><b class="${item.ineditismo.inedito?'ined-sim':'ined-nao'}">${esc(item.ineditismo.texto)}</b></span>
       <span class="ind"><span class="indLbl">Status</span><span class="statusTag st-${e.status_editorial}">${STATUS_LABEL[e.status_editorial]||e.status_editorial}</span></span>
