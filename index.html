@@ -396,7 +396,7 @@
         <div class="filterField"><label>Data inicial</label><input type="date" id="fDataIni"></div>
         <div class="filterField"><label>Data final</label><input type="date" id="fDataFim"></div>
         <div class="filterField"><label>Ordem</label><select id="fOrdenar" disabled>
-          <option value="entrada_desc">Fila editorial — atualizados, criticidade, prioridade, atualidade, score</option>
+          <option value="entrada_desc">Data de entrada — mais recentes primeiro</option>
         </select></div>
       </div>
       <div class="filterActions">
@@ -1678,6 +1678,9 @@ function passaFiltro(item){
 }
 
 function compararItens(a,b){
+  // Data de entrada é o critério principal; demais critérios só desempatarão entradas iguais.
+  const entrada = x => { const t = x.event && x.event.created_at ? new Date(x.event.created_at).getTime() : NaN; return Number.isNaN(t) ? 0 : t; };
+  if(entrada(a) !== entrada(b)) return entrada(b) - entrada(a);
   // Opcional (só master): eventos com análise de IA concluída primeiro, a análise mais recente no topo.
   const chk = document.getElementById('iaPrimeiro');
   if (chk && chk.checked) {
