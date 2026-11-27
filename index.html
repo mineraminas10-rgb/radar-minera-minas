@@ -1716,7 +1716,7 @@ function compararItens(a,b){
     if (!da) return 1; if (!db) return -1;
     return db.localeCompare(da);                       // dia do lote mais recente primeiro
   }
-  const sc = x => x.score == null ? -Infinity : x.score;
+  const sc = x => { const v = x.score ?? (x.decisao && x.decisao.score_valor); return v == null ? -Infinity : Number(v); };
   if (sc(a) !== sc(b)) return sc(b) - sc(a);           // score decrescente dentro do dia
   const ta = a.inicioLote ? new Date(a.inicioLote).getTime() : 0;
   const tb = b.inicioLote ? new Date(b.inicioLote).getTime() : 0;
