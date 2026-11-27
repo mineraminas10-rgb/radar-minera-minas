@@ -1,5 +1,5 @@
 """
-Recálculo automático da criticidade de eventos M9A que ficaram PROVISÓRIOS ou PENDENTES DE EVIDÊNCIA (CRIT-V1.2).
+Recálculo automático da criticidade M9A: provisórios/pendentes e eventos ainda sem CRIT-V1.3.
 
 Quando entra evidência estruturada (linhas em `evidencias`) e/ou o tipo oficial do SCM
 (`evidencias.campo_sustentado = 'descricao_tipo_evento'`), o evento é reclassificado pela MESMA régua e a nova linha de
@@ -66,14 +66,25 @@ class FonteSupabase:
         self.sb = sb
 
     def pendentes(self) -> List[dict]:
-        linhas = (self.sb.table("event_scores").select("event_id,componentes,versao_score")
-                  .eq("vigente", True).like("versao_score", "CRIT-%").execute().data or [])
+        linhas = []
+        inicio = 0
+        while True:
+            pagina = (self.sb.table("event_scores").select("event_id,componentes,versao_score")
+                      .eq("vigente", True).like("versao_score", "CRIT-%")
+                      .range(inicio, inicio + 999).execute().data or [])
+            linhas.extend(pagina)
+            if len(pagina) < 1000:
+                break
+            inicio += 1000
         out = []
         for l in linhas:
             comp = l.get("componentes") or {}
             if comp.get("modulo") != "M9A":
                 continue
-            if comp.get("provisoria") or str(comp.get("criticidade", "")).startswith("POTENCIAL_") or comp.get("evidencia_suficiente") is False:
+            versao_antiga = l.get("versao_score") != c.VERSAO_REGRA
+            pendente = (comp.get("provisoria") or str(comp.get("criticidade", "")).startswith("POTENCIAL_")
+                        or comp.get("evidencia_suficiente") is False)
+            if versao_antiga or pendente:
                 out.append({"event_id": l["event_id"]})
         return out
 
@@ -108,3 +119,28 @@ def recalcular_pendentes(sb, par: Optional[dict] = None, hoje: Optional[date] = 
             resumo["erros"] += 1
             resumo.setdefault("erros_detalhe", []).append(f"{item.get('event_id')}: {exc}")
     return resumo
+
+
+def main():
+    """Backfill manual da versão vigente, sem coleta, IA ou alteração de status editorial."""
+    import argparse
+    from pathlib import Path
+
+    parser = argparse.ArgumentParser(description="Recalcula scores M9A CRIT-V1.3 para registros existentes.")
+    parser.add_argument("--limite", type=int, default=None, help="limite opcional para execução em lotes")
+    parser.add_argument("--hoje", help="data de referência ISO (padrão: hoje)")
+    args = parser.parse_args()
+    diretorio_m9a = str(Path(__file__).resolve().parents[1] / "m9a_movimentacoes")
+    if diretorio_m9a not in sys.path:
+        sys.path.insert(0, diretorio_m9a)
+    import db_writer
+
+    referencia = date.fromisoformat(args.hoje) if args.hoje else date.today()
+    resultado = recalcular_pendentes(db_writer.get_client(), hoje=referencia, limite=args.limite)
+    print({k: v for k, v in resultado.items() if k != "mudancas"})
+    if resultado.get("erros"):
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()

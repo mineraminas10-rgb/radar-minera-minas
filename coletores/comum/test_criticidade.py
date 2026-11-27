@@ -1,4 +1,4 @@
-"""Testes da régua CRIT-V1.2 (comum/criticidade.py). Todos os tipos SCM abaixo existem na base real."""
+"""Testes da régua CRIT-V1.3 (comum/criticidade.py). Todos os tipos SCM abaixo existem na base real."""
 import copy
 import json
 import unittest
@@ -121,7 +121,7 @@ def test_limites_vem_dos_parametros_nao_do_codigo():
     antigo = m9a(base, data="2026-03-01")                        # 227 d: ALTA com V1.0
     novo = m9a(base, data="2026-03-01", par=par2)                # com limites maiores: CRITICO
     assert antigo.nivel == "ALTA" and novo.nivel == "CRITICO"
-    assert novo.versao_parametros == "CRIT-PARAMS-V9.9" and antigo.versao_parametros == "CRIT-PARAMS-V1.2"
+    assert novo.versao_parametros == "CRIT-PARAMS-V9.9" and antigo.versao_parametros == "CRIT-PARAMS-V1.3"
 
 
 def test_limiar_de_area_e_listas_sao_parametros():
@@ -227,7 +227,7 @@ def test_nao_avaliavel_nunca_e_selecionado():
 
 # ---------------------------------------------------------------- parâmetros
 def test_parametros_v1_consistentes():
-    assert PAR["versao_regra"] == c.VERSAO_REGRA == "CRIT-V1.2"
+    assert PAR["versao_regra"] == c.VERSAO_REGRA == "CRIT-V1.3"
     assert PAR["prioridade_derivada"] == {"CRITICO": "A", "ALTA": "B", "MEDIA": "C", "BAIXA": "D", "ROTINA": "D", "NAO_AVALIAVEL": None,
                                           "POTENCIAL_CRITICO_PENDENTE_EVIDENCIA": None, "POTENCIAL_ALTA_PENDENTE_EVIDENCIA": None}
     assert PAR["m8"]["atualidade_dias"] == {"CRITICO": 15, "ALTA": 30, "MEDIA": 90}
@@ -282,7 +282,7 @@ class TestGravacaoCriticidade(unittest.TestCase):
         self.assertEqual(sb.rows[0]["prioridade"], "A")
         novo = sb.rows[1]
         self.assertTrue(novo["vigente"])
-        self.assertEqual(novo["versao_score"], "CRIT-V1.2")
+        self.assertEqual(novo["versao_score"], "CRIT-V1.3")
         self.assertEqual(novo["prioridade"], res.prioridade)
         self.assertEqual(db.gravar_criticidade(sb, "E1", res), "inalterado")     # reexecução não empilha
         self.assertEqual(len(sb.rows), 2)
@@ -394,7 +394,7 @@ def test_ate_20_e_teto_nao_cota():
     assert len(sel["escolhidos"]) == 5 and all(x["nivel"] == "ALTA" for x in sel["escolhidos"])
 
 
-# ---------------------------------------------------------------- ajustes finais de 14/10/2026 (CRIT-V1.2)
+# ---------------------------------------------------------------- ajustes finais de 14/10/2026 (CRIT-V1.3)
 def m8(**kw):
     e = {"status_processamento": "processado", "faixa_vinculo": "confirmado", "data_ocorrencia": "2026-10-04",
          "confirmados": {}, "sinais_textuais": {}, "score_gravidade": 5, "tem_evidencia": True}
@@ -425,7 +425,7 @@ def test_recalculo_quando_a_evidencia_chega_vira_nivel_definitivo():
     sem = m9a("CONC LAV/DECAIMENTO CONCESSÃO LAVRA INSTAURADO PUBL", data="2026-05-05", ev=False)
     com = m9a("CONC LAV/DECAIMENTO CONCESSÃO LAVRA INSTAURADO PUBL", data="2026-05-05", ev=True)
     assert sem.nivel == c.ESTADO_POTENCIAL_CRITICO and com.nivel == "CRITICO" and com.selecionavel and com.prioridade == "A"
-    assert sem.versao_regra == com.versao_regra == "CRIT-V1.2"
+    assert sem.versao_regra == com.versao_regra == "CRIT-V1.3"
 
 
 def test_curado_nunca_e_definitivo_nem_com_evidencia_mas_sobe_do_pendente():

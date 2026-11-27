@@ -1,5 +1,5 @@
 """
-Gravação da criticidade no banco como NOVA VERSÃO de score (event_scores.versao_score = 'CRIT-V1.2').
+Gravação da criticidade no banco como NOVA VERSÃO de score (event_scores.versao_score = 'CRIT-V1.3').
 
 Não existe segunda arquitetura: reaproveita event_scores. A linha antiga (SCORE-M9A-V0.2 / SCORE-M8-V1.0 /
 notas manuais) NÃO é apagada nem alterada; apenas deixa de ser a vigente (vigente=false) — o índice único
@@ -16,8 +16,15 @@ from typing import Optional
 from criticidade import ResultadoCriticidade
 
 
+def estagio_da_classificacao(res: ResultadoCriticidade) -> str:
+    """Só marca como final quando a classificação é avaliável e consolidada pela evidência."""
+    return "final" if (res.avaliavel and res.evidencia_suficiente and not res.provisoria
+                       and not res.nivel_potencial) else "preliminar"
+
+
 def linha_score(event_id: str, res: ResultadoCriticidade, empresa_id: Optional[str] = None,
-                estagio: str = "preliminar") -> dict:
+                estagio: Optional[str] = None) -> dict:
+    estagio = estagio or estagio_da_classificacao(res)
     return {
         "event_id": event_id,
         "score_bruto": res.pontuacao,
@@ -45,18 +52,24 @@ def _mesma_classificacao(comp: Optional[dict], res: ResultadoCriticidade) -> boo
             and comp.get("motivos") == res.motivos and comp.get("versao_parametros") == res.versao_parametros
             and bool(comp.get("provisoria")) == bool(res.provisoria)
             and comp.get("evidencia_suficiente", True) == res.evidencia_suficiente
-            and comp.get("nivel_potencial") == res.nivel_potencial)
+            and comp.get("nivel_potencial") == res.nivel_potencial
+            and comp.get("pontuacao") == res.pontuacao
+            and comp.get("score_incidente") == res.score_incidente
+            and comp.get("bonus_empresa") == res.bonus_empresa)
 
 
 def gravar_criticidade(sb, event_id: str, res: ResultadoCriticidade, empresa_id: Optional[str] = None,
-                       estagio: str = "preliminar") -> str:
+                       estagio: Optional[str] = None) -> str:
     """Devolve 'gravado' ou 'inalterado'."""
-    atual = (sb.table("event_scores").select("id,versao_score,componentes")
-             .eq("event_id", event_id).eq("vigente", True).eq("estagio", estagio).execute().data or [])
-    if atual and atual[0].get("versao_score") == res.versao_regra and _mesma_classificacao(atual[0].get("componentes"), res):
+    estagio = estagio or estagio_da_classificacao(res)
+    atual = (sb.table("event_scores").select("id,versao_score,componentes,estagio")
+             .eq("event_id", event_id).eq("vigente", True).like("versao_score", "CRIT-%").execute().data or [])
+    if (len(atual) == 1 and atual[0].get("versao_score") == res.versao_regra
+            and _mesma_classificacao(atual[0].get("componentes"), res)
+            and atual[0].get("estagio") == estagio):
         return "inalterado"
     if atual:
         sb.table("event_scores").update({"vigente": False}).eq("event_id", event_id).eq("vigente", True) \
-            .eq("estagio", estagio).execute()
+            .like("versao_score", "CRIT-%").execute()
     sb.table("event_scores").insert(linha_score(event_id, res, empresa_id, estagio)).execute()
     return "gravado"

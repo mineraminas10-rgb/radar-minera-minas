@@ -1,15 +1,15 @@
 """
-Régua de criticidade CRIT-V1.2 (M8 e M9A) — determinística, sem IA, auditável.
+Régua de criticidade CRIT-V1.3 (M8 e M9A) — determinística, sem IA, auditável.
 
 Esta régua responde "isto vira uma pauta relevante?" e NÃO substitui o score anterior
 (SCORE-M9A-V0.2 / SCORE-M8-V1.0), que continua existindo como histórico. A criticidade é gravada como
-uma NOVA versão de score (versao_score='CRIT-V1.2'), sem apagar nenhuma linha antiga.
+uma NOVA versão de score (versao_score='CRIT-V1.3'), sem apagar nenhuma linha antiga.
 
 Níveis (do menor para o maior): ROTINA, BAIXA, MEDIA, ALTA, CRITICO.
 Prioridade operacional derivada: CRITICO=A, ALTA=B, MEDIA=C, BAIXA/ROTINA=D.
 Só MEDIA, ALTA e CRITICO disputam a seleção (piso). Tudo que é número (limites de idade, área, listas de
 empresas e minerais, palavras-chave) vem de um dicionário de PARÂMETROS versionado
-(comum/criticidade_parametros_v1_2.json, espelhado na tabela criticidade_parametros do banco); mudar um valor
+(comum/criticidade_parametros_v1_3.json, espelhado na tabela criticidade_parametros do banco); mudar um valor
 = criar nova versão de parâmetros, nunca editar a anterior.
 
 Estado fora da escala: NAO_AVALIAVEL. Caso sem texto oficial lido (falha de extração, documento não aberto por
@@ -39,9 +39,9 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Dict, Iterable, List, Optional, Sequence
 
-VERSAO_REGRA = "CRIT-V1.2"
+VERSAO_REGRA = "CRIT-V1.3"
 _NIVEIS_PADRAO = ["ROTINA", "BAIXA", "MEDIA", "ALTA", "CRITICO"]
-_CAMINHO_PARAMETROS_V1 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "criticidade_parametros_v1_2.json")
+_CAMINHO_PARAMETROS_V1 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "criticidade_parametros_v1_3.json")
 ESTADO_NAO_AVALIAVEL = "NAO_AVALIAVEL"
 ESTADO_POTENCIAL_CRITICO = "POTENCIAL_CRITICO_PENDENTE_EVIDENCIA"
 ESTADO_POTENCIAL_ALTA = "POTENCIAL_ALTA_PENDENTE_EVIDENCIA"
@@ -157,7 +157,7 @@ class ResultadoCriticidade:
     modulo: str
     nivel: str
     prioridade: Optional[str]
-    pontuacao: float                 # desempate dentro do módulo (M9A: reforços*25; M8: gravidade/11*100)
+    pontuacao: float                 # score final CRIT-V1.3, escala 0-100
     idade_dias: Optional[int]
     objeto: Optional[str] = None
     fase: Optional[str] = None
@@ -173,6 +173,9 @@ class ResultadoCriticidade:
     nivel_antes_idade: Optional[str] = None          # nível antes do corte por atualidade (explica "barrado só pela idade")
     evidencia_suficiente: bool = True
     evidencia_usada: str = ""                        # descrição determinística da evidência que sustentou a classificação
+    score_incidente: float = 0.0
+    bonus_empresa: float = 0.0
+    empresa_grande_porte: bool = False
     pendencia: Optional[str] = None                  # o que falta para virar definitiva
     bloqueios: List[str] = field(default_factory=list)  # por que NÃO é selecionável (vazio = selecionável)
 
@@ -185,6 +188,9 @@ class ResultadoCriticidade:
             "origem_classificacao": self.origem_classificacao, "provisoria": self.provisoria,
             "nivel_potencial": self.nivel_potencial, "nivel_antes_idade": self.nivel_antes_idade,
             "evidencia_suficiente": self.evidencia_suficiente, "evidencia_usada": self.evidencia_usada,
+            "score_incidente": self.score_incidente, "bonus_empresa": self.bonus_empresa,
+            "empresa_grande_porte": self.empresa_grande_porte,
+            "formula_score": "incidente_80_empresa_20",
             "pendencia": self.pendencia, "bloqueios": self.bloqueios,
         }
 
@@ -245,6 +251,20 @@ def _propostos_ativos(par9: dict) -> bool:
     return bool(par9.get("usar_objetos_propostos"))
 
 
+def _score_complementar(score_incidente: float, empresa_grande_porte: bool,
+                         evento_pontuavel: bool, par: dict) -> tuple[float, float]:
+    """CRIT-V1.3: incidente fornece até 80 pontos; porte empresarial soma até 20.
+
+    O bônus só é aplicado quando existe um fato pontuável. Empresa, isoladamente,
+    não cria pauta nem transforma rotina/falta de evidência em incidente.
+    """
+    teto_incidente = float(par["score_final"]["teto_incidente"])
+    bonus_maximo = float(par["score_final"]["bonus_empresa_grande_porte"])
+    base = max(0.0, min(teto_incidente, float(score_incidente)))
+    bonus = bonus_maximo if empresa_grande_porte and evento_pontuavel and base > 0 else 0.0
+    return round(min(100.0, base + bonus), 2), round(bonus, 2)
+
+
 def _fase(tokens: List[str], texto_livre: bool, par9: dict) -> str:
     if _contem(tokens, par9["fase_negativa"]):
         return "negativa"
@@ -276,7 +296,9 @@ def _nivel_objeto_proposto(objeto: str, tokens: List[str], par9: dict, emp: bool
     for item in par9.get("objetos_propostos", []):
         if item["objeto"] != objeto:
             continue
-        cond = {"empresa": emp, "mineral": est, "area_min": area_ok, "area_grande": area_grande}
+        # CRIT-V1.3: porte empresarial não muda nível de criticidade; só soma
+        # o bônus numérico complementar depois que o fato foi pontuado.
+        cond = {"empresa": False, "mineral": est, "area_min": area_ok, "area_grande": area_grande}
         com_reforco = any(cond.get(c, False) for c in item.get("reforco_condicoes", []))
         if item.get("desfecho_baixo") and _contem(tokens, item["desfecho_baixo"]):
             motivos.append(f"{objeto}_desfecho_que_mantem_decisao_anterior")
@@ -309,25 +331,36 @@ def _classificar_m9a(entrada: dict, par: dict, referencia: date) -> ResultadoCri
         area = 0.0
     n_mun = int(entrada.get("n_municipios") or 0)
 
-    emp = _contem(titular, par9["empresas_relevantes"])
+    empresas_grandes = par.get("empresas_grande_porte", par9["empresas_relevantes"])
+    emp = _contem(titular, empresas_grandes)
     est = _contem(subst, par9["minerais_estrategicos"])
     area_ok = area >= par9["area_min_ha"]
     area_grande = area >= par9["area_grande_ha"]
     reforcos = [r for r, ativo in (("empresa_relevante", emp), ("mineral_estrategico", est),
                                    ("area_" + str(int(par9["area_min_ha"])) + "ha", area_ok),
                                    ("varios_municipios", n_mun >= 2)) if ativo]
-    pontuacao = float(len(reforcos) * 25)
+    score_por_nivel = par["score_final"]["score_incidente_por_nivel"]
 
     # P2 — rotina anula tudo (checada ANTES de qualquer outro gatilho)
     if _contem(tokens, par9["rotina"]):
         motivos.append("rotina_anula_gatilhos")
         res = ResultadoCriticidade("M9A", "ROTINA", "D", 0.0, idade, objeto="rotina", fase=None, motivos=motivos)
+        res.score_incidente = 0.0
+        res.bonus_empresa = 0.0
+        res.empresa_grande_porte = emp
+        res.evidencia_suficiente = bool(entrada.get("tem_evidencia"))
+        if texto_livre:
+            res.origem_classificacao, res.provisoria = par9.get("origem_curada", ORIGEM_CURADA), True
+            res.pendencia = "tipo_oficial_scm"
+        elif not res.evidencia_suficiente:
+            res.pendencia = "evidencia_estruturada"
         return _finalizar(res, par)
 
     if not tokens:
         motivos.append("tipo_do_ato_desconhecido_nao_avaliavel")
         res = ResultadoCriticidade("M9A", ESTADO_NAO_AVALIAVEL, None, 0.0, idade, objeto="desconhecido", fase=None,
                                    reforcos=reforcos, motivos=motivos, avaliavel=False)
+        res.empresa_grande_porte = emp
         return _finalizar(res, par)
 
     objeto = _objeto(tokens, par9)
@@ -361,25 +394,25 @@ def _classificar_m9a(entrada: dict, par: dict, referencia: date) -> ResultadoCri
                 motivos.append("prorrogacao_prazo_lavra_decisao_antiga_ou_sem_data" if fase == "efetiva"
                                else "prorrogacao_prazo_lavra_fase_nao_efetiva")
         elif objeto == "gravame":
-            nivel = "ALTA" if (emp or est) else "MEDIA"
-            motivos.append("gravame_com_reforco" if (emp or est) else "gravame_sem_reforco")
+            nivel = "ALTA" if est else "MEDIA"
+            motivos.append("gravame_com_mineral_estrategico" if est else "gravame_por_ato_material")
         elif objeto == "cessao":
-            if (emp and est) or (est and area_grande):
+            if est and area_grande:
                 nivel = "ALTA"
-            elif emp or est or area_ok:
+            elif est or area_ok:
                 nivel = "MEDIA"
             else:
                 nivel = "BAIXA"
         elif objeto == "autorizacao_extracao":
-            nivel = "ALTA" if (area_ok or emp or est) else "MEDIA"
+            nivel = "ALTA" if (area_ok or est) else "MEDIA"
         elif objeto == "renuncia":
-            nivel = "MEDIA" if (emp or est) else "BAIXA"
+            nivel = "MEDIA" if est else "BAIXA"
         elif objeto == "relatorio_aprovado":
-            nivel = "MEDIA" if (emp or est or area_ok) else "BAIXA"
+            nivel = "MEDIA" if (est or area_ok) else "BAIXA"
         elif objeto == "alvara_outorga":
-            nivel = "MEDIA" if (emp or est) else "BAIXA"
+            nivel = "MEDIA" if (est or area_ok) else "BAIXA"
         elif objeto == "servidao":
-            nivel = "MEDIA" if emp else "BAIXA"
+            nivel = "MEDIA" if (est or area_ok) else "BAIXA"
         else:  # edital_disponibilidade, outro (e, se ativados, os objetos propostos)
             proposto = _nivel_objeto_proposto(objeto, tokens, par9, emp, est, area_ok, area_grande, motivos) \
                 if objeto != "outro" and objeto != "edital_disponibilidade" else None
@@ -401,8 +434,16 @@ def _classificar_m9a(entrada: dict, par: dict, referencia: date) -> ResultadoCri
         motivos.append(f"potencial_{potencial}_aguarda_evidencia_estruturada")
     elif not tem_ev:
         motivos.append("sem_evidencia_estruturada_nao_selecionavel")
+    nivel_score = potencial or nivel
+    score_incidente = float(score_por_nivel.get(nivel_score, 0))
+    pontuacao, bonus_empresa = _score_complementar(
+        score_incidente, emp, objeto not in ("outro", "edital_disponibilidade") and fase not in ("pedido", "negativa"), par
+    )
     res = ResultadoCriticidade("M9A", nivel, "D", pontuacao, idade, objeto=objeto, fase=fase,
                                reforcos=reforcos, motivos=motivos)
+    res.score_incidente = score_incidente
+    res.bonus_empresa = bonus_empresa
+    res.empresa_grande_porte = emp
     res.nivel_potencial = potencial
     res.nivel_antes_idade = nivel_antes_idade
     res.evidencia_suficiente = tem_ev
@@ -428,7 +469,8 @@ def _classificar_m8(entrada: dict, par: dict, referencia: date) -> ResultadoCrit
                                saiu_limite_operacao, rejeito_ou_perigoso, atuacao_orgao_publico
          sinais_textuais       dict de sinais de PALAVRA-CHAVE (não verificados): curso_dagua, rejeito,
                                risco_estrutural, vitimas, ...
-         score_gravidade       nota de gravidade do SCORE-M8-V1.0 (0-11) — só desempate
+         score_gravidade       nota de gravidade do SCORE-M8-V1.0 (0-11)
+         empresa               nome da empresa envolvida (opcional; só para o bônus complementar)
          tem_evidencia         True se o comunicado oficial foi lido"""
     par8 = par["m8"]
     niveis = par["niveis"]
@@ -439,7 +481,10 @@ def _classificar_m8(entrada: dict, par: dict, referencia: date) -> ResultadoCrit
         grav = float(entrada.get("score_gravidade")) if entrada.get("score_gravidade") is not None else 0.0
     except (TypeError, ValueError):
         grav = 0.0
-    pontuacao = round(grav / 11.0 * 100, 2)
+    score_incidente = round(min(80.0, max(0.0, grav / 11.0 * 80.0)), 2)
+    empresa_txt = normalizar(entrada.get("empresa")).split()
+    empresas_grandes = par.get("empresas_grande_porte", [])
+    empresa_grande = _contem(empresa_txt, empresas_grandes)
 
     if entrada.get("status_processamento") == "falha_extracao" or not entrada.get("tem_evidencia", True):
         # NÃO é ROTINA: o texto oficial não foi lido, então não há julgamento editorial possível.
@@ -452,14 +497,11 @@ def _classificar_m8(entrada: dict, par: dict, referencia: date) -> ResultadoCrit
             motivos.append("nao_avaliavel_sem_evidencia_suficiente")
         res = ResultadoCriticidade("M8", ESTADO_NAO_AVALIAVEL, None, 0.0, idade, objeto="nao_avaliavel", fase=None,
                                    motivos=motivos, avaliavel=False)
+        res.empresa_grande_porte = empresa_grande
         return _finalizar(res, par)
 
     vinculo = entrada.get("faixa_vinculo")
-    if vinculo not in par8["faixas_vinculo_validas"]:
-        motivos.append(f"vinculo_{vinculo}_insuficiente")
-        res = ResultadoCriticidade("M8", "ROTINA", "D", 0.0, idade, objeto="sem_vinculo", fase=None, motivos=motivos)
-        return _finalizar(res, par)
-
+    vinculo_insuficiente = vinculo not in par8["faixas_vinculo_validas"]
     conf = entrada.get("confirmados") or {}
     txt = entrada.get("sinais_textuais") or {}
     fato_fatal = bool(conf.get("vitimas") or conf.get("risco_estrutura") or conf.get("risco_abastecimento"))
@@ -468,6 +510,12 @@ def _classificar_m8(entrada: dict, par: dict, referencia: date) -> ResultadoCrit
                           conf.get("atuacao_orgao_publico"))
     sinal_textual = any(bool(v) for v in txt.values())
     agravante_so_textual = False
+
+    if vinculo_insuficiente and not (fato_fatal or fato_ambiental or sinal_textual):
+        motivos.append(f"vinculo_{vinculo}_insuficiente")
+        res = ResultadoCriticidade("M8", "ROTINA", "D", 0.0, idade, objeto="sem_vinculo", fase=None, motivos=motivos)
+        res.empresa_grande_porte = empresa_grande
+        return _finalizar(res, par)
 
     if fato_fatal:
         nivel = "CRITICO"
@@ -488,10 +536,24 @@ def _classificar_m8(entrada: dict, par: dict, referencia: date) -> ResultadoCrit
             nivel = par8["teto_vinculo_provavel"]
             motivos.append(f"vinculo_provavel_teto_{nivel}")
 
+    evento_pontuavel = fato_fatal or fato_ambiental or sinal_textual
+    pontuacao, bonus_empresa = _score_complementar(score_incidente, empresa_grande, evento_pontuavel, par)
+
     nivel_antes_idade = nivel
     nivel = _aplicar_idade(nivel, idade, par8["atualidade_dias"], par8["teto_sem_data"], niveis, motivos)
     res = ResultadoCriticidade("M8", nivel, "D", pontuacao, idade, objeto="acidente_ambiental",
                                fase=vinculo, reforcos=sorted(k for k, v in txt.items() if v), motivos=motivos)
+    res.score_incidente = score_incidente
+    res.bonus_empresa = bonus_empresa
+    res.empresa_grande_porte = empresa_grande
+    if vinculo_insuficiente:
+        # O fato impactante conserva o score incidente, mas não se afirma
+        # vínculo minerário sem evidência: permanece fora da seleção até revisão.
+        res.provisoria = True
+        res.origem_classificacao = "impacto_com_vinculo_nao_confirmado"
+        res.pendencia = "confirmacao_vinculo_minerario"
+        res.evidencia_suficiente = False
+        motivos.append("impacto_preservado_aguarda_confirmacao_vinculo")
     res.nivel_antes_idade = nivel_antes_idade
     if agravante_so_textual and nivel == "MEDIA" and par8.get("agravante_textual_provisorio", True):
         # MEDIA sustentada só por palavra-chave do texto: provisória até haver confirmação estruturada do agravante.

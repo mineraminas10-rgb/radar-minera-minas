@@ -1,5 +1,5 @@
 """
-Simulação (SOMENTE LEITURA, offline) da régua CRIT-V1.2 sobre um dump da base.
+Simulação (SOMENTE LEITURA, offline) da régua CRIT-V1.3 sobre um dump da base.
 
 Entrada: dois JSON exportados do Supabase (M9A e M8) com as colunas usadas abaixo.
 Saída: CSV com TODOS os eventos (classificação nova x antiga + motivos, quatro grupos de seleção e justificativa)

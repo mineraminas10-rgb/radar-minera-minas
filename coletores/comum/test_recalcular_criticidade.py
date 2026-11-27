@@ -1,4 +1,4 @@
-"""Recálculo automático (CRIT-V1.2): evidência/tipo oficial entram -> mesma régua -> nova versão, histórico preservado."""
+"""Recálculo automático (CRIT-V1.3): evidência/tipo oficial entram -> mesma régua -> nova versão, histórico preservado."""
 import json
 import os
 import re
@@ -42,7 +42,7 @@ class TestReclassificacao(unittest.TestCase):
         r = rc.reclassificar_m9a(ANGLO, evid, PAR, HOJE)
         self.assertEqual((r.nivel, r.prioridade, r.provisoria, r.origem_classificacao), ("CRITICO", "A", False, "tipo_oficial"))
         self.assertTrue(r.selecionavel)
-        self.assertEqual(r.versao_regra, "CRIT-V1.2")
+        self.assertEqual(r.versao_regra, "CRIT-V1.3")
 
     def test_evidencia_superseded_nao_conta(self):
         r = rc.reclassificar_m9a(ANGLO, [ev("titular", "X", sup=True)], PAR, HOJE)
