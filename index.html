@@ -1878,7 +1878,7 @@ function cardHTML(item){
       <span class="ind ind-entrada entradaTopo" title="Data e hora em que o assunto entrou no sistema"><span class="indLbl">Entrada</span><b>${esc(formatarEntradaSistema(e.created_at))}</b></span>
       <span class="ind ind-ined" title="Ineditismo: conteúdo ainda não publicado antes"><span class="indLbl">Ineditismo</span><b class="${item.ineditismo.inedito?'ined-sim':'ined-nao'}">${esc(item.ineditismo.texto)}</b></span>
       <span class="ind"><span class="indLbl">Status</span><span class="statusTag st-${e.status_editorial}">${STATUS_LABEL[e.status_editorial]||e.status_editorial}</span></span>
-      ${iaAnalisados[e.id] ? `<span class="statusTag seloIa" title="Análise de IA concluída em ${esc(formatarEntradaSistema(iaAnalisados[e.id]))}. É um rascunho: a revisão humana continua pendente." style="background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe">IA analisada</span>` : ''}
+      ${iaAnalisados[e.id] ? `<span class="statusTag seloIa" title="Análise de IA concluída em ${esc(formatarEntradaSistema(iaAnalisados[e.id]))}. Rascunho de IA; respostas válidas dispensam revisão com registro de auditoria." style="background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe">IA analisada</span>` : ''}
       <div class="grow"></div>
       <span class="sub">${esc(e.empresa||'')}${e.municipio?' · '+esc(e.municipio):''}</span>
     </div>
@@ -1898,7 +1898,7 @@ function cardHTML(item){
     ${chkResumoHTML}
 
     ${temPre
-      ? `<div class="prerelease"><span class="lbl"><span class="badgePre">${e.status_editorial==='publicado'?'PRÉ-RELEASE · PUBLICADO':'PRÉ-RELEASE · NÃO PUBLICADO'}</span> Proposta de release (rascunho) — revisão do editor decide se publica</span>${esc(e.pre_release)}</div>`
+      ? `<div class="prerelease"><span class="lbl"><span class="badgePre">${e.status_editorial==='publicado'?'PRÉ-RELEASE · PUBLICADO':'PRÉ-RELEASE · NÃO PUBLICADO'}</span> Proposta de release (rascunho) — não publicado automaticamente</span>${esc(e.pre_release)}</div>`
       : `<div class="prerelease empty"><span class="lbl"><span class="badgePre vazio">Sem pré-release</span></span>Ainda sem pré-release gerado para este assunto.</div>`}
 
     <details>
@@ -3018,7 +3018,7 @@ function pilotoDesenhar(){
   };
   body.innerHTML = `
     <div class="card"><strong>Operação assistida — análise editorial por IA (manual)</strong>
-      <div class="sub">Não há consulta automática nem agendamento: a IA só roda quando você confirma aqui. O servidor escolhe o texto (dossiê do evento no banco), confere a elegibilidade pré-IA, faz <b>uma</b> chamada por caso — sem nova tentativa — e valida a resposta. A IA <b>não</b> altera score, prioridade nem status e <b>não</b> libera publicação; a revisão humana continua Pendente.</div>
+      <div class="sub">Não há consulta automática nem agendamento: a IA só roda quando você confirma aqui. O servidor escolhe o texto (dossiê do evento no banco), confere a elegibilidade pré-IA, faz <b>uma</b> chamada por caso — sem nova tentativa — e valida a resposta. A IA <b>não</b> altera score, prioridade nem status. Respostas válidas dispensam a revisão humana com registro de auditoria; publicação segue como ação separada.</div>
       <div class="roNotice" style="margin-top:8px">Empresa: <b>${esc(nomeEmpresaPorId(d.empresaId))}</b> · API: <b>${cfg && cfg.ativo ? 'Ativa' : 'Pausada'}</b> · Modelo: <b>${esc(cfg && cfg.modelo_padrao || '—')}</b> · Limites: dia ${esc(cfg && cfg.limite_diario_usd != null ? fmtUsd(cfg.limite_diario_usd) : 'sem limite')} / mês ${esc(cfg && cfg.limite_mensal_usd != null ? fmtUsd(cfg.limite_mensal_usd) : 'sem limite')} · Lote ${esc(pilotoState.loteId || '—')}: ${(pilotoState.lote || []).length} de ${PILOTO_MAX} chamadas já usadas
         ${pronta ? '' : '<br><b>A API está pausada, sem modelo ou sem preço.</b> Para rodar, ative a API em ADMIN &gt; API (ação sua) e use "Atualizar".'}</div>
     </div>
@@ -3121,7 +3121,13 @@ async function pilotoExecutar(){
       if (r.execucao_id) ids.push(r.execucao_id);
       if (r.chamou_provider) chamadasReais++;
       const u = r.uso || {}; totalUsd += Number(r.custo_estimado_usd || 0); totalTok += Number(u.total_tokens || 0);
-      linhas.push(`<div class="roNotice"><b>${esc(rot)}</b><br>Concluída · modelo ${esc(r.modelo)} · ${esc(r.latencia_ms)} ms · tokens: entrada ${fmtNum(u.input_tokens)} / saída ${fmtNum(u.output_tokens)} · custo ${esc(fmtUsd(r.custo_estimado_usd))} · revisão humana: ${esc(r.revisao_humana || 'Pendente')}</div>`);
+      let revisaoFinal = r.revisao_humana || 'Pendente';
+      if (r.ok === true && r.execucao_id) {
+        const dispensa = await sb.rpc('fila_dispensar_revisao_ia', { p_event_id: ev.id, p_execucao_id: r.execucao_id });
+        if (dispensa.error) throw dispensa.error;
+        revisaoFinal = (dispensa.data && dispensa.data.revisao_humana) || 'Dispensada pela IA';
+      }
+      linhas.push(`<div class="roNotice"><b>${esc(rot)}</b><br>Concluída · modelo ${esc(r.modelo)} · ${esc(r.latencia_ms)} ms · tokens: entrada ${fmtNum(u.input_tokens)} / saída ${fmtNum(u.output_tokens)} · custo ${esc(fmtUsd(r.custo_estimado_usd))} · revisão humana: ${esc(revisaoFinal)}</div>`);
     } catch (e) {
       const det = e.detalhe || {};
       if (det.execucao_id) ids.push(det.execucao_id);
@@ -3153,7 +3159,12 @@ async function pilotoConferencia(ids, alvo, limiteIa){
   const evNovo = {}; (er.data || []).forEach(x => { evNovo[x.id] = x; });
   const reais = (ar.data || []).filter(x => ['sucesso', 'erro', 'pendente'].includes(x.status));
   const todasMeta = alvo.every(i => { const rs = porEv[i.ev.id] || []; return rs.length === 1; });
-  const revPend = alvo.every(i => (evNovo[i.ev.id] || {}).revisao_humana === 'Pendente');
+  const revConforme = alvo.every(i => {
+    const ev = evNovo[i.ev.id] || {}; const r = (porEv[i.ev.id] || [])[0];
+    return r && r.status === 'sucesso'
+      ? ['Dispensada pela IA', 'Aprovada'].includes(ev.revisao_humana)
+      : ev.revisao_humana === i.ev.revisao_humana;
+  });
   const statusInalterado = alvo.every(i => (evNovo[i.ev.id] || {}).status_editorial === i.ev.status_editorial);
   const sem = reais.filter(x => x.status === 'sucesso').length;
   const tot = (ar.data || []).reduce((s, x) => ({ usd: s.usd + Number(x.custo_estimado_usd || 0), tok: s.tok + Number(x.total_tokens || 0), ms: s.ms + Number(x.latencia_ms || 0) }), { usd: 0, tok: 0, ms: 0 });
@@ -3174,7 +3185,7 @@ async function pilotoConferencia(ids, alvo, limiteIa){
     <ul style="list-style:none;padding:0;margin:10px 0 0">
       ${ok(reais.length <= PILOTO_MAX && Number(lote.count || 0) <= PILOTO_MAX, `Chamadas reais do lote: ${lote.count ?? '?'} (máximo ${PILOTO_MAX})`)}
       ${ok(todasMeta, 'Uma única linha registrada por caso (sem nova tentativa)')}
-      ${ok(revPend, 'Revisão humana continua Pendente em todos os casos')}
+      ${ok(revConforme, 'Revisão dispensada somente para análises válidas; falhas preservam a situação anterior')}
       ${ok(statusInalterado, 'Status editorial dos eventos não foi alterado')}
       ${ok(alvo.length <= PILOTO_MAX, 'Nenhum 7º caso foi enviado')}
     </ul>
@@ -3249,7 +3260,7 @@ async function rascunhoPreCarregar(div, eventId){
   const d = r.data || {};
   if (!d.execucao_id || !d.rascunho) { div.innerHTML = ''; return; }
   const aviso = d.bloqueio ? `<div class="avisoFila pendente">Não é possível aplicar: ${esc(({ STATUS_JA_DECIDIDO: 'o evento já foi decidido (pronto/publicado/arquivado/descartado)', FORA_DA_SELECAO: 'score decisório abaixo do corte (fora da seleção)', ANALISE_SEM_RASCUNHO: 'a análise não trouxe rascunho' })[d.bloqueio] || d.bloqueio)}.</div>` : '';
-  div.innerHTML = `<div class="prerelease"><span class="lbl">Rascunho de pré-release da IA (revisão do editor decide)${d.ja_tem_pre_release ? ' — o evento JÁ TEM pré-release' : ''}</span>${esc(d.rascunho)}</div>${aviso}
+  div.innerHTML = `<div class="prerelease"><span class="lbl">Rascunho de pré-release da IA — não publicado automaticamente${d.ja_tem_pre_release ? ' — o evento JÁ TEM pré-release' : ''}</span>${esc(d.rascunho)}</div>${aviso}
     ${d.pode_aplicar ? `<button type="button" class="btnAplicarRascunho">${d.ja_tem_pre_release ? 'Substituir o pré-release por este rascunho' : 'Aplicar como pré-release do evento'}</button>` : ''}`;
   const btn = div.querySelector('.btnAplicarRascunho');
   if (!btn) return;
