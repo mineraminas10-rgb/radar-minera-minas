@@ -1858,7 +1858,7 @@ function cardHTML(item){
   const critTxt = item.criticidade ? (ROTULO_CRITICIDADE[item.criticidade] || item.criticidade) : '—';
   const critClass = item.criticidade ? 'crit-' + String(item.criticidade).toLowerCase() : '';
   const faixa = faixaScore(dec.score_valor);
-  const scoreTxt = dec.score_valor == null ? 'PENDENTE_DE_SCORE' : (dec.score_decisorio ? String(dec.score_valor) : `${dec.score_valor} · Provisório`);
+  const scoreTxt = dec.score_valor == null ? 'PENDENTE_DE_SCORE' : (Number(dec.score_valor) === 0 && /rotina_anula_gatilhos/.test(String(item.justificativaScore || '')) ? 'Rotina · sem gatilho pontuável' : (dec.score_decisorio ? String(dec.score_valor) : `${dec.score_valor} · Provisório`));
   const scoreBadge = dec.score_valor == null ? '' : (dec.score_decisorio
     ? `<span class="faixa faixa-${faixa.replace(/\s/g,'').toLowerCase()}">${esc(faixa)}</span>`
     : `<span class="badgeProv" title="Score provisório não é decisório: não descarta, não ordena e não habilita publicação">PROVISÓRIO</span><span class="faixaRef" title="Faixa apenas como referência">ref.: ${esc(faixa)}</span>`);
