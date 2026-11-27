@@ -1,5 +1,5 @@
 """
-Ponte entre os atos consolidados do M9A (consolidacao.Ato) e a régua de criticidade comum (CRIT-V1.2).
+Ponte entre os atos consolidados do M9A (consolidacao.Ato) e a régua de criticidade comum (CRIT-V1.3).
 
 Um CASO pode agrupar vários atos do mesmo processo/instrumento. A criticidade do caso é a do seu MELHOR ato
 (maior nível; empate: maior pontuação de reforços; empate: ato mais recente). Cada ato é classificado pelo

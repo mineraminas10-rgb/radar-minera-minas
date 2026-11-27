@@ -142,7 +142,7 @@ class TestRodadaM9A(unittest.TestCase):
         return True
 
     def test_regua_de_criticidade_filtra_por_data_e_piso_e_ordena_antes_do_limite(self):
-        """CRIT-V1.2 no coletor: janela de data (não lê atos velhos), piso (BAIXA/ROTINA ficam fora) e a ordem
+        """CRIT-V1.3 no coletor: janela de data (não lê atos velhos), piso (BAIXA/ROTINA ficam fora) e a ordem
         criticidade > pontuação > atualidade vale ANTES de --limite-casos."""
         from datetime import date
         reg = {"url_original": "https://dadosabertos.anm.gov.br/SCM/microdados/microdados-scm.zip",
@@ -160,7 +160,7 @@ class TestRodadaM9A(unittest.TestCase):
         self.assertEqual(dispensados, 0)
         self.assertTrue(set(padrao["dispensados_por_criticidade"]) <= {"BAIXA", "ROTINA", "NAO_AVALIAVEL"})
         self.assertEqual(padrao["novos"] + padrao["atualizados"], 41 - dispensados)
-        self.assertEqual(padrao["versao_regra_criticidade"], "CRIT-V1.2")
+        self.assertEqual(padrao["versao_regra_criticidade"], "CRIT-V1.3")
         self.assertEqual(velho["dentro_recorte"], 0)
         self.assertEqual(velho["ingestao"]["fora_por_data"] + velho["ingestao"]["fora_de_mg"] + velho["ingestao"]["fora_por_familia"], velho["brutos"])
         self.assertEqual(limitado["novos"] + limitado["atualizados"], 3)
