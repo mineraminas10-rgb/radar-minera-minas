@@ -1498,13 +1498,20 @@ async function carregarFila(){
     const inicioLotePorExecucao = {};
     if (execucaoIds.length) {
       try {
-        const xr = await comLimiteDeTempo(
-          sb.from('execucoes').select('id, inicio').in('id', execucaoIds),
-          TIMEOUT_MS, 'datas dos lotes'
+        const lotesDatas = await Promise.allSettled(
+          Array.from({ length: Math.ceil(execucaoIds.length / 100) }, (_, i) =>
+            comLimiteDeTempo(
+              sb.from('execucoes').select('id, inicio').in('id', execucaoIds.slice(i * 100, (i + 1) * 100)),
+              TIMEOUT_MS, 'datas dos lotes ' + (i + 1)
+            )
+          )
         );
         if (!escopoVigente(esc0)) return;
-        if (!xr.error) (xr.data || []).forEach(x => { inicioLotePorExecucao[x.id] = x.inicio; });
-        else console.warn('Não foi possível carregar a data dos lotes:', xr.error);
+        lotesDatas.forEach((r, i) => {
+          if (r.status !== 'fulfilled') { console.warn('Falha ao carregar o bloco de datas do lote ' + (i + 1) + ':', r.reason); return; }
+          if (r.value.error) { console.warn('Falha ao carregar o bloco de datas do lote ' + (i + 1) + ':', r.value.error); return; }
+          (r.value.data || []).forEach(x => { inicioLotePorExecucao[x.id] = x.inicio; });
+        });
       } catch (err) { console.warn('Não foi possível carregar a data dos lotes:', err); }
     }
 
