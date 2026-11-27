@@ -1,0 +1,46 @@
+name: Recalcular scores editoriais CRIT-V1.3
+
+# Recalcula somente pontuações M9A já cadastradas. Não coleta documentos,
+# não chama IA e não altera status, publicação ou conteúdo editorial.
+on:
+  workflow_dispatch:
+    inputs:
+      limite:
+        description: 'Limite opcional de registros; vazio = recalcular todos os scores M9A desatualizados'
+        required: false
+        default: ''
+      hoje:
+        description: 'Data de referência ISO opcional (vazio = data atual)'
+        required: false
+        default: ''
+
+jobs:
+  recalcular:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar dependências do coletor
+        run: pip install -r coletores/m9a_movimentacoes/requirements.txt
+
+      - name: Recalcular scores existentes
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SCORE_LIMIT: ${{ github.event.inputs.limite }}
+          SCORE_DATE: ${{ github.event.inputs.hoje }}
+        run: |
+          ARGS=""
+          if [ -n "$SCORE_LIMIT" ]; then
+            ARGS="$ARGS --limite $SCORE_LIMIT"
+          fi
+          if [ -n "$SCORE_DATE" ]; then
+            ARGS="$ARGS --hoje $SCORE_DATE"
+          fi
+          python coletores/comum/recalcular_criticidade.py $ARGS
