@@ -170,3 +170,30 @@ export function buscarPrompt(nomeCompleto: string): PromptReg | null {
   return PROMPTS.find((p) => `${p.nome}_${p.versao}` === nomeCompleto) ?? null;
 }
 export const idPrompt = (p: PromptReg) => `${p.nome}_${p.versao}`;
+
+
+const SCHEMA_GATILHO_PONTUAVEL = obj({
+  classificacao: { enum: ['CRITICO', 'ALTA', 'MEDIA', 'BAIXA', 'ROTINA', 'NAO_AVALIAVEL'] },
+  categorias: { type: 'array', minItems: 1, maxItems: 5, items: { enum: ['contaminacao', 'dano_ambiental', 'impacto_social', 'impacto_cultural', 'area_protegida', 'risco_estrutural', 'interrupcao_servico_essencial', 'perda_direito_minerario', 'outorga_agua', 'ato_administrativo_rotineiro', 'nenhum', 'indeterminado'] } },
+  justificativa: str,
+  citacoes,
+});
+const SCHEMA_ANALISE_EDITORIAL_V4 = obj({
+  fato_confirmado: obj({ texto: str, citacoes }),
+  contexto_documental: obj({ texto: str, citacoes }),
+  gatilho_pontuavel: SCHEMA_GATILHO_PONTUAVEL,
+  avaliacao_editorial: obj({ texto: str }),
+  hipotese_apuracao: obj({ texto: str }),
+  lacunas: { type: 'array', items: str },
+  perguntas_redacao: { type: 'array', items: str },
+  proposta_abordagem: obj({ texto: str, rascunho_pre_release: strNull }),
+});
+const REGRA_GATILHO_PONTUAVEL_V4 =
+  'Classifique o gatilho pontuável pelo incidente e pelos impactos documentados; porte ou notoriedade da empresa não entram nessa classificação e não criam gatilho. Use CRITICO, ALTA, MEDIA ou BAIXA apenas com evidência concreta de impacto, dano ou risco; ROTINA para movimentação administrativa sem impacto relevante documentado; NAO_AVALIAVEL quando faltarem evidências. ' +
+  'Em categorias, escolha apenas as sustentadas: contaminacao, dano_ambiental, impacto_social, impacto_cultural, area_protegida, risco_estrutural, interrupcao_servico_essencial, perda_direito_minerario, outorga_agua, ato_administrativo_rotineiro, nenhum ou indeterminado. Cite em citacoes as evidências que sustentam a classificação. ROTINA usa ato_administrativo_rotineiro ou nenhum; NAO_AVALIAVEL usa indeterminado. Não deduza contaminação, dano, risco, causa ou responsabilidade. Perda, decadência ou extinção de direito minerário, por si só, não é gatilho grave: classifique pelo motivo e impactos concretos, como contaminação ou incidência em área protegida. Não atribua score, nota ou prioridade, nem altere o estágio provisório/final; esta avaliação assistida continua sujeita a revisão humana. ';
+const REGRA_ANALISE_EDITORIAL_V4 = REGRA_ANALISE_V3.replace('Responda apenas com o JSON do schema.', REGRA_GATILHO_PONTUAVEL_V4 + 'Responda apenas com o JSON do schema.');
+PROMPTS.push(
+  { nome: 'M8_ANALISE_EDITORIAL', versao: 'V4', modulo: 'm8', operacao: 'analise_editorial', ativo: true, instructions: 'Reavalie o fato e os impactos documentados para detectar gatilho pontuável, sem presumir vínculo causal com mineração. ' + REGRA_ANALISE_EDITORIAL_V4, schema: SCHEMA_ANALISE_EDITORIAL_V4 },
+  { nome: 'M9A_ANALISE_EDITORIAL', versao: 'V4', modulo: 'm9a', operacao: 'analise_editorial', ativo: true, instructions: 'Reavalie a mudança e o motivo documentado para detectar gatilho pontuável. Perda de direito minerário sem impacto grave comprovado pode ser rotina ou baixa relevância. ' + REGRA_ANALISE_EDITORIAL_V4, schema: SCHEMA_ANALISE_EDITORIAL_V4 },
+  { nome: 'M6_ANALISE_EDITORIAL', versao: 'V4', modulo: 'm6', operacao: 'analise_editorial', ativo: true, instructions: 'Reavalie os impactos documentados e separe-os do vínculo minerário, que pode não estar provado. ' + REGRA_ANALISE_EDITORIAL_V4, schema: SCHEMA_ANALISE_EDITORIAL_V4 },
+);
